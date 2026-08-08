@@ -49,11 +49,17 @@ Industry Solutions
 Localization / Connectors
 ```
 
-## Documentation
+## Mandatory Starting Documents
 
-Start here:
+Codex and developers should start with these documents:
 
-- [`AGENTS.md`](AGENTS.md) - mandatory engineering/Codex contract
+1. [`AGENTS.md`](AGENTS.md) - mandatory engineering contract
+2. [`docs/codex/MASTER-BUILD-INSTRUCTIONS.md`](docs/codex/MASTER-BUILD-INSTRUCTIONS.md) - complete BusinessOS product/build instructions
+3. [`docs/roadmap/FULL-SYSTEM.md`](docs/roadmap/FULL-SYSTEM.md) - complete roadmap from kernel through ERP, verticals, marketplace, cloud and LTS
+4. [`docs/architecture/MODULE-CATALOG.md`](docs/architecture/MODULE-CATALOG.md) - canonical module/bounded-context catalog
+
+## Architecture Documentation
+
 - [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) - architecture baseline
 - [`docs/architecture/TENANCY.md`](docs/architecture/TENANCY.md) - tenancy and organization model
 - [`docs/architecture/DATABASE.md`](docs/architecture/DATABASE.md) - PostgreSQL rules
@@ -63,8 +69,58 @@ Start here:
 - [`docs/architecture/FRONTEND.md`](docs/architecture/FRONTEND.md) - frontend architecture
 - [`docs/architecture/UPGRADES.md`](docs/architecture/UPGRADES.md) - upgrade/compatibility model
 - [`docs/architecture/DEVELOPMENT.md`](docs/architecture/DEVELOPMENT.md) - engineering workflow
-- [`docs/roadmap/PHASE-1.md`](docs/roadmap/PHASE-1.md) - protected-kernel roadmap
 - [`docs/adr/`](docs/adr/) - accepted architecture decisions
+
+## Roadmaps
+
+- [`docs/roadmap/FULL-SYSTEM.md`](docs/roadmap/FULL-SYSTEM.md) - authoritative complete system roadmap
+- [`docs/roadmap/PHASE-1.md`](docs/roadmap/PHASE-1.md) - detailed protected-kernel sub-roadmap
+
+`PHASE-1.md` is not the complete product scope. It is the detailed first implementation stage of the full roadmap.
+
+## Full Product Destination
+
+The master roadmap covers the complete product lifecycle, including:
+
+- protected kernel/runtime
+- tenant/identity/organization
+- Party/Geography/UoM/Reference Data
+- authorization/audit/data governance
+- metadata/studio/dynamic UI
+- workflow/rules/resource/scheduling
+- documents/collaboration/notifications
+- search/reporting/import/export
+- integration platform
+- catalog/pricing/tax
+- CRM/Sales
+- Procurement
+- Inventory/Warehouse/Logistics
+- Billing/Payments
+- Accounting/Finance
+- Assets/Expenses/Treasury
+- HR/Payroll
+- Project/Helpdesk/Field Service
+- Manufacturing/Maintenance/Quality
+- POS
+- E-commerce
+- Healthcare/Hospital/Clinic/Pharmacy
+- Education/School
+- Salon/Spa/Gym
+- Restaurant
+- Hotel/Hospitality
+- Garments/Apparel
+- Construction/Real Estate
+- Fleet/Logistics
+- Microfinance/Financial Services
+- Legal
+- Travel/Air Ticketing
+- country localization
+- marketplace/developer platform
+- self-hosted enterprise operations
+- BusinessOS Cloud control plane
+- performance certification
+- security/compliance maturity
+- LTS/compatibility/partner ecosystem
 
 ## Repository Direction
 
@@ -76,16 +132,18 @@ businessos/
 ├── verticals/      # industry solutions
 ├── services/       # independently deployed first-party services
 ├── deployment/     # compose/helm/operator/air-gap assets
-├── docs/           # architecture, ADRs, standards and roadmap
+├── docs/           # architecture, ADRs, standards, Codex instructions and roadmap
 └── tests/          # cross-cutting conformance/integration suites
 ```
 
 ## Current Status
 
-Architecture bootstrap and Phase 1 planning.
+Architecture bootstrap is in progress. The complete destination is already documented; implementation begins with the protected kernel because later modules depend on its contracts.
 
 The first implementation milestone is the protected kernel/runtime and an external proof module that demonstrates installation, tenant-aware operation, migrations, API/UI extension, events, upgrade and lifecycle without modifying protected kernel source.
 
 ## Development Rule
 
-Before substantial implementation, read `AGENTS.md` and the architecture/ADR documents relevant to the task. Architecture changes require an ADR rather than silent implementation divergence.
+Codex must understand the full-system roadmap before implementing individual work units. Implementation still proceeds incrementally so architecture, migrations, security, tests and compatibility can be validated at each dependency boundary.
+
+Architecture changes require an ADR rather than silent implementation divergence.

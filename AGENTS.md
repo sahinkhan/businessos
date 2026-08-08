@@ -7,12 +7,15 @@ Before substantial implementation, Codex must read in this order:
 1. `AGENTS.md` - this engineering contract
 2. `docs/codex/MASTER-BUILD-INSTRUCTIONS.md` - complete BusinessOS product destination
 3. `docs/roadmap/FULL-SYSTEM.md` - complete implementation sequence from kernel to enterprise ecosystem
-4. `docs/architecture/MODULE-CATALOG.md` - canonical bounded-context/module map
-5. architecture documents relevant to the task under `docs/architecture/`
-6. accepted ADRs relevant to the task under `docs/adr/`
-7. nearest scoped `AGENTS.md` for the directory being changed
+4. detailed phase specification:
+   - Phase 1: `docs/roadmap/PHASE-1.md`
+   - Phases 2-40: `docs/roadmap/PHASES-02-40-DETAILED.md`
+5. `docs/architecture/MODULE-CATALOG.md` - canonical bounded-context/module map
+6. architecture documents relevant to the task under `docs/architecture/`
+7. accepted ADRs relevant to the task under `docs/adr/`
+8. nearest scoped `AGENTS.md` for the directory being changed
 
-`docs/roadmap/PHASE-1.md` is a detailed sub-roadmap for the first implementation phase. It is not the complete BusinessOS scope.
+The detailed phase documents are implementation specifications, not optional background reading.
 
 Architecture documentation and accepted ADRs are authoritative. Do not silently replace architectural decisions with convenience-driven implementation choices.
 
@@ -449,6 +452,8 @@ Support access to customer data must be explicit, time-limited and auditable.
 ## Full-System Planning Rule
 
 The complete destination is defined in `docs/codex/MASTER-BUILD-INSTRUCTIONS.md` and `docs/roadmap/FULL-SYSTEM.md`.
+
+Detailed implementation requirements are defined by `PHASE-1.md` and `PHASES-02-40-DETAILED.md`.
 
 Codex must understand the complete system before implementing individual phases, but must not generate the whole platform in one uncontrolled change.
 

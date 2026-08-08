@@ -1,5 +1,23 @@
 # BusinessOS Engineering Contract for Codex
 
+## Mandatory Reading Order
+
+Before substantial implementation, Codex must read in this order:
+
+1. `AGENTS.md` - this engineering contract
+2. `docs/codex/MASTER-BUILD-INSTRUCTIONS.md` - complete BusinessOS product destination
+3. `docs/roadmap/FULL-SYSTEM.md` - complete implementation sequence from kernel to enterprise ecosystem
+4. `docs/architecture/MODULE-CATALOG.md` - canonical bounded-context/module map
+5. architecture documents relevant to the task under `docs/architecture/`
+6. accepted ADRs relevant to the task under `docs/adr/`
+7. nearest scoped `AGENTS.md` for the directory being changed
+
+`docs/roadmap/PHASE-1.md` is a detailed sub-roadmap for the first implementation phase. It is not the complete BusinessOS scope.
+
+Architecture documentation and accepted ADRs are authoritative. Do not silently replace architectural decisions with convenience-driven implementation choices.
+
+---
+
 ## Mission
 
 BusinessOS is an international, enterprise-grade, modular business application platform designed for self-hosted enterprise deployment and optional vendor-hosted cloud deployment.
@@ -14,10 +32,6 @@ The platform must support:
 - predictable long-term upgrades
 - high-performance enterprise workloads
 - business modules and industry solutions without protected-core forks
-
-Before substantial work, read the relevant files under `docs/architecture/`, `docs/adr/`, and `docs/roadmap/`.
-
-Architecture documentation and accepted ADRs are authoritative. Do not silently replace architectural decisions with convenience-driven implementation choices.
 
 ---
 
@@ -130,6 +144,7 @@ Reuse foundation modules before creating duplicate capabilities:
 - Data Governance
 - Integrations
 - Background Jobs
+- Hierarchical Configuration
 
 Foundation modules must remain industry-neutral.
 
@@ -156,6 +171,10 @@ Examples include:
 - Payroll
 - Projects
 - Manufacturing
+- Maintenance
+- Quality
+- Helpdesk
+- Field Service
 - POS
 - E-commerce
 
@@ -179,14 +198,14 @@ A module must not directly modify another module's private tables.
 
 Examples:
 
-- Healthcare
-- Education
+- Healthcare / Hospital / Clinic / Pharmacy
+- Education / School
 - Salon / Spa
 - Gym / Fitness
 - Restaurant
 - Hospitality / Hotel
-- Garments
-- Microfinance
+- Garments / Apparel
+- Microfinance / Financial Services
 - Fleet
 - Legal
 - Real Estate
@@ -427,16 +446,27 @@ Support access to customer data must be explicit, time-limited and auditable.
 
 ---
 
+## Full-System Planning Rule
+
+The complete destination is defined in `docs/codex/MASTER-BUILD-INSTRUCTIONS.md` and `docs/roadmap/FULL-SYSTEM.md`.
+
+Codex must understand the complete system before implementing individual phases, but must not generate the whole platform in one uncontrolled change.
+
+Each phase must preserve future requirements of later phases. Never make a local shortcut that blocks a later business module, vertical, localization, marketplace module, tenancy mode or upgrade path already defined in the master roadmap.
+
+---
+
 ## Coding Process
 
 Before substantial coding:
 
-1. read the relevant architecture docs and ADRs
+1. read the mandatory documents listed at the top of this file
 2. inspect existing patterns/code
 3. determine the bounded-context owner
 4. identify affected public contracts
 5. identify tenancy/security/data ownership impact
-6. provide a concise implementation plan when the task is substantial
+6. identify impact on later roadmap phases
+7. provide a concise implementation plan when the task is substantial
 
 During coding:
 
@@ -454,10 +484,11 @@ After coding:
 3. run unit tests
 4. run integration tests where applicable
 5. run tenant-isolation tests where applicable
-6. report commands executed
-7. report files changed
-8. report migrations and contract changes
-9. report unresolved risks
+6. run contract/conformance tests where applicable
+7. report commands executed
+8. report files changed
+9. report migrations and contract changes
+10. report unresolved risks
 
 Never claim a command/test passed unless it actually ran successfully.
 
@@ -476,6 +507,7 @@ If an implementation request conflicts with an accepted architecture rule, stop 
 - security impact
 - compatibility impact
 - migration impact
+- later-roadmap impact
 
 Then propose an ADR before implementing the architecture change.
 
@@ -494,5 +526,6 @@ A feature is not complete until applicable checks pass:
 - observability/error behavior
 - documentation
 - formatting/lint/static analysis
+- architecture/conformance checks
 
 Architecture compliance is part of Definition of Done.

@@ -11,7 +11,11 @@ from businessos.http.middleware import CallNext
 
 
 def _settings() -> Settings:
-    return Settings(environment="test", database_url="postgresql+psycopg://test:test@db/test")
+    return Settings(
+        environment="test",
+        database_url="postgresql+psycopg://test:test@db/test",
+        database_readiness_enabled=False,
+    )
 
 
 @pytest.mark.asyncio

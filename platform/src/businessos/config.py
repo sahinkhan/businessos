@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://businessos:businessos@localhost:5432/businessos"
     database_pool_size: int = Field(default=5, ge=1, le=100)
     database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
+    database_readiness_enabled: bool = True
     request_body_limit_bytes: int = Field(default=1_048_576, ge=1)
     shutdown_timeout_seconds: float = Field(default=10.0, gt=0)
 

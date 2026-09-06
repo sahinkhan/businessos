@@ -5,7 +5,8 @@ The Phase 1 runtime requires Python 3.13 or newer. Docker Compose is the support
 ## Repository Boundaries
 
 - `platform/src/businessos/` contains the protected custom ASGI framework.
-- `platform/migrations/` contains only protected-kernel Alembic revisions.
+- `platform/src/businessos/migration_assets/` contains packaged protected-kernel Alembic
+  configuration, templates and revisions.
 - `examples/proof_module/` is an external package that consumes the public module SDK.
 - `tests/unit/`, `tests/integration/` and `tests/conformance/` separate fast, infrastructure and external-module checks.
 
@@ -47,8 +48,8 @@ curl --fail http://localhost:8000/diagnostics/modules
 ```bash
 python3.13 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e '.[dev,providers]'
-python -m pip install -e examples/proof_module
+python -m pip install --constraint requirements/constraints-py313.txt -e '.[dev,providers]'
+python -m pip install --constraint requirements/constraints-py313.txt -e examples/proof_module
 ```
 
 Configuration uses `BOS_`-prefixed environment variables. `BOS_DATABASE_URL` must use SQLAlchemy's `postgresql+psycopg://` dialect. Secrets belong in environment/secret providers and must not be committed.
@@ -66,8 +67,8 @@ The checked-in credentials are local-development values only. Production deploym
 With the Compose infrastructure running:
 
 ```bash
-ruff format --check platform/src platform/migrations examples tests
-ruff check platform/src platform/migrations examples tests
+ruff format --check platform/src examples tests
+ruff check platform/src examples tests
 mypy platform/src tests examples/proof_module/src
 pytest -q tests/unit
 BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
@@ -102,3 +103,21 @@ BOS_TEST_S3_SECRET_KEY=businessos-development
 Production schemas change only through reviewed Alembic revisions. Never call SQLAlchemy metadata `create_all` as an upgrade mechanism.
 
 The framework migration coordinator combines protected revisions with module-owned revision locations in validated module dependency order. The proof module demonstrates a v1-to-v2 module migration without placing its revisions in the protected platform directory.
+
+Protected and module-owned migrations are loaded from installed package resources. Every owner
+declares a unique migration namespace, and graph preflight rejects revision or branch-label
+collisions, missing revision packages and undeclared cross-module dependencies before applying DDL.
+Multiple module heads are intentional, so coordinated upgrades target `heads`; ambiguous `head`
+selection is not substituted silently.
+
+From any working directory, an installed environment can inspect or execute the complete graph:
+
+```bash
+businessos migrate plan
+BOS_MIGRATION_DATABASE_URL=postgresql+psycopg://... businessos migrate plan --check-database
+BOS_MIGRATION_DATABASE_URL=postgresql+psycopg://... businessos migrate upgrade heads
+```
+
+Build and validate clean wheel installations with `sh scripts/validate_wheels.sh`. The
+`migration-smoke` Docker target performs the same resource-discovery proof on top of the production
+image without copying repository migration directories into that image.

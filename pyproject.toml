@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75", "wheel"]
+requires = ["setuptools==75.8.2", "wheel==0.45.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -43,10 +43,14 @@ businessos = "businessos.__main__:main"
 
 [tool.setuptools]
 package-dir = { "" = "platform/src" }
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["platform/src"]
 include = ["businessos*"]
+
+[tool.setuptools.package-data]
+businessos = ["migration_assets/script.py.mako", "migration_assets/versions/*.py"]
 
 [tool.pytest.ini_options]
 minversion = "8.3"
@@ -69,13 +73,14 @@ src = ["platform/src", "tests", "examples"]
 select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
 
 [tool.ruff.lint.per-file-ignores]
-"platform/migrations/versions/*.py" = ["E501"]
+"platform/src/businessos/migration_assets/versions/*.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.13"
 strict = true
+explicit_package_bases = true
 plugins = ["pydantic.mypy"]
-mypy_path = ["platform/src"]
+mypy_path = ["platform/src", "examples/proof_module/src"]
 files = ["platform/src", "tests", "examples/proof_module/src"]
 
 [[tool.mypy.overrides]]

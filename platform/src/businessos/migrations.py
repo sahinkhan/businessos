@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import os
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from importlib.resources import as_file, files
@@ -64,8 +64,10 @@ def _tuple_value(value: object) -> tuple[str, ...]:
         return ()
     if isinstance(value, str):
         return (value,)
-    if isinstance(value, (tuple, list)) and all(isinstance(item, str) for item in value):
-        return tuple(cast(Iterable[str], value))
+    if isinstance(value, (tuple, list)):
+        sequence = cast(Sequence[object], value)
+        if all(isinstance(item, str) for item in sequence):
+            return tuple(cast(str, item) for item in sequence)
     raise ConfigurationError("Migration metadata must contain only literal revision strings")
 
 
@@ -137,7 +139,7 @@ class MigrationCoordinator:
         return tuple(sources)
 
     @contextmanager
-    def _resolved_sources(self) -> Iterator[tuple[_ResolvedSource, ...]]:
+    def _resolved_sources(self) -> Generator[tuple[_ResolvedSource, ...]]:
         with ExitStack() as stack:
             resolved: list[_ResolvedSource] = []
             for source in self.sources():
@@ -226,10 +228,12 @@ class MigrationCoordinator:
 
         known = set(revision_owners)
         referenced_as_parent: set[str] = set()
-        allowed_by_owner = {
-            owner: frozenset().union(*(source.allowed_dependencies for source in sources))
-            for owner, sources in owner_sources.items()
-        }
+        allowed_by_owner: dict[str, frozenset[str]] = {}
+        for owner, sources in owner_sources.items():
+            allowed: set[str] = set()
+            for source in sources:
+                allowed.update(source.allowed_dependencies)
+            allowed_by_owner[owner] = frozenset(allowed)
         for revision in revisions:
             for referenced in (*revision.down_revisions, *revision.dependencies):
                 if referenced not in known:

@@ -150,6 +150,10 @@ Phase 0's Python/ASGI documentation cutover is complete. Phase 1 now provides th
 
 The external proof module demonstrates discovery, installation, tenant-aware API operation, module-owned migrations, metadata, permissions, commands/queries/events, object storage, v1-to-v2 upgrade and lifecycle without modifying protected kernel source.
 
+Core and module migrations are shipped inside their respective wheels and discovered through
+package resources. The coordinator validates the complete multi-head graph before database changes;
+installed deployments can run `businessos migrate plan` from any working directory.
+
 ## Development Rule
 
 Codex must understand the full-system roadmap before implementing individual work units. Implementation still proceeds incrementally so architecture, migrations, security, tests and compatibility can be validated at each dependency boundary.

@@ -8,9 +8,9 @@ BusinessOS supports four primary extension forms.
 
 Metadata/contracts with no arbitrary in-process executable code. Suitable for custom entities, fields, forms, views, workflow, rules, reports and configuration.
 
-### First-Party Compiled Module
+### Trusted First-Party Python Module
 
-Official BusinessOS module compiled with the approved distribution/runtime. Used for high-trust platform foundations and official business modules.
+Official BusinessOS Python package built and reviewed with the approved distribution/runtime. Used for high-trust platform foundations and official business modules.
 
 ### Isolated Service Module
 
@@ -20,9 +20,9 @@ Separate OCI container/process. Default executable model for customer modules an
 
 Sandboxed frontend contribution for specialized user experiences that cannot be represented through declarative UI/controlled extension slots.
 
-## Native Go Plugins
+## Untrusted In-Process Python Extensions
 
-Go native plugins are not the marketplace architecture. Their runtime/ABI coupling and process trust model conflict with long-term independent module compatibility and isolation goals.
+Customer and marketplace Python packages are not loaded into the protected runtime. Their arbitrary-code privileges, dependency conflicts and process trust model conflict with tenant isolation, long-term compatibility and safe upgrades. Audited first-party Python modules may run in-process; other executable modules use isolated services.
 
 ## Module Ownership
 

@@ -129,7 +129,7 @@ Global EAV is prohibited.
 
 ## Query Rules
 
-- Prefer pgx and explicit/generated SQL for critical paths.
+- Prefer Psycopg 3 and explicit/generated SQL for critical paths.
 - Every interactive endpoint has bounded queries and result sets.
 - Avoid N+1 patterns.
 - Large datasets use server-side filtering, pagination and indexes proven by query plans.

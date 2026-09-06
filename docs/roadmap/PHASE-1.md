@@ -12,7 +12,7 @@ Do not build Sales, Accounting, Hospital, School, POS, Manufacturing or other bu
 
 Deliver:
 
-- Go workspace/module structure
+- Python workspace/package structure
 - package/dependency boundary conventions
 - application bootstrap
 - configuration loader and validation
@@ -26,7 +26,7 @@ Deliver:
 
 Exit criteria:
 
-- transport code does not leak Gin context into application/domain code
+- transport code does not leak Starlette request objects into application/domain code
 - context propagation tests pass
 - invalid configuration fails fast
 - runtime shuts down gracefully
@@ -36,7 +36,7 @@ Exit criteria:
 
 Deliver:
 
-- pgx connection/pool management
+- Psycopg 3 asynchronous connection/pool management
 - transaction/Unit of Work abstraction
 - migration runtime
 - tenant-aware data access primitives

@@ -1,6 +1,8 @@
 # ADR-001: BusinessOS Technology Baseline
 
-Status: Accepted
+Status: Superseded by ADR-008
+
+This ADR records the original planning baseline. ADR-008 supersedes it before implementation began.
 
 ## Context
 

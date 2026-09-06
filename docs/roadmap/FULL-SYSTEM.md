@@ -24,12 +24,12 @@ Gate: coding may start only after architecture source of truth exists.
 
 Deliver:
 
-- Go workspace/runtime bootstrap
+- Python workspace/runtime bootstrap
 - configuration
 - RequestContext/TenantContext
 - error model
 - logging/telemetry
-- PostgreSQL/pgx runtime
+- PostgreSQL/Psycopg 3 runtime
 - Unit of Work
 - migrations
 - module registry/loader

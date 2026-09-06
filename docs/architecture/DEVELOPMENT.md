@@ -74,10 +74,10 @@ Implementation convenience alone is not sufficient reason to bypass an accepted 
 
 As the repository becomes executable, CI should include:
 
-- gofmt verification
-- go vet
-- staticcheck or approved Go static analysis
-- unit tests
+- Ruff formatting and lint verification
+- Pyright strict type checking
+- architecture/import-boundary checks
+- unit tests with pytest
 - integration tests
 - PostgreSQL migration tests
 - tenant-isolation tests

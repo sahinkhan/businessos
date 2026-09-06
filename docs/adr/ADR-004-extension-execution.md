@@ -19,7 +19,7 @@ Use a layered extension model:
 
 Customer/marketplace executable modules normally run as separate OCI containers/processes and communicate through versioned REST, gRPC, event, provider and frontend-extension contracts.
 
-Go native plugins are not the marketplace mechanism.
+Untrusted customer or marketplace Python packages are not loaded into the protected runtime.
 
 ## Consequences
 

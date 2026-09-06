@@ -3,7 +3,7 @@
 import logging
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from asgiref.typing import (
     ASGIReceiveCallable,
@@ -11,13 +11,23 @@ from asgiref.typing import (
     HTTPScope,
     LifespanScope,
 )
+from pydantic import ValidationError
 
 from businessos.config import Settings
 from businessos.context import RequestContext
+from businessos.dependencies import AUTHORIZER
 from businessos.di import Container, RequestDependencyScope
 from businessos.errors import BusinessOSError
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import ContextMiddleware, Middleware, compose_middleware
+from businessos.security import (
+    AnonymousContextResolver,
+    RequestIdentity,
+    TrustedContextResolver,
+)
+
+if TYPE_CHECKING:
+    from businessos.runtime import FrameworkRuntime
 
 LifecycleHook = Callable[[], Awaitable[None]]
 
@@ -34,11 +44,21 @@ class ApplicationState(StrEnum):
 class BusinessOSApplication:
     """Framework-owned ASGI application independent of Uvicorn internals."""
 
-    def __init__(self, settings: Settings, *, router: Router, container: Container) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        router: Router,
+        container: Container,
+        runtime: "FrameworkRuntime | None" = None,
+        context_resolver: TrustedContextResolver | None = None,
+    ) -> None:
         self.settings = settings
         self.router = router
         self.container = container
+        self.runtime = runtime
         self.state = ApplicationState.CREATED
+        self._context_resolver = context_resolver or AnonymousContextResolver()
         self._middleware: list[Middleware] = [ContextMiddleware()]
         self._startup_hooks: list[LifecycleHook] = []
         self._shutdown_hooks: list[LifecycleHook] = []
@@ -100,12 +120,15 @@ class BusinessOSApplication:
         self, scope: HTTPScope, receive: ASGIReceiveCallable, send: ASGISendCallable
     ) -> None:
         generated_context = RequestContext()
-        context = RequestContext(
-            correlation_id=(
-                self._header(scope, "x-correlation-id") or generated_context.correlation_id
-            ),
-            trace_id=self._header(scope, "traceparent") or generated_context.trace_id,
+        headers = self._headers(scope)
+        identity = RequestIdentity(
+            method=scope["method"],
+            path=scope["path"],
+            headers=headers,
+            correlation_id=headers.get("x-correlation-id", generated_context.correlation_id),
+            trace_id=headers.get("traceparent", generated_context.trace_id),
         )
+        context = await self._context_resolver.resolve(identity)
         try:
             match = self.router.match(scope["method"], scope["path"])
             request = Request(
@@ -116,10 +139,22 @@ class BusinessOSApplication:
                 body_limit_bytes=self.settings.request_body_limit_bytes,
             )
             async with self.container.request_scope() as dependencies:
+                if match.route.permission is not None:
+                    authorizer = await dependencies.resolve(AUTHORIZER)
+                    await authorizer.require(context, match.route.permission)
                 endpoint = self._endpoint(match.route.handler, dependencies)
                 response = await compose_middleware(tuple(self._middleware), endpoint)(request)
         except BusinessOSError as exc:
             response = Response.json(exc.payload(), status_code=exc.status_code)
+        except ValidationError as exc:
+            response = Response.json(
+                {
+                    "code": "validation_error",
+                    "message": "Request validation failed",
+                    "details": {"errors": exc.errors(include_url=False)},
+                },
+                status_code=422,
+            )
         except Exception:
             self._logger.exception("Unhandled request failure")
             response = Response.json(
@@ -165,9 +200,8 @@ class BusinessOSApplication:
                 return
 
     @staticmethod
-    def _header(scope: HTTPScope, name: str) -> str | None:
-        target = name.encode("latin-1")
-        for key, value in scope.get("headers", []):
-            if key.lower() == target:
-                return value.decode("latin-1")
-        return None
+    def _headers(scope: HTTPScope) -> dict[str, str]:
+        return {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }

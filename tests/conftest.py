@@ -9,7 +9,7 @@ from alembic.config import Config
 from psycopg import sql
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def postgres_database_url() -> Iterator[str]:
     admin_url = os.getenv("BOS_TEST_DATABASE_ADMIN_URL")
     if admin_url is None:
@@ -33,7 +33,7 @@ def postgres_database_url() -> Iterator[str]:
             connection.execute(sql.SQL("DROP DATABASE {}").format(sql.Identifier(database_name)))
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def migrated_database_url(postgres_database_url: str) -> Iterator[str]:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", postgres_database_url)

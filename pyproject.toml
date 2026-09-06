@@ -57,6 +57,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
   "integration: requires external infrastructure",
   "postgres: requires a PostgreSQL database",
+  "providers: requires Redis, NATS or S3-compatible services",
 ]
 
 [tool.ruff]
@@ -86,4 +87,3 @@ pythonVersion = "3.13"
 typeCheckingMode = "strict"
 include = ["platform/src", "tests/unit", "tests/conformance", "examples/proof_module/src"]
 extraPaths = ["platform/src"]
-

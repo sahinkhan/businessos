@@ -861,10 +861,15 @@ class MigrationCoordinator:
     @staticmethod
     def _log_cleanup_diagnostics(diagnostics: tuple[str, ...]) -> None:
         if diagnostics:
-            logger.warning(
-                "Migration terminal cleanup completed with diagnostic types: %s",
-                ",".join(diagnostics),
-            )
+            try:
+                logger.warning(
+                    "Migration terminal cleanup completed with diagnostic types: %s",
+                    ",".join(diagnostics),
+                )
+            except BaseException:
+                # Observability is best-effort after a durable outcome is known. A broken
+                # handler must never reinterpret the committed or failed transaction.
+                pass
 
     @staticmethod
     def _join_finished_process(process: BaseProcess) -> None:

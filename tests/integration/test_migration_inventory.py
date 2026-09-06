@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 import multiprocessing
 import shutil
 from collections.abc import Awaitable, Callable
@@ -15,6 +16,11 @@ from psycopg.types.json import Jsonb
 from businessos.errors import ConfigurationError
 from businessos.migrations import MIGRATION_LOCK_NAME, MigrationCoordinator
 from businessos.modules import ModuleManifest, ModuleRegistry
+
+
+class _RaisingLogHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        raise RuntimeError("logging handler failure")
 
 
 class HistoryModule:
@@ -822,6 +828,9 @@ async def test_repeated_cancellation_preserves_terminal_migration_error(
         "_wait_backend_stopped",
         staticmethod(wait_then_report_diagnostic),
     )
+    migration_logger = logging.getLogger("businessos.migrations")
+    failing_handler = _RaisingLogHandler()
+    migration_logger.addHandler(failing_handler)
 
     async def observe(phase: str) -> None:
         if phase == "terminal_outcome_stored":
@@ -838,8 +847,11 @@ async def test_repeated_cancellation_preserves_terminal_migration_error(
     assert not task.done()
     release_cleanup.set()
 
-    with pytest.raises(RuntimeError, match="forced migration failure"):
-        await task
+    try:
+        with pytest.raises(RuntimeError, match="forced migration failure"):
+            await task
+    finally:
+        migration_logger.removeHandler(failing_handler)
 
     assert not task.cancelled()
     assert task.cancelling() == 0
@@ -914,8 +926,14 @@ async def test_cleanup_diagnostic_does_not_replace_committed_outcome(
         "_wait_backend_stopped",
         staticmethod(wait_then_report_diagnostic),
     )
+    migration_logger = logging.getLogger("businessos.migrations")
+    failing_handler = _RaisingLogHandler()
+    migration_logger.addHandler(failing_handler)
 
-    await coordinator.upgrade_async(database_url)
+    try:
+        await coordinator.upgrade_async(database_url)
+    finally:
+        migration_logger.removeHandler(failing_handler)
 
     assert _migration_sessions(database_url, application_name) == 0
     heads, inventory, table_exists = _database_snapshot(database_url, table)

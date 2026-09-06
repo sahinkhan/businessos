@@ -8,6 +8,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 FROM base AS development
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml README.md ./
 COPY platform ./platform
 RUN python -m pip install --no-cache-dir -e '.[dev,providers]'
@@ -20,4 +23,3 @@ COPY platform ./platform
 RUN python -m pip install --no-cache-dir .
 USER 65532:65532
 CMD ["uvicorn", "businessos.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
-

@@ -1,0 +1,52 @@
+name: BusinessOS CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python-quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: businessos
+          POSTGRES_USER: businessos
+          POSTGRES_PASSWORD: businessos
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U businessos -d businessos"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      BOS_TEST_DATABASE_ADMIN_URL: postgresql://businessos:businessos@localhost:5432/postgres
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install framework and proof module
+        run: |
+          python -m pip install -e '.[dev,providers]'
+          python -m pip install -e examples/proof_module
+      - name: Ruff formatting
+        run: ruff format --check platform/src platform/migrations examples tests
+      - name: Ruff linting
+        run: ruff check platform/src platform/migrations examples tests
+      - name: Static typing
+        run: mypy platform/src tests/unit tests/conformance examples/proof_module/src
+      - name: Unit tests
+        run: pytest -q tests/unit
+      - name: PostgreSQL integration tests
+        run: pytest -q tests/integration -m postgres
+      - name: External module conformance
+        run: pytest -q tests/conformance
+      - name: Patch whitespace
+        run: git diff --check

@@ -1,6 +1,8 @@
 # ADR-001: BusinessOS Technology Baseline
 
-Status: Accepted
+Status: Superseded by [ADR-008](ADR-008-python-asgi-technology-baseline.md)
+
+Historical note: This record preserves the original Go/Gin/pgx decision. It is no longer an approved implementation baseline.
 
 ## Context
 

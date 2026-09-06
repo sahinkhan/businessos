@@ -104,6 +104,8 @@ TenantContext is resolved from trusted authentication/membership and is immutabl
 
 Never trust tenant identity solely because a client supplied a tenant header.
 
+The BusinessOS ASGI framework resolves the trusted context in middleware and injects typed `RequestContext`/`TenantContext` values into route, command and query handlers. Application/domain code does not read tenant identity directly from raw ASGI scope, request headers or ambient server state.
+
 ## Isolation Surfaces
 
 Tenant isolation must cover more than PostgreSQL:

@@ -38,6 +38,8 @@ Authorization must support combinations of:
 
 Frontend permission checks improve UX only. Backend policy enforcement is authoritative.
 
+The BusinessOS framework owns permission registration and the authorization enforcement integration across ASGI routes, commands, queries, events and jobs. Modules declare permissions through the SDK and must not bypass framework enforcement middleware or trusted context resolution.
+
 ## Tenant Isolation
 
 Tenant isolation applies to:

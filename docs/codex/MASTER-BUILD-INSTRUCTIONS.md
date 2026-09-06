@@ -38,10 +38,13 @@ BusinessOS must support:
 ## 3. Final Technology Baseline
 
 Backend and workers:
-- Go
+- Python 3.13+
 
-HTTP:
-- Gin as transport adapter only
+Application framework:
+- custom BusinessOS framework built on ASGI
+
+ASGI server:
+- Uvicorn
 
 Internal RPC:
 - gRPC + Protocol Buffers only at justified service boundaries
@@ -50,8 +53,20 @@ Database:
 - PostgreSQL
 
 Database access:
-- pgx
-- explicit SQL/generated SQL
+- SQLAlchemy 2.x
+- psycopg 3
+
+Schema migrations:
+- Alembic
+
+Boundary validation:
+- Pydantic 2
+
+Backend development quality:
+- pytest
+- Ruff
+- mypy as the required CI type checker
+- Pyright as an approved secondary/editor type checker
 
 Cache/transient coordination:
 - Redis
@@ -80,6 +95,25 @@ Development deployment:
 Enterprise HA:
 - Kubernetes + Helm
 
+### BusinessOS Framework Ownership
+
+The custom BusinessOS framework is the application platform. It owns:
+
+- module discovery and lifecycle
+- routing
+- middleware
+- dependency injection
+- commands and queries
+- events and transactional-outbox integration
+- metadata
+- permissions and authorization integration
+- Unit of Work and transaction boundaries
+- module SDK and upgrade coordination
+
+Uvicorn is only the ASGI process/server. Application and domain code use typed BusinessOS contexts and contracts, not raw ASGI scopes or Uvicorn-specific objects. Pydantic models validate boundaries; SQLAlchemy models and domain models remain separate unless a reviewed design proves a simpler representation preserves the boundary.
+
+Go is reserved as an optional future language for isolated, performance-sensitive microservices with measured justification. It is not a second primary backend or in-process module runtime, and any such service must use published BusinessOS contracts.
+
 ## 4. Architecture Layers
 
 ### Layer 1 - Protected Kernel
@@ -90,13 +124,17 @@ Build only generic platform runtime concerns:
 - configuration runtime
 - TenantContext / RequestContext
 - module registry/loader
+- ASGI routing/middleware
+- dependency injection
 - contract registry
+- command/query dispatch
 - Unit of Work
 - authorization enforcement boundary
 - event/outbox runtime
 - provider registry
 - feature flags
 - migration runtime
+- module SDK/upgrade coordination
 - compatibility/runtime version checks
 - diagnostics and health
 
@@ -252,7 +290,7 @@ Extension priority:
 5. declarative module
 6. isolated executable service
 
-Do not use Go native plugins as the marketplace mechanism.
+Do not use in-process native/runtime plugins as the marketplace mechanism.
 
 Third-party executable modules normally run in isolated OCI containers/processes and interact through:
 
@@ -490,6 +528,8 @@ OpenTelemetry is the instrumentation standard.
 
 Required test families as applicable:
 
+- Ruff formatting/lint checks
+- mypy type checks and approved Pyright checks where configured
 - unit tests
 - integration tests
 - migration tests

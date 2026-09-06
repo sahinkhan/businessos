@@ -2,6 +2,8 @@
 
 Status: Planning baseline
 
+Prerequisite: Phase 0 documentation cutover and ADR-008 are accepted. This roadmap does not authorize Python scaffolding during Phase 0.
+
 ## Goal
 
 Create the minimum protected platform runtime on which foundation and business modules can safely depend.
@@ -12,12 +14,16 @@ Do not build Sales, Accounting, Hospital, School, POS, Manufacturing or other bu
 
 Deliver:
 
-- Go workspace/module structure
-- package/dependency boundary conventions
+- Python 3.13+ project/package boundary conventions
+- custom BusinessOS ASGI application framework bootstrap
+- Uvicorn process/server configuration boundary
 - application bootstrap
 - configuration loader and validation
 - graceful startup/shutdown
 - RequestContext/TenantContext primitives
+- ASGI routing and middleware pipeline
+- dependency-injection scopes
+- command/query dispatch contracts
 - structured errors
 - structured logging facade
 - OpenTelemetry bootstrap
@@ -26,7 +32,9 @@ Deliver:
 
 Exit criteria:
 
-- transport code does not leak Gin context into application/domain code
+- raw ASGI scope and Uvicorn objects do not leak into application/domain code
+- route handlers resolve typed BusinessOS contexts and dependencies through the framework
+- middleware ordering and dependency-scope teardown tests pass
 - context propagation tests pass
 - invalid configuration fails fast
 - runtime shuts down gracefully
@@ -36,17 +44,18 @@ Exit criteria:
 
 Deliver:
 
-- pgx connection/pool management
-- transaction/Unit of Work abstraction
-- migration runtime
+- SQLAlchemy 2.x engine/session management using psycopg 3
+- framework-owned transaction/Unit of Work abstraction
+- Alembic migration runtime and module revision conventions
 - tenant-aware data access primitives
 - transaction integration tests
 - migration test harness
 
 Exit criteria:
 
-- no SQL from HTTP handlers
+- no SQL or SQLAlchemy session management from ASGI route handlers
 - transaction boundaries are explicit
+- sessions and transactions close or roll back reliably on failure/cancellation
 - tenant scope cannot be accidentally omitted from tenant-aware primitives
 - migrations are deterministic and versioned
 
@@ -55,18 +64,24 @@ Exit criteria:
 Deliver:
 
 - module manifest schema/parser
-- module registry
+- deterministic module discovery and registry
 - dependency graph validation
 - compatibility checks
 - module lifecycle state model
 - contract registry
 - provider registry
+- route/middleware/dependency registration
+- command/query/event registration
+- metadata and permission registration
+- BusinessOS Python module SDK compatibility checks
+- upgrade coordination hooks
 
 Exit criteria:
 
 - invalid dependency graph is rejected
 - incompatible platform range is rejected
 - duplicate contract ownership is rejected
+- duplicate route, command/query, metadata or permission ownership is rejected
 - module state is observable through diagnostics
 
 ## Phase 1D - Events and Jobs
@@ -74,6 +89,7 @@ Exit criteria:
 Deliver:
 
 - outbox schema/runtime
+- framework command/query and event dispatch
 - NATS JetStream provider
 - outbox publisher
 - inbox/idempotency primitive
@@ -96,6 +112,7 @@ Deliver:
 - principal/service-account representation
 - authorization enforcement facade
 - policy contract
+- framework permission registry and enforcement integration
 - secret-provider abstraction
 - security audit hooks
 
@@ -129,6 +146,8 @@ It must demonstrate:
 - manifest installation
 - module-owned schema/migration
 - API registration
+- dependency, command and query registration
+- metadata registration
 - permission registration
 - TenantContext access
 - event publish/consume
@@ -137,6 +156,8 @@ It must demonstrate:
 - disable/retire lifecycle
 
 No protected kernel edits are permitted to make the demo module work.
+
+The proof module is a first-party test of the published Python SDK. Customer/marketplace executable code remains isolated by default under ADR-004.
 
 ## Phase 1 Definition of Done
 

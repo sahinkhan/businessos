@@ -17,7 +17,7 @@ The following are versioned compatibility surfaces when published:
 - frontend extension slots
 - CLI automation interfaces
 
-Undocumented internal Go packages, private SQL tables and private frontend internals are not public compatibility contracts.
+Undocumented internal Python modules, SQLAlchemy mappings, private SQL tables and private frontend internals are not public compatibility contracts.
 
 ## Upgrade Flow
 
@@ -25,8 +25,9 @@ Undocumented internal Go packages, private SQL tables and private frontend inter
 Discover release
 -> verify signature/checksum/SBOM/provenance
 -> inventory installed modules
--> compatibility/capability preflight
--> migration preflight
+-> Python/platform/SDK/dependency compatibility preflight
+-> module capability and lifecycle preflight
+-> Alembic migration graph preflight
 -> verify backup/restore checkpoint
 -> apply expand migrations
 -> deploy compatible runtime
@@ -50,7 +51,7 @@ Target channels:
 
 Every module declares supported platform and SDK ranges.
 
-The update runtime blocks activation when mandatory compatibility requirements are not satisfied.
+The BusinessOS framework upgrade coordinator validates Python runtime, platform, SDK, dependency, capability and migration compatibility before changing module state. It orders module-owned Alembic revisions according to the validated dependency graph and blocks activation when mandatory requirements are not satisfied.
 
 No incompatible module is silently enabled.
 
@@ -66,6 +67,8 @@ Use expand-contract:
 6. remove old structure only after compatibility window
 
 Do not assume database downgrade is always possible. For irreversible data migrations, forward repair and tested restore are the recovery strategies.
+
+Production upgrades never use SQLAlchemy metadata synchronization. Only reviewed Alembic revisions may change authoritative schemas.
 
 ## Self-Hosted Operation
 

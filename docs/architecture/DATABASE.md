@@ -10,6 +10,14 @@ PostgreSQL is the authoritative transactional system of record.
 
 Redis, search indexes, caches, reporting projections and event streams may contain derived state but are not replacements for authoritative transactional data unless a future ADR explicitly defines a bounded context otherwise.
 
+## Persistence Baseline
+
+- SQLAlchemy 2.x is the standard persistence and SQL toolkit.
+- psycopg 3 is the PostgreSQL driver used through SQLAlchemy.
+- The BusinessOS framework owns engine/session configuration, dependency scopes, Unit of Work and transaction boundaries.
+- ORM mappings and repositories belong to their bounded context and are not public cross-module contracts.
+- Pydantic 2 boundary models do not replace domain models or SQLAlchemy persistence mappings.
+
 ## Schema Ownership
 
 Use bounded-context-owned schemas. Example direction:
@@ -121,15 +129,18 @@ Global EAV is prohibited.
 ## Migration Rules
 
 - Every owning module owns its migrations.
-- Production schema changes are explicit and versioned.
-- ORM auto-sync is prohibited in production.
+- Alembic revisions are the explicit, versioned production migration mechanism.
+- The BusinessOS framework coordinates module revision discovery, dependency order, compatibility preflight and upgrade execution.
+- SQLAlchemy `create_all`, metadata diff application or any other runtime ORM auto-sync is prohibited in production.
 - Use expand-contract for rolling/compatible evolution.
 - Destructive cleanup occurs only after old runtime/contracts are outside the supported compatibility window.
 - Large backfills are resumable, observable and separately controlled from DDL where practical.
 
 ## Query Rules
 
-- Prefer pgx and explicit/generated SQL for critical paths.
+- Prefer SQLAlchemy 2.x ORM or Core within module-owned repositories.
+- Reviewed SQLAlchemy Core or explicit SQL is allowed for measured critical paths, but it must use the configured psycopg 3-backed engine/connection and participate in the active BusinessOS Unit of Work.
+- Direct driver access outside an owning repository/provider requires explicit architecture justification.
 - Every interactive endpoint has bounded queries and result sets.
 - Avoid N+1 patterns.
 - Large datasets use server-side filtering, pagination and indexes proven by query plans.
@@ -137,7 +148,9 @@ Global EAV is prohibited.
 
 ## Transactions and Outbox
 
-When a domain transaction produces an integration/domain event, authoritative state and the outbox record commit in the same PostgreSQL transaction.
+The BusinessOS framework opens and closes Unit of Work scopes around command/query execution and never exposes ambient global sessions. Route handlers do not create sessions or control commits.
+
+When a domain command produces an integration/domain event, authoritative state and the outbox record commit in the same PostgreSQL transaction and SQLAlchemy session/connection scope.
 
 Publishing to NATS occurs after commit through the outbox publisher.
 

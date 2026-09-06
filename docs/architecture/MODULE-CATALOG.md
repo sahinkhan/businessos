@@ -10,12 +10,17 @@ This catalog defines target bounded contexts. Names may evolve through ADR/desig
 - context
 - configuration
 - module registry
+- ASGI routing and middleware
+- dependency injection
 - contract registry
 - provider registry
+- command/query dispatch
 - Unit of Work
 - authorization enforcement
 - migration/compatibility runtime
 - event/outbox runtime
+- metadata/permission registration
+- module SDK/upgrade coordination
 - diagnostics
 
 ## Platform Foundations

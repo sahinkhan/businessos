@@ -8,7 +8,8 @@ This roadmap describes the full product sequence. Phases are dependency gates, n
 
 Deliver:
 
-- architecture baseline
+- Python 3.13+/ASGI architecture baseline and superseding ADR
+- custom BusinessOS framework responsibility map
 - root/scoped AGENTS instructions
 - ADR process
 - repository boundaries
@@ -18,22 +19,28 @@ Deliver:
 - release/version policy
 - contribution/ownership model
 
-Gate: coding may start only after architecture source of truth exists.
+Gate: coding may start only after the Python architecture source of truth is internally consistent and the complete repository scan contains no unclassified legacy-technology assumptions.
 
 ## Phase 1 - Protected Kernel and Runtime
 
 Deliver:
 
-- Go workspace/runtime bootstrap
+- Python 3.13+ project/runtime bootstrap
+- custom BusinessOS ASGI framework bootstrap
+- Uvicorn server integration
 - configuration
 - RequestContext/TenantContext
+- routing and middleware
+- dependency injection
 - error model
 - logging/telemetry
-- PostgreSQL/pgx runtime
-- Unit of Work
-- migrations
-- module registry/loader
+- PostgreSQL runtime through SQLAlchemy 2.x and psycopg 3
+- framework-owned Unit of Work and transaction boundaries
+- Alembic migration runtime
+- module discovery, registry and lifecycle
 - contract registry
+- command/query dispatch
+- event, metadata and permission registries
 - provider registry
 - feature flags
 - compatibility runtime
@@ -46,7 +53,8 @@ Deliver:
 - Redis/S3 providers
 - health/readiness/version diagnostics
 - Docker Compose
-- external proof module
+- pytest/Ruff/mypy CI baseline with approved Pyright support
+- external Python SDK proof module
 
 Gate: external proof module installs, migrates, runs tenant-aware API/event/UI/provider flow, upgrades and retires without protected-core edits.
 
@@ -681,7 +689,7 @@ Country packs are independently versioned modules.
 
 Deliver:
 
-- SDKs
+- Python module SDK and generated client SDKs
 - module CLI
 - scaffolding/templates
 - local dev sandbox
@@ -750,6 +758,8 @@ Establish workload profiles and certify:
 - failover/recovery
 
 Optimize only with measured evidence. Extract services when justified by architecture criteria.
+
+Go may be evaluated here only for an isolated, performance-sensitive microservice whose measured workload justifies extraction. It does not replace the Python backend or BusinessOS in-process module runtime.
 
 ## Phase 39 - Security and Compliance Maturity
 

@@ -38,15 +38,22 @@ The platform must support:
 ## Final Technology Baseline
 
 ### Backend
-- Go is the primary backend and worker language.
-- Gin is the default HTTP transport adapter only.
-- Business and application code must depend on `context.Context`, not `*gin.Context`.
+- Python 3.13 or newer is the primary backend and worker language.
+- BusinessOS provides a custom framework built directly on ASGI; Uvicorn is the default ASGI server.
+- Application and domain code depend on typed BusinessOS `RequestContext` and `TenantContext` values supplied by the framework, not raw ASGI scopes or server-specific request objects.
+- Pydantic 2 is used for validated boundary contracts; domain objects must not be coupled to transport models.
 - gRPC + Protocol Buffers may be used at genuine internal service boundaries.
 
 ### Database
 - PostgreSQL is the authoritative transactional source of truth.
-- Prefer `pgx` and explicit SQL or generated SQL for critical data paths.
-- Production schema changes use explicit versioned migrations.
+- SQLAlchemy 2.x is the standard persistence toolkit and psycopg 3 is the PostgreSQL driver.
+- Alembic owns explicit, versioned production schema migrations; ORM metadata auto-synchronization is prohibited.
+- The BusinessOS framework owns unit-of-work and transaction boundaries. Critical paths may use SQLAlchemy Core or reviewed SQL within the owning module and the active unit of work.
+
+### Engineering Toolchain
+- pytest is the test runner.
+- Ruff is the formatter and linter.
+- mypy is the required CI type checker; Pyright is an approved secondary/editor type checker.
 
 ### Infrastructure
 - Redis: cache, rate limiting, short-lived state and approved coordination.
@@ -86,8 +93,11 @@ The protected kernel may contain only generic runtime concerns:
 - bootstrap/runtime
 - TenantContext and RequestContext
 - module registry and loader
+- ASGI routing and middleware
+- dependency injection
 - contract registry
 - entity runtime primitives
+- command and query dispatch
 - Unit of Work
 - authorization enforcement entry point
 - event/outbox runtime
@@ -95,6 +105,7 @@ The protected kernel may contain only generic runtime concerns:
 - configuration runtime
 - feature flags
 - migration runtime
+- module SDK and upgrade coordination
 - compatibility runtime
 - diagnostics/health/version
 
@@ -313,21 +324,25 @@ Rules:
 
 ---
 
-## Go Architecture Rules
+## Python Architecture Rules
 
 Default layering:
 
-`transport -> application -> domain -> repository/provider`
+`ASGI route -> application command/query -> domain -> repository/provider`
 
 Rules:
 
-- Domain and application packages use `context.Context`.
-- Never pass `*gin.Context` into application/domain code.
-- Do not put business logic in HTTP handlers.
-- Do not issue SQL directly from HTTP handlers.
+- The BusinessOS framework owns module discovery and lifecycle, routing, middleware, dependency injection, command/query dispatch, events, metadata, permissions, unit-of-work and transaction boundaries, the module SDK and upgrade coordination.
+- Domain and application code receives typed BusinessOS context and dependency contracts through explicit framework injection.
+- Never pass a raw ASGI `scope`, `receive`/`send` callable or Uvicorn-specific object into application/domain code.
+- Do not put business logic in ASGI route handlers.
+- Do not issue SQL or manage SQLAlchemy sessions directly from ASGI route handlers.
+- Pydantic models validate API, command, query, event and configuration boundaries; do not make them the persistence or domain model by default.
+- SQLAlchemy mappings, repositories and Alembic revisions remain owned by their bounded context.
+- Avoid untracked background tasks; use framework-owned jobs/events so context, telemetry and lifecycle are preserved.
 - Repositories/data adapters are owned by their bounded context.
 - Avoid global mutable state.
-- Prefer explicit dependency injection/composition over hidden service locators.
+- Prefer typed constructor/handler injection through the framework over hidden service locators or ambient database sessions.
 - Default deployment architecture is a modular monolith.
 
 Do not introduce a microservice without an architecture reason such as:
@@ -375,7 +390,9 @@ Preferred extension order:
 
 Customer and partner modules must not edit protected core source.
 
-Do not use Go native plugins as the marketplace strategy.
+Do not use in-process native/runtime plugins as the marketplace strategy.
+
+Go remains permitted only as a future option for isolated, performance-sensitive microservices with measured justification. Such services communicate through published BusinessOS contracts and do not become an alternative in-process backend or module runtime.
 
 Executable customer/marketplace modules normally run in isolated OCI containers and communicate through supported contracts:
 

@@ -4,7 +4,7 @@
 
 Use the simplest correct communication style.
 
-- In-process published application interfaces: synchronous modular-monolith calls.
+- BusinessOS command/query dispatch or published application interfaces: synchronous modular-monolith calls.
 - REST/OpenAPI: public/partner APIs and ordinary isolated-module calls.
 - gRPC/Protobuf: high-throughput, streaming or strongly typed internal service boundaries after extraction.
 - NATS JetStream: durable asynchronous events, commands and work distribution.
@@ -79,6 +79,12 @@ A module should not introduce its own queue framework without an approved ADR.
 Long-running processes that survive process restarts/network failures use the BusinessOS workflow abstraction.
 
 The implementation engine may evolve, but business modules depend on the platform workflow contract rather than directly coupling to a workflow product.
+
+## Framework Ownership
+
+The custom BusinessOS framework owns command/query handler registration and dispatch, event contract registration, middleware execution, dependency scopes, trusted context propagation and Unit of Work integration. A command that changes authoritative state and emits durable events executes inside one framework-owned transaction; event publication occurs through the outbox only after commit.
+
+Modules must not create parallel in-process buses or bypass framework event and transaction coordination.
 
 ## Compatibility
 

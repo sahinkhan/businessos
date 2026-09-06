@@ -74,10 +74,12 @@ Implementation convenience alone is not sufficient reason to bypass an accepted 
 
 As the repository becomes executable, CI should include:
 
-- gofmt verification
-- go vet
-- staticcheck or approved Go static analysis
-- unit tests
+- Python 3.13+ runtime verification
+- `ruff format --check`
+- `ruff check`
+- mypy as the required CI type checker
+- Pyright where the approved secondary configuration is enabled
+- pytest unit tests
 - integration tests
 - PostgreSQL migration tests
 - tenant-isolation tests
@@ -87,6 +89,8 @@ As the repository becomes executable, CI should include:
 - secret scanning
 - dependency/vulnerability scanning
 - build/package validation
+
+Application and domain code must remain independent of raw ASGI/Uvicorn objects. Framework route adapters are thin, dependencies are explicitly injected, and SQLAlchemy session/transaction ownership stays inside the BusinessOS Unit of Work.
 
 Never report a check as passing unless it was actually executed successfully.
 

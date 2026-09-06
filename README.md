@@ -21,11 +21,15 @@ The objective is to provide an extensible platform capable of supporting ERP, re
 
 | Area | Technology |
 | --- | --- |
-| Backend / Workers | Go |
-| HTTP | Gin as transport adapter |
+| Backend / Workers | Python 3.13+ |
+| Application Framework | Custom BusinessOS framework built on ASGI |
+| ASGI Server | Uvicorn |
 | Internal RPC | gRPC + Protocol Buffers when justified |
 | Database | PostgreSQL |
-| Data Access | pgx + explicit/generated SQL |
+| Data Access | SQLAlchemy 2.x + psycopg 3 |
+| Migrations | Alembic |
+| Boundary Validation | Pydantic 2 |
+| Backend Quality | pytest + Ruff + mypy; Pyright supported |
 | Cache | Redis |
 | Durable Events / Jobs | NATS JetStream |
 | Object Storage | S3-compatible |
@@ -34,6 +38,8 @@ The objective is to provide an extensible platform capable of supporting ERP, re
 | Observability | OpenTelemetry |
 | Development Deployment | Docker Compose |
 | Enterprise HA | Kubernetes + Helm |
+
+The Python/ASGI runtime is the only approved primary backend and in-process module model. Go is reserved for a possible future isolated, performance-sensitive microservice when measurement and architecture review justify it.
 
 ## Architecture Layers
 
@@ -70,6 +76,7 @@ Codex and developers should start with these documents:
 - [`docs/architecture/UPGRADES.md`](docs/architecture/UPGRADES.md) - upgrade/compatibility model
 - [`docs/architecture/DEVELOPMENT.md`](docs/architecture/DEVELOPMENT.md) - engineering workflow
 - [`docs/adr/`](docs/adr/) - accepted architecture decisions
+- [`docs/adr/ADR-008-python-asgi-technology-baseline.md`](docs/adr/ADR-008-python-asgi-technology-baseline.md) - current Python/ASGI technology decision
 
 ## Roadmaps
 
@@ -138,7 +145,7 @@ businessos/
 
 ## Current Status
 
-Architecture bootstrap is in progress. The complete destination is already documented; implementation begins with the protected kernel because later modules depend on its contracts.
+Phase 0's Python/ASGI documentation cutover is complete. No backend scaffolding or business-module implementation belongs in the cutover itself; implementation begins in Phase 1 with the protected kernel and custom BusinessOS framework because later modules depend on those contracts.
 
 The first implementation milestone is the protected kernel/runtime and an external proof module that demonstrates installation, tenant-aware operation, migrations, API/UI extension, events, upgrade and lifecycle without modifying protected kernel source.
 

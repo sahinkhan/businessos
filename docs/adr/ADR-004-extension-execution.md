@@ -19,8 +19,8 @@ Use a layered extension model:
 
 Customer/marketplace executable modules normally run as separate OCI containers/processes and communicate through versioned REST, gRPC, event, provider and frontend-extension contracts.
 
-Go native plugins are not the marketplace mechanism.
+In-process native/runtime plugins are not the marketplace mechanism.
 
 ## Consequences
 
-The platform must provide strong SDK/contracts and a module host/lifecycle manager. Third-party code can evolve independently and may be polyglot while protected kernel upgrades remain decoupled from third-party compilation/runtime details.
+The BusinessOS framework must provide strong SDK/contracts and own module discovery, hosting, lifecycle and upgrade coordination. Third-party code can evolve independently and may be polyglot while protected kernel upgrades remain decoupled from third-party compilation/runtime details.

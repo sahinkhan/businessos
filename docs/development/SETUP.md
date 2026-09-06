@@ -144,6 +144,13 @@ empty or duplicate revision lists, incomplete or unknown manifest fields, malfor
 and any manifest/list mismatch stop the migration before database changes. Retained format-1 rows
 remain readable only for their one-way promotion to the current format.
 
+Async framework code must call `MigrationCoordinator.upgrade_async()` or `downgrade_async()` and
+must not wrap the synchronous CLI methods with `asyncio.to_thread()`. The async methods own a child
+process and keep it behind an explicit commit handshake. Before commit authorization, task
+cancellation terminates and joins that process, confirms its PostgreSQL backend has exited, and
+only then propagates `CancelledError`. After authorization, the operation waits for and returns its
+durable database outcome instead of reporting cancellation that could be followed by a commit.
+
 From any working directory, an installed environment can inspect or execute the complete graph:
 
 ```bash

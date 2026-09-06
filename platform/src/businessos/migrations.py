@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
 import json
+import multiprocessing
 import os
 import re
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from importlib.metadata import packages_distributions
 from importlib.resources import as_file, files
+from multiprocessing.connection import Connection as ProcessConnection
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Self, cast
 
+import psycopg
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -34,6 +39,9 @@ CORE_NAMESPACE = "businessos_core"
 RESOURCE_PREFIX = "python://"
 INVENTORY_FORMAT_VERSION = 2
 MIGRATION_LOCK_NAME = "businessos.migrations"
+MIGRATION_PROCESS_GRACE_SECONDS = 1.0
+MIGRATION_PROCESS_TERMINATE_SECONDS = 5.0
+MIGRATION_PROCESS_KILL_SECONDS = 5.0
 REVISION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 MODULE_PATTERN = r"^[a-z][a-z0-9_.-]+$"
 NAMESPACE_PATTERN = r"^[a-z][a-z0-9_]*$"
@@ -185,6 +193,10 @@ class _Format2Inventory(BaseModel):
         ):
             raise ValueError("manifest contains an inconsistent distribution identity")
         return self
+
+
+class _MigrationProcessAborted(Exception):
+    """Internal control flow used to roll back an uncommitted child transaction."""
 
 
 def _tuple_value(value: object) -> tuple[str, ...]:
@@ -525,34 +537,294 @@ class MigrationCoordinator:
             )
 
     def upgrade(self, database_url: str, revision: str = "heads") -> None:
+        self._execute_transaction(database_url, "upgrade", revision)
+
+    def downgrade(self, database_url: str, revision: str = "base") -> None:
+        self._execute_transaction(database_url, "downgrade", revision)
+
+    async def upgrade_async(
+        self,
+        database_url: str,
+        revision: str = "heads",
+        *,
+        _phase_callback: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        """Upgrade in an owned process with terminal cancellation semantics."""
+
+        await self._execute_async(database_url, "upgrade", revision, _phase_callback)
+
+    async def downgrade_async(
+        self,
+        database_url: str,
+        revision: str = "base",
+        *,
+        _phase_callback: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        """Downgrade in an owned process with terminal cancellation semantics."""
+
+        await self._execute_async(database_url, "downgrade", revision, _phase_callback)
+
+    def _execute_transaction(
+        self,
+        database_url: str,
+        operation: str,
+        revision: str,
+        protocol: ProcessConnection | None = None,
+    ) -> None:
         with self._resolved_sources() as resolved:
             plan = self._build_plan(resolved)
             engine = create_engine(database_url)
             try:
-                with engine.connect() as connection, connection.begin():
-                    self._lock_migrations(connection)
-                    self._validate_database_inventory_connection(connection, plan)
-                    command.upgrade(
-                        self._configuration(database_url, resolved, connection), revision
-                    )
-                    self._persist_inventory(connection, plan)
+                with engine.connect() as connection:
+                    transaction = connection.begin()
+                    if protocol is not None:
+                        backend_pid = connection.execute(text("SELECT pg_backend_pid()"))
+                        protocol.send(("backend", backend_pid.scalar_one()))
+                    try:
+                        self._execute_migration_steps(
+                            database_url,
+                            operation,
+                            revision,
+                            resolved,
+                            plan,
+                            connection,
+                            protocol,
+                        )
+                        if protocol is not None:
+                            self._process_checkpoint(protocol, "ready_to_commit", "commit")
+                        transaction.commit()
+                        if protocol is not None:
+                            protocol.send(("committed", None))
+                    except BaseException:
+                        if transaction.is_active:
+                            transaction.rollback()
+                        raise
             finally:
                 engine.dispose()
 
-    def downgrade(self, database_url: str, revision: str = "base") -> None:
-        with self._resolved_sources() as resolved:
-            plan = self._build_plan(resolved)
-            engine = create_engine(database_url)
+    def _execute_migration_steps(
+        self,
+        database_url: str,
+        operation: str,
+        revision: str,
+        resolved: Sequence[_ResolvedSource],
+        plan: MigrationPlan,
+        connection: Connection,
+        protocol: ProcessConnection | None,
+    ) -> None:
+        self._lock_migrations(connection)
+        if protocol is not None:
+            self._process_checkpoint(protocol, "lock_acquired")
+        self._validate_database_inventory_connection(connection, plan)
+        configuration = self._configuration(database_url, resolved, connection)
+        if operation == "upgrade":
+            command.upgrade(configuration, revision)
+        elif operation == "downgrade":
+            command.downgrade(configuration, revision)
+        else:  # pragma: no cover - internal call sites are closed
+            raise ValueError(f"Unsupported migration operation: {operation}")
+        if protocol is not None:
+            self._process_checkpoint(protocol, "schema_applied")
+        self._persist_inventory(connection, plan)
+        if protocol is not None:
+            self._process_checkpoint(protocol, "inventory_staged")
+
+    @staticmethod
+    def _process_checkpoint(
+        protocol: ProcessConnection,
+        phase: str,
+        expected_response: str = "continue",
+    ) -> None:
+        protocol.send(("phase", phase))
+        try:
+            response = protocol.recv()
+        except EOFError as exc:
+            raise _MigrationProcessAborted from exc
+        if response != expected_response:
+            raise _MigrationProcessAborted
+
+    async def _execute_async(
+        self,
+        database_url: str,
+        operation: str,
+        revision: str,
+        phase_callback: Callable[[str], Awaitable[None]] | None,
+    ) -> None:
+        # Finish graph preflight in the owning task before a child can connect.
+        self.plan()
+        context = multiprocessing.get_context("spawn")
+        parent, child = context.Pipe(duplex=True)
+        process = context.Process(
+            target=MigrationCoordinator._process_entry,
+            args=(self, database_url, operation, revision, child),
+            name=f"businessos-migration-{operation}",
+        )
+        process.start()
+        child.close()
+        commit_authorized = False
+        backend_pid: int | None = None
+        try:
+            while True:
+                try:
+                    if parent.poll():
+                        message = parent.recv()
+                        kind = message[0]
+                        if kind == "backend":
+                            backend_pid = cast(int, message[1])
+                            if phase_callback is not None:
+                                await phase_callback("connected")
+                        elif kind == "phase":
+                            phase = cast(str, message[1])
+                            if phase_callback is not None:
+                                await phase_callback(phase)
+                            if phase == "ready_to_commit":
+                                parent.send("commit")
+                                commit_authorized = True
+                                if phase_callback is not None:
+                                    await phase_callback("commit_authorized")
+                            else:
+                                parent.send("continue")
+                        elif kind == "committed":
+                            self._join_finished_process(process)
+                            await self._wait_backend_stopped(database_url, backend_pid)
+                            return
+                        elif kind == "error":
+                            self._join_finished_process(process)
+                            await self._wait_backend_stopped(database_url, backend_pid)
+                            error_type = cast(str, message[1])
+                            error_message = cast(str, message[2])
+                            raise RuntimeError(
+                                f"Migration child failed ({error_type}): {error_message}"
+                            )
+                        else:
+                            raise RuntimeError(
+                                "Migration child returned an invalid protocol message"
+                            )
+                    elif not process.is_alive():
+                        raise RuntimeError(
+                            f"Migration child exited without an outcome (exit {process.exitcode})"
+                        )
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    if commit_authorized:
+                        task = asyncio.current_task()
+                        if task is not None:
+                            task.uncancel()
+                        continue
+                    backend_pid = self._drain_backend_pid(parent, backend_pid)
+                    await self._stop_process(process, parent)
+                    await self._wait_backend_stopped(database_url, backend_pid)
+                    raise
+        finally:
+            parent.close()
+
+    @staticmethod
+    def _join_finished_process(process: BaseProcess) -> None:
+        process.join(MIGRATION_PROCESS_TERMINATE_SECONDS)
+        if process.is_alive():
+            process.terminate()
+            process.join(MIGRATION_PROCESS_TERMINATE_SECONDS)
+        if process.is_alive():
+            process.kill()
+            process.join(MIGRATION_PROCESS_KILL_SECONDS)
+        if process.is_alive():
+            raise RuntimeError("Migration child did not reach a terminal state")
+
+    @classmethod
+    async def _stop_process(cls, process: BaseProcess, protocol: ProcessConnection) -> None:
+        if process.is_alive():
             try:
-                with engine.connect() as connection, connection.begin():
-                    self._lock_migrations(connection)
-                    self._validate_database_inventory_connection(connection, plan)
-                    command.downgrade(
-                        self._configuration(database_url, resolved, connection), revision
-                    )
-                    self._persist_inventory(connection, plan)
+                protocol.send("abort")
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+            await cls._wait_process(process, MIGRATION_PROCESS_GRACE_SECONDS)
+        if process.is_alive():
+            process.terminate()
+            await cls._wait_process(process, MIGRATION_PROCESS_TERMINATE_SECONDS)
+        if process.is_alive():
+            process.kill()
+            await cls._wait_process(process, MIGRATION_PROCESS_KILL_SECONDS)
+        if process.is_alive():
+            raise RuntimeError("Cancelled migration child could not be stopped")
+
+    @staticmethod
+    async def _wait_process(process: BaseProcess, timeout_seconds: float) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        while process.is_alive() and loop.time() < deadline:
+            process.join(0)
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None:
+                    task.uncancel()
+        process.join(0)
+
+    @staticmethod
+    def _drain_backend_pid(protocol: ProcessConnection, current: int | None) -> int | None:
+        backend_pid = current
+        try:
+            while protocol.poll():
+                message = protocol.recv()
+                if message[0] == "backend":
+                    backend_pid = cast(int, message[1])
+        except (EOFError, OSError):
+            pass
+        return backend_pid
+
+    @staticmethod
+    async def _wait_backend_stopped(database_url: str, backend_pid: int | None) -> None:
+        if backend_pid is None:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + MIGRATION_PROCESS_TERMINATE_SECONDS
+        psycopg_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        while loop.time() < deadline:
+            connection = await psycopg.AsyncConnection.connect(psycopg_url)
+            try:
+                await connection.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = %s",
+                    (backend_pid,),
+                )
+                cursor = await connection.execute(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = %s)",
+                    (backend_pid,),
+                )
+                row = await cursor.fetchone()
             finally:
-                engine.dispose()
+                await connection.close()
+            if row == (False,):
+                return
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None:
+                    task.uncancel()
+        raise RuntimeError("Migration PostgreSQL session did not reach a terminal state")
+
+    @staticmethod
+    def _process_entry(
+        coordinator: MigrationCoordinator,
+        database_url: str,
+        operation: str,
+        revision: str,
+        protocol: ProcessConnection,
+    ) -> None:
+        """Run one migration transaction and return only after its durable outcome."""
+
+        try:
+            coordinator._execute_transaction(database_url, operation, revision, protocol)
+        except _MigrationProcessAborted:
+            return
+        except BaseException as exc:
+            try:
+                protocol.send(("error", type(exc).__qualname__, str(exc)))
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+        finally:
+            protocol.close()
 
     @staticmethod
     def _lock_migrations(connection: Connection) -> None:

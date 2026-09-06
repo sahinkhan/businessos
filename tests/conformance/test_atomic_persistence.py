@@ -56,13 +56,13 @@ async def _migrated_proof_database(
     modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
     modules.add(ProofModule())
     migrations = MigrationCoordinator(modules)
-    await asyncio.to_thread(migrations.upgrade, migration_url)
+    await migrations.upgrade_async(migration_url)
     database = Database(_settings(runtime_url))
     try:
         yield database
     finally:
         await database.close()
-        await asyncio.to_thread(migrations.downgrade, migration_url)
+        await migrations.downgrade_async(migration_url)
 
 
 def _stored_counts(

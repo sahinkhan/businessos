@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import multiprocessing
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -11,7 +12,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from businessos.errors import ConfigurationError
-from businessos.migrations import MigrationCoordinator
+from businessos.migrations import MIGRATION_LOCK_NAME, MigrationCoordinator
 from businessos.modules import ModuleManifest, ModuleRegistry
 
 
@@ -75,24 +76,28 @@ def _revision(
     dependency: str | None = None,
     marker: str = "stable",
     failure: str | None = None,
+    statements: tuple[str, ...] = (),
 ) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     if failure == "error":
-        upgrade = 'raise RuntimeError("forced migration failure")'
+        upgrade = '    raise RuntimeError("forced migration failure")'
     elif failure == "cancel":
-        upgrade = "raise __import__('asyncio').CancelledError()"
+        upgrade = "    raise __import__('asyncio').CancelledError()"
     else:
-        upgrade = "return None"
+        upgrade = "\n".join(f"    op.execute({statement!r})" for statement in statements)
+        if not upgrade:
+            upgrade = "    return None"
     directory.joinpath(filename).write_text(
         "\n".join(
             (
+                "from alembic import op",
                 f"revision = {revision!r}",
                 f"down_revision = {parent!r}",
                 f"branch_labels = {((label,) if label else None)!r}",
                 f"depends_on = {dependency!r}",
                 f"marker = {marker!r}",
                 "def upgrade():",
-                f"    {upgrade}",
+                upgrade,
                 "def downgrade():",
                 "    return None",
             )
@@ -177,6 +182,107 @@ def _replace_inventory(database_url: str, inventory: dict[str, object]) -> None:
                 Jsonb(inventory["revision_manifest"]),
             ),
         )
+
+
+def _database_snapshot(database_url: str, table: str) -> tuple[tuple[str, ...], object, bool]:
+    with psycopg.connect(_psycopg_url(database_url)) as connection:
+        alembic_exists = connection.execute(
+            "SELECT to_regclass('public.alembic_version')"
+        ).fetchone()
+        heads = (
+            tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT version_num FROM alembic_version ORDER BY version_num"
+                )
+            )
+            if alembic_exists is not None and alembic_exists[0] is not None
+            else ()
+        )
+        inventory = connection.execute(
+            "SELECT to_regclass('platform_module.installed_module_migrations')"
+        ).fetchone()
+        inventory_rows: object = None
+        if inventory is not None and inventory[0] is not None:
+            inventory_rows = connection.execute(
+                "SELECT module_id, revision_ids FROM "
+                "platform_module.installed_module_migrations ORDER BY module_id"
+            ).fetchall()
+        table_exists = connection.execute("SELECT to_regclass(%s)", (table,)).fetchone()
+    return heads, inventory_rows, table_exists is not None and table_exists[0] is not None
+
+
+def _migration_sessions(database_url: str, application_name: str) -> int:
+    with psycopg.connect(_psycopg_url(database_url)) as connection:
+        row = connection.execute(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE application_name = %s AND pid <> pg_backend_pid()",
+            (application_name,),
+        ).fetchone()
+    assert row is not None
+    return cast(int, row[0])
+
+
+def _migration_processes() -> set[int]:
+    return {
+        process.pid
+        for process in multiprocessing.active_children()
+        if process.pid is not None and process.name.startswith("businessos-migration-")
+    }
+
+
+def _assert_advisory_lock_available(database_url: str) -> None:
+    with psycopg.connect(_psycopg_url(database_url)) as connection:
+        acquired = connection.execute(
+            "SELECT pg_try_advisory_lock(hashtextextended(%s, 0))",
+            (MIGRATION_LOCK_NAME,),
+        ).fetchone()
+        assert acquired == (True,)
+        connection.execute(
+            "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+            (MIGRATION_LOCK_NAME,),
+        )
+
+
+async def _wait_for_session_query(database_url: str, application_name: str, fragment: str) -> None:
+    for _ in range(500):
+        with psycopg.connect(_psycopg_url(database_url)) as connection:
+            row = connection.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE application_name = %s AND query LIKE %s",
+                (application_name, f"%{fragment}%"),
+            ).fetchone()
+        if row is not None and row[0] == 1:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"migration session did not execute {fragment}")
+
+
+async def _assert_cancelled_migration_is_terminal(
+    task: asyncio.Task[None],
+    database_url: str,
+    application_name: str,
+    baseline_processes: set[int],
+    baseline_snapshot: tuple[tuple[str, ...], object, bool],
+    table: str,
+    *,
+    cancel_again_during_cleanup: bool = False,
+    check_advisory_lock: bool = True,
+) -> None:
+    task.cancel()
+    if cancel_again_during_cleanup:
+        await asyncio.sleep(0)
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _migration_processes() == baseline_processes
+    assert _migration_sessions(database_url, application_name) == 0
+    assert _database_snapshot(database_url, table) == baseline_snapshot
+    if check_advisory_lock:
+        _assert_advisory_lock_available(database_url)
+    await asyncio.sleep(0.25)
+    assert _migration_sessions(database_url, application_name) == 0
+    assert _database_snapshot(database_url, table) == baseline_snapshot
 
 
 @pytest.mark.integration
@@ -473,3 +579,193 @@ def test_concurrent_migrations_serialize_graph_and_inventory(
     with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
     assert heads == {"0004_strict_migration_inventory", "concurrent_history_0001"}
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "phase",
+    ("lock_acquired", "schema_applied", "inventory_staged", "ready_to_commit"),
+)
+async def test_real_task_cancellation_rolls_back_each_uncommitted_phase(
+    phase: str,
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+) -> None:
+    history = tmp_path / f"cancel-{phase}"
+    table = f"public.cancel_{phase}"
+    _revision(
+        history,
+        "0001.py",
+        f"cancel_{phase}_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+        statements=(f"CREATE TABLE {table} (id integer PRIMARY KEY)",),
+    )
+    coordinator = _coordinator(history)
+    application_name = f"businessos-cancel-{phase}"
+    database_url = f"{postgres_migration_database_url}?application_name={application_name}"
+    reached = asyncio.Event()
+    never_release = asyncio.Event()
+
+    async def observe(current_phase: str) -> None:
+        if current_phase == phase:
+            reached.set()
+            await never_release.wait()
+
+    baseline_processes = _migration_processes()
+    baseline_snapshot = _database_snapshot(database_url, table)
+    task = asyncio.create_task(coordinator.upgrade_async(database_url, _phase_callback=observe))
+    await asyncio.wait_for(reached.wait(), timeout=10)
+    await _assert_cancelled_migration_is_terminal(
+        task,
+        database_url,
+        application_name,
+        baseline_processes,
+        baseline_snapshot,
+        table,
+        cancel_again_during_cleanup=phase == "inventory_staged",
+    )
+
+    await coordinator.upgrade_async(database_url)
+    heads, inventory, table_exists = _database_snapshot(database_url, table)
+    assert set(heads) == {"0004_strict_migration_inventory", f"cancel_{phase}_0001"}
+    assert inventory is not None
+    assert table_exists
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+async def test_real_task_cancellation_while_waiting_for_advisory_lock_is_terminal(
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+) -> None:
+    history = tmp_path / "cancel-lock-wait"
+    table = "public.cancel_lock_wait"
+    _revision(
+        history,
+        "0001.py",
+        "cancel_lock_wait_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+        statements=(f"CREATE TABLE {table} (id integer PRIMARY KEY)",),
+    )
+    coordinator = _coordinator(history)
+    application_name = "businessos-cancel-lock-wait"
+    database_url = f"{postgres_migration_database_url}?application_name={application_name}"
+    baseline_processes = _migration_processes()
+    baseline_snapshot = _database_snapshot(database_url, table)
+
+    with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as lock_connection:
+        lock_connection.execute(
+            "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+            (MIGRATION_LOCK_NAME,),
+        )
+        task = asyncio.create_task(coordinator.upgrade_async(database_url))
+        await _wait_for_session_query(database_url, application_name, "pg_advisory_xact_lock")
+        await _assert_cancelled_migration_is_terminal(
+            task,
+            database_url,
+            application_name,
+            baseline_processes,
+            baseline_snapshot,
+            table,
+            check_advisory_lock=False,
+        )
+        lock_connection.execute(
+            "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
+            (MIGRATION_LOCK_NAME,),
+        )
+
+    _assert_advisory_lock_available(database_url)
+    await coordinator.upgrade_async(database_url)
+    assert _database_snapshot(database_url, table)[2]
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+async def test_real_task_cancellation_interrupts_running_postgresql_work(
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+) -> None:
+    history = tmp_path / "cancel-running"
+    table = "public.cancel_running"
+    _revision(
+        history,
+        "0001.py",
+        "cancel_running_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+        statements=(
+            f"CREATE TABLE {table} (id integer PRIMARY KEY)",
+            "SELECT pg_sleep(30)",
+        ),
+    )
+    coordinator = _coordinator(history)
+    application_name = "businessos-cancel-running"
+    database_url = f"{postgres_migration_database_url}?application_name={application_name}"
+    baseline_processes = _migration_processes()
+    baseline_snapshot = _database_snapshot(database_url, table)
+    task = asyncio.create_task(coordinator.upgrade_async(database_url))
+    await _wait_for_session_query(database_url, application_name, "pg_sleep")
+    await _assert_cancelled_migration_is_terminal(
+        task,
+        database_url,
+        application_name,
+        baseline_processes,
+        baseline_snapshot,
+        table,
+    )
+
+    _revision(
+        history,
+        "0001.py",
+        "cancel_running_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+        statements=(f"CREATE TABLE {table} (id integer PRIMARY KEY)",),
+    )
+    await coordinator.upgrade_async(database_url)
+    assert _database_snapshot(database_url, table)[2]
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+async def test_cancellation_after_commit_authorization_returns_durable_success(
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+) -> None:
+    history = tmp_path / "cancel-after-commit"
+    table = "public.cancel_after_commit"
+    _revision(
+        history,
+        "0001.py",
+        "cancel_after_commit_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+        statements=(f"CREATE TABLE {table} (id integer PRIMARY KEY)",),
+    )
+    coordinator = _coordinator(history)
+    application_name = "businessos-cancel-after-commit"
+    database_url = f"{postgres_migration_database_url}?application_name={application_name}"
+    commit_authorized = asyncio.Event()
+    never_release = asyncio.Event()
+
+    async def observe(phase: str) -> None:
+        if phase == "commit_authorized":
+            commit_authorized.set()
+            await never_release.wait()
+
+    baseline_processes = _migration_processes()
+    task = asyncio.create_task(coordinator.upgrade_async(database_url, _phase_callback=observe))
+    await asyncio.wait_for(commit_authorized.wait(), timeout=10)
+    task.cancel()
+    await task
+
+    assert _migration_processes() == baseline_processes
+    assert _migration_sessions(database_url, application_name) == 0
+    heads, inventory, table_exists = _database_snapshot(database_url, table)
+    assert set(heads) == {"0004_strict_migration_inventory", "cancel_after_commit_0001"}
+    assert inventory is not None
+    assert table_exists
+    _assert_advisory_lock_available(database_url)

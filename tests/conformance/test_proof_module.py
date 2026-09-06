@@ -1,4 +1,3 @@
-import asyncio
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -135,7 +134,7 @@ async def test_external_module_conforms_without_protected_core_edits(
         authorizer=Authorizer(AllowAllPolicy()),
     )
     assert app.runtime is not None
-    await asyncio.to_thread(app.runtime.migrations.upgrade, postgres_migration_database_url)
+    await app.runtime.migrations.upgrade_async(postgres_migration_database_url)
     app.container.register(
         OBJECT_STORAGE,
         lambda _: storage,
@@ -195,4 +194,4 @@ async def test_external_module_conforms_without_protected_core_edits(
     await app.shutdown()
     await app.runtime.lifecycle.retire(module.manifest.module_id)
     assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.REMOVED
-    await asyncio.to_thread(app.runtime.migrations.downgrade, postgres_migration_database_url)
+    await app.runtime.migrations.downgrade_async(postgres_migration_database_url)

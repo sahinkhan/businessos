@@ -146,8 +146,12 @@ Global EAV is prohibited.
   manifest has a one-to-one ordered relationship with recorded revision IDs. Malformed persisted
   history fails preflight before Alembic or schema work; historical removal or rewrite also fails.
 - Migration execution and inventory advancement use one PostgreSQL transaction protected by a
-  transaction-scoped advisory lock. Failure or cancellation advances neither schema history nor
-  inventory.
+  transaction-scoped advisory lock. Async callers use an owned migration process and a
+  parent-authorized commit protocol; cancellation before authorization terminates and joins the
+  process, closes its PostgreSQL backend, and advances neither schema history nor inventory.
+  Authorization is the commit point: cancellation after it is suppressed until the durable
+  committed or failed outcome is known, so callers never observe cancellation followed by a later
+  commit.
 - SQLAlchemy `create_all`, metadata diff application or any other runtime ORM auto-sync is prohibited in production.
 - Use expand-contract for rolling/compatible evolution.
 - Destructive cleanup occurs only after old runtime/contracts are outside the supported compatibility window.

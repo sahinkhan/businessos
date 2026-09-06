@@ -22,4 +22,6 @@ python -m venv "$environment_dir"
 cd "$outside_dir"
 "$environment_dir/bin/businessos" migrate plan
 "$environment_dir/bin/python" -c \
-    "from importlib.resources import files; assert files('businessos').joinpath('migration_assets', 'env.py').is_file(); assert files('businessos_proof').joinpath('migrations', 'versions', '0003_proof_atomic_state.py').is_file()"
+    "from importlib.resources import files; from pathlib import Path; root=Path('$repository_root').resolve(); core=Path(str(files('businessos'))).resolve(); proof=Path(str(files('businessos_proof'))).resolve(); assert root not in core.parents; assert root not in proof.parents; assert core.joinpath('migration_assets', 'env.py').is_file(); assert proof.joinpath('migrations', 'versions', '0003_proof_atomic_state.py').is_file()"
+"$environment_dir/bin/python" "$repository_root/scripts/migration_database_smoke.py" \
+    --businessos "$environment_dir/bin/businessos"

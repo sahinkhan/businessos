@@ -21,11 +21,12 @@ The objective is to provide an extensible platform capable of supporting ERP, re
 
 | Area | Technology |
 | --- | --- |
-| Backend / Workers | Go |
-| HTTP | Gin as transport adapter |
+| Backend / Workers | Python |
+| HTTP | Custom BusinessOS ASGI framework on Starlette |
+| ASGI Server | Uvicorn |
 | Internal RPC | gRPC + Protocol Buffers when justified |
 | Database | PostgreSQL |
-| Data Access | pgx + explicit/generated SQL |
+| Data Access | Psycopg 3 + explicit/generated SQL |
 | Cache | Redis |
 | Durable Events / Jobs | NATS JetStream |
 | Object Storage | S3-compatible |

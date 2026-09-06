@@ -1878,7 +1878,7 @@ Create a real external developer ecosystem.
 
 ## Deliverables
 
-- Go SDK
+- Python SDK
 - TypeScript SDK
 - CLI
 - module scaffolding

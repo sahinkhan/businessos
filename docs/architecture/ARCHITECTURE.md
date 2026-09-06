@@ -1,8 +1,8 @@
 # BusinessOS Architecture Baseline
 
 Status: Approved implementation baseline  
-Architecture ID: BOS-ARCH-002  
-Version: 2.0
+Architecture ID: BOS-ARCH-003  
+Version: 3.0
 
 ## 1. Architecture Promise
 
@@ -12,11 +12,12 @@ A new business or industry domain must be implementable through published platfo
 
 ## 2. Technology Baseline
 
-- Backend and workers: Go
-- HTTP adapter: Gin
+- Backend and workers: Python
+- HTTP: custom BusinessOS ASGI framework on Starlette
+- ASGI server: Uvicorn
 - Internal RPC when justified: gRPC + Protocol Buffers
 - Transactional database: PostgreSQL
-- Database access: pgx + explicit/generated SQL
+- Database access: Psycopg 3 + explicit/generated SQL
 - Cache/transient state: Redis
 - Durable messaging/jobs: NATS JetStream
 - Object storage: S3-compatible
@@ -108,7 +109,7 @@ Preferred order:
 5. declarative module
 6. isolated executable service
 
-Go native plugins are not the marketplace architecture.
+Untrusted customer or marketplace Python packages are not loaded into the protected runtime. Audited first-party Python modules may run in-process; third-party executable modules remain isolated.
 
 ## 7. Upgrade Principle
 

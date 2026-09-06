@@ -38,14 +38,14 @@ The platform must support:
 ## Final Technology Baseline
 
 ### Backend
-- Go is the primary backend and worker language.
-- Gin is the default HTTP transport adapter only.
-- Business and application code must depend on `context.Context`, not `*gin.Context`.
+- Python is the primary backend and worker language.
+- The custom BusinessOS HTTP framework uses ASGI with Starlette as a replaceable transport substrate and Uvicorn as the default server.
+- Business and application code must depend on immutable BusinessOS `RequestContext` / `TenantContext` contracts, not Starlette request objects.
 - gRPC + Protocol Buffers may be used at genuine internal service boundaries.
 
 ### Database
 - PostgreSQL is the authoritative transactional source of truth.
-- Prefer `pgx` and explicit SQL or generated SQL for critical data paths.
+- Prefer Psycopg 3 and explicit SQL or generated SQL for critical data paths.
 - Production schema changes use explicit versioned migrations.
 
 ### Infrastructure
@@ -313,7 +313,7 @@ Rules:
 
 ---
 
-## Go Architecture Rules
+## Python Architecture Rules
 
 Default layering:
 
@@ -321,13 +321,17 @@ Default layering:
 
 Rules:
 
-- Domain and application packages use `context.Context`.
-- Never pass `*gin.Context` into application/domain code.
+- Domain and application packages depend only on Python standard-library types and published BusinessOS contracts.
+- Never pass Starlette `Request` objects into application/domain code.
+- Pydantic models are boundary DTOs; domain models use framework-neutral Python types.
 - Do not put business logic in HTTP handlers.
 - Do not issue SQL directly from HTTP handlers.
 - Repositories/data adapters are owned by their bounded context.
-- Avoid global mutable state.
-- Prefer explicit dependency injection/composition over hidden service locators.
+- Tenant and request context are immutable and explicitly propagated; `contextvars` may enrich telemetry but are not an authorization boundary.
+- Avoid global mutable state and request-created fire-and-forget tasks.
+- Prefer explicit constructor injection and composition roots over hidden service locators.
+- Async code must not call blocking infrastructure clients on the event loop.
+- Enforce module and layer dependencies with architecture/import tests.
 - Default deployment architecture is a modular monolith.
 
 Do not introduce a microservice without an architecture reason such as:
@@ -375,7 +379,7 @@ Preferred extension order:
 
 Customer and partner modules must not edit protected core source.
 
-Do not use Go native plugins as the marketplace strategy.
+Do not load untrusted customer or marketplace Python packages into the protected runtime. In-process Python modules are restricted to audited first-party code.
 
 Executable customer/marketplace modules normally run in isolated OCI containers and communicate through supported contracts:
 

@@ -38,10 +38,12 @@ BusinessOS must support:
 ## 3. Final Technology Baseline
 
 Backend and workers:
-- Go
+- Python
 
 HTTP:
-- Gin as transport adapter only
+- custom BusinessOS ASGI framework on Starlette
+- Uvicorn as the default ASGI server
+- transport remains replaceable and must not leak into application/domain code
 
 Internal RPC:
 - gRPC + Protocol Buffers only at justified service boundaries
@@ -50,7 +52,7 @@ Database:
 - PostgreSQL
 
 Database access:
-- pgx
+- Psycopg 3
 - explicit SQL/generated SQL
 
 Cache/transient coordination:
@@ -252,7 +254,7 @@ Extension priority:
 5. declarative module
 6. isolated executable service
 
-Do not use Go native plugins as the marketplace mechanism.
+Do not load untrusted customer or marketplace Python packages into the protected runtime.
 
 Third-party executable modules normally run in isolated OCI containers/processes and interact through:
 

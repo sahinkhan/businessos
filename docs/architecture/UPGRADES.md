@@ -17,7 +17,7 @@ The following are versioned compatibility surfaces when published:
 - frontend extension slots
 - CLI automation interfaces
 
-Undocumented internal Go packages, private SQL tables and private frontend internals are not public compatibility contracts.
+Undocumented internal Python packages, private SQL tables and private frontend internals are not public compatibility contracts.
 
 ## Upgrade Flow
 

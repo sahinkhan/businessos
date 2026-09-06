@@ -12,6 +12,7 @@ from psycopg import sql
 
 @dataclass(frozen=True, slots=True)
 class PostgreSQLTestDatabase:
+    administrator_url: str
     migration_url: str
     runtime_url: str
     operations_url: str
@@ -35,6 +36,9 @@ def postgres_database() -> Iterator[PostgreSQLTestDatabase]:
     operations_url = os.getenv("BOS_TEST_DATABASE_OPERATIONS_URL")
     if operations_url is None:
         pytest.skip("BOS_TEST_DATABASE_OPERATIONS_URL is not configured")
+    migration_url = os.getenv("BOS_TEST_DATABASE_MIGRATION_URL")
+    if migration_url is None:
+        pytest.skip("BOS_TEST_DATABASE_MIGRATION_URL is not configured")
 
     database_name = f"businessos_test_{uuid4().hex}"
     with psycopg.connect(admin_url, autocommit=True) as connection:
@@ -57,7 +61,8 @@ def postgres_database() -> Iterator[PostgreSQLTestDatabase]:
 
     try:
         yield PostgreSQLTestDatabase(
-            migration_url=_database_url(admin_url, database_name, sqlalchemy=True),
+            administrator_url=_database_url(admin_url, database_name),
+            migration_url=_database_url(migration_url, database_name, sqlalchemy=True),
             runtime_url=_database_url(runtime_url, database_name, sqlalchemy=True),
             operations_url=_database_url(operations_url, database_name, sqlalchemy=True),
         )

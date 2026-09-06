@@ -97,15 +97,18 @@ def upgrade() -> None:
             f"CREATE POLICY {table_name}_tenant_isolation ON {qualified} "
             f"TO businessos_app USING ({tenant_expression}) WITH CHECK ({tenant_expression})"
         )
+        op.execute(
+            f"CREATE POLICY {table_name}_migration_access ON {qualified} "
+            "TO businessos_migrator USING (true) WITH CHECK (true)"
+        )
 
     op.execute("GRANT USAGE ON SCHEMA eventing TO businessos_app, businessos_ops")
-    op.execute("GRANT USAGE ON SCHEMA platform_module TO businessos_app, businessos_ops")
+    op.execute("GRANT USAGE ON SCHEMA platform_module TO businessos_app")
     op.execute("GRANT SELECT, INSERT ON eventing.outbox_messages TO businessos_app")
     op.execute("GRANT SELECT, INSERT ON eventing.inbox_receipts TO businessos_app")
     op.execute("GRANT SELECT, UPDATE ON eventing.outbox_messages TO businessos_ops")
     op.execute("GRANT SELECT, INSERT ON eventing.inbox_receipts TO businessos_ops")
     op.execute("GRANT SELECT ON platform_module.module_runtime_state TO businessos_app")
-    op.execute("GRANT SELECT ON platform_module.module_runtime_state TO businessos_ops")
 
 
 def downgrade() -> None:

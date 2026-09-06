@@ -22,7 +22,24 @@ services:
     profiles: [tools]
     environment:
       BOS_MIGRATION_DATABASE_URL: postgresql+psycopg://businessos_migrator:businessos-migration@postgres:5432/businessos
-    command: ["alembic", "upgrade", "head"]
+    command: ["businessos", "migrate", "upgrade", "heads"]
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  database-bootstrap:
+    build:
+      context: .
+      target: development
+    profiles: [tools]
+    environment:
+      BOS_ADMIN_DATABASE_URL: ${BOS_ADMIN_DATABASE_URL:-postgresql://businessos_admin:businessos-administration@postgres:5432/businessos}
+      BOS_MIGRATOR_PASSWORD: ${BOS_MIGRATOR_PASSWORD:-businessos-migration}
+      BOS_APPLICATION_PASSWORD: ${BOS_APPLICATION_PASSWORD:-businessos-application}
+      BOS_OPERATIONS_PASSWORD: ${BOS_OPERATIONS_PASSWORD:-businessos-operations}
+    command: ["businessos", "database", "transition-roles"]
     volumes:
       - .:/app
     depends_on:
@@ -33,12 +50,12 @@ services:
     image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     environment:
       POSTGRES_DB: businessos
-      POSTGRES_USER: businessos_migrator
-      POSTGRES_PASSWORD: businessos-migration
+      POSTGRES_USER: businessos_admin
+      POSTGRES_PASSWORD: businessos-administration
     ports:
       - "${BOS_POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U businessos_migrator -d businessos"]
+      test: ["CMD-SHELL", "pg_isready -d businessos"]
       interval: 2s
       timeout: 3s
       retries: 20

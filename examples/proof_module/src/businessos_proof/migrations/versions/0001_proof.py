@@ -41,6 +41,11 @@ def upgrade() -> None:
         "USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid) "
         "WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)"
     )
+    op.execute(
+        "CREATE POLICY proof_records_migration_access "
+        "ON mod_example_phase1_proof.proof_records TO businessos_migrator "
+        "USING (true) WITH CHECK (true)"
+    )
     op.execute("GRANT USAGE ON SCHEMA mod_example_phase1_proof TO businessos_app")
     op.execute(
         "GRANT SELECT, INSERT, UPDATE, DELETE "

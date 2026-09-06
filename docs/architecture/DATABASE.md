@@ -91,6 +91,12 @@ For shared-schema mode:
 - include tenant ownership in cross-table integrity strategy
 - test cross-tenant reads and writes negatively
 
+Database administration, migration ownership, runtime access and approved cross-tenant operations
+use distinct roles. Administrative role creation/ownership transition is an explicit deployment
+operation, never application startup. The runtime role is non-owner, `NOSUPERUSER`, `NOINHERIT`
+and `NOBYPASSRLS`; it cannot assume the separately credentialed operations role. Retained
+installations transition ownership and grants idempotently before migration continues.
+
 ## Financial Precision
 
 - Never use floating-point types for money.

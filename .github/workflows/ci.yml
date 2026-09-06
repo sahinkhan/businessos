@@ -9,7 +9,8 @@ jobs:
   python-quality:
     runs-on: ubuntu-latest
     env:
-      BOS_TEST_DATABASE_ADMIN_URL: postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres
+      BOS_TEST_DATABASE_ADMIN_URL: postgresql://businessos_admin:businessos-administration@localhost:5432/postgres
+      BOS_TEST_DATABASE_MIGRATION_URL: postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres
       BOS_TEST_DATABASE_RUNTIME_URL: postgresql://businessos_app:businessos-application@localhost:5432/postgres
       BOS_TEST_DATABASE_OPERATIONS_URL: postgresql://businessos_ops:businessos-operations@localhost:5432/postgres
       BOS_TEST_REDIS_URL: redis://localhost:6379/0

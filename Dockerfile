@@ -24,9 +24,11 @@ FROM base AS development
 COPY pyproject.toml README.md ./
 COPY requirements ./requirements
 COPY platform ./platform
+COPY examples/proof_module ./examples/proof_module
 RUN python -m pip install --no-cache-dir \
     --constraint requirements/constraints-py313.txt \
-    -e '.[dev,providers]'
+    -e '.[dev,providers]' \
+    -e examples/proof_module
 COPY . .
 CMD ["uvicorn", "businessos.asgi:application", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 

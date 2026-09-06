@@ -38,7 +38,6 @@ def upgrade() -> None:
         "REVOKE ALL ON platform_module.installed_module_migrations FROM PUBLIC, businessos_app"
     )
     op.execute("GRANT SELECT ON platform_module.installed_module_migrations TO businessos_app")
-    op.execute("GRANT SELECT ON platform_module.installed_module_migrations TO businessos_ops")
 
 
 def downgrade() -> None:

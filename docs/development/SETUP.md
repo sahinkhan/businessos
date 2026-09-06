@@ -25,6 +25,7 @@ Start infrastructure and apply the protected runtime migration:
 
 ```bash
 docker compose up -d postgres redis nats object-storage
+docker compose run --rm database-bootstrap
 docker compose run --rm migrate
 ```
 
@@ -56,11 +57,31 @@ Configuration uses `BOS_`-prefixed environment variables. `BOS_DATABASE_URL` mus
 
 The development database uses separate roles:
 
+- `businessos_admin` is the local bootstrap administrator. Its credentials are supplied only to
+  the explicit `database-bootstrap` operation and test-database provisioning.
 - `businessos_migrator` owns the database and schema objects and is used only by migrations.
 - `businessos_app` is the `NOSUPERUSER`, `NOBYPASSRLS`, non-owner application role.
 - `businessos_ops` has explicit cross-tenant eventing privileges for approved operational workers; the application never uses it.
 
 The checked-in credentials are local-development values only. Production deployments must supply these roles and credentials through deployment secrets.
+
+### Retained databases from before role separation
+
+Do not delete the PostgreSQL volume. Stop application traffic, retain a verified backup, start
+PostgreSQL, and invoke the administrative transition with the original administrator URL:
+
+```bash
+docker compose stop app migrate
+BOS_ADMIN_DATABASE_URL=postgresql://businessos:businessos@postgres:5432/businessos \
+  docker compose run --rm database-bootstrap
+docker compose run --rm migrate
+```
+
+The transition takes a PostgreSQL advisory lock, creates/configures the three operational roles,
+transfers only the Phase 1 database/schema/table and Alembic ownership, restores exact grants,
+corrects the retained inbox key, and enables plus forces RLS on all tenant-owned Phase 1 tables.
+It is idempotent and prints no credentials. It is never called by web application startup. Supply
+administrator and target-role passwords through deployment secrets in non-development systems.
 
 ## Required Validation
 
@@ -71,11 +92,13 @@ ruff format --check platform/src examples tests
 ruff check platform/src examples tests
 mypy platform/src tests examples/proof_module/src
 pytest -q tests/unit
-BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
+BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_admin:businessos-administration@localhost:5432/postgres \
+BOS_TEST_DATABASE_MIGRATION_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
 BOS_TEST_DATABASE_RUNTIME_URL=postgresql://businessos_app:businessos-application@localhost:5432/postgres \
 BOS_TEST_DATABASE_OPERATIONS_URL=postgresql://businessos_ops:businessos-operations@localhost:5432/postgres \
   pytest -q tests/integration -m postgres
-BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
+BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_admin:businessos-administration@localhost:5432/postgres \
+BOS_TEST_DATABASE_MIGRATION_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
 BOS_TEST_DATABASE_RUNTIME_URL=postgresql://businessos_app:businessos-application@localhost:5432/postgres \
 BOS_TEST_DATABASE_OPERATIONS_URL=postgresql://businessos_ops:businessos-operations@localhost:5432/postgres \
   pytest -q tests/conformance

@@ -9,6 +9,11 @@ from collections.abc import Sequence
 import uvicorn
 
 from businessos.config import get_settings
+from businessos.database_admin import (
+    DatabaseRolePasswords,
+    DatabaseTransitionError,
+    transition_database_roles,
+)
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleRegistry, discover_modules
 from businessos.version import runtime_version
@@ -26,6 +31,32 @@ def _migration_url() -> str:
     if not database_url:
         raise SystemExit("BOS_MIGRATION_DATABASE_URL is required")
     return database_url
+
+
+def _required_environment(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise SystemExit(f"{name} is required")
+    return value
+
+
+def _run_database_admin(arguments: Sequence[str]) -> None:
+    parser = argparse.ArgumentParser(prog="businessos database")
+    subcommands = parser.add_subparsers(dest="action", required=True)
+    subcommands.add_parser("transition-roles")
+    parsed = parser.parse_args(arguments)
+    if parsed.action != "transition-roles":  # pragma: no cover - argparse guards this
+        parser.error("unsupported database administration action")
+    passwords = DatabaseRolePasswords(
+        migrator=_required_environment("BOS_MIGRATOR_PASSWORD"),
+        application=_required_environment("BOS_APPLICATION_PASSWORD"),
+        operations=_required_environment("BOS_OPERATIONS_PASSWORD"),
+    )
+    try:
+        transition_database_roles(_required_environment("BOS_ADMIN_DATABASE_URL"), passwords)
+    except DatabaseTransitionError as exc:
+        raise SystemExit(str(exc)) from None
+    print("database role transition complete")
 
 
 def _run_migrations(arguments: Sequence[str]) -> None:
@@ -68,6 +99,9 @@ def main(arguments: Sequence[str] | None = None) -> None:
     args = tuple(arguments) if arguments is not None else tuple(sys.argv[1:])
     if args and args[0] == "migrate":
         _run_migrations(args[1:])
+        return
+    if args and args[0] == "database":
+        _run_database_admin(args[1:])
         return
     settings = get_settings()
     uvicorn.run(

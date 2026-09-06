@@ -1,4 +1,6 @@
--- Exact retained Phase 1 schema shape before database-role separation (f9239ae).
+-- Exact retained Phase 1 proof_0002 schema from
+-- f9239aeb6a3182d539f7dda4612db2aa77ff0149. The caller creates the database
+-- and its Docker-bootstrap-equivalent current_user role before applying this file.
 CREATE SCHEMA eventing;
 CREATE SCHEMA platform_module;
 CREATE SCHEMA mod_example_phase1_proof;
@@ -45,8 +47,32 @@ CREATE TABLE mod_example_phase1_proof.proof_records (
 );
 CREATE INDEX ix_proof_records_tenant_id
 ON mod_example_phase1_proof.proof_records (tenant_id);
+ALTER TABLE mod_example_phase1_proof.proof_records ENABLE ROW LEVEL SECURITY;
+CREATE POLICY proof_records_tenant_isolation
+ON mod_example_phase1_proof.proof_records
+USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 
 CREATE TABLE public.alembic_version (
     version_num varchar(32) PRIMARY KEY
 );
 INSERT INTO public.alembic_version (version_num) VALUES ('proof_0002');
+
+INSERT INTO mod_example_phase1_proof.proof_records
+    (id, tenant_id, value, description)
+VALUES
+    ('11111111-1111-4111-8111-111111111111',
+     'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+     'retained-value',
+     'retained-description');
+
+INSERT INTO eventing.outbox_messages
+    (id, tenant_id, event_type, schema_version, occurred_at, correlation_id, payload)
+VALUES
+    ('22222222-2222-4222-8222-222222222222',
+     'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+     'retained.event',
+     1,
+     '2026-09-06T07:44:21Z',
+     'retained-proof-0002',
+     '{}'::jsonb);

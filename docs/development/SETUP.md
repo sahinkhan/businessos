@@ -129,9 +129,17 @@ The framework migration coordinator combines protected revisions with module-own
 
 Protected and module-owned migrations are loaded from installed package resources. Every owner
 declares a unique migration namespace, and graph preflight rejects revision or branch-label
-collisions, missing revision packages and undeclared cross-module dependencies before applying DDL.
+collisions (including revision-to-label collisions), cycles, missing revision packages and
+undeclared cross-module dependencies before opening a database connection or applying DDL.
 Multiple module heads are intentional, so coordinated upgrades target `heads`; ambiguous `head`
 selection is not substituted silently.
+
+After the inventory migration is present, every installed module records an immutable historical
+graph manifest containing logical package locations, distribution identity, namespace, version,
+parents, dependencies, labels and revision fingerprints. Future releases may append revisions or
+valid merge revisions, but may not remove or rewrite recorded history. The coordinator serializes
+migration and inventory updates with a PostgreSQL advisory transaction lock and commits them
+together.
 
 From any working directory, an installed environment can inspect or execute the complete graph:
 
@@ -141,6 +149,9 @@ BOS_MIGRATION_DATABASE_URL=postgresql+psycopg://... businessos migrate plan --ch
 BOS_MIGRATION_DATABASE_URL=postgresql+psycopg://... businessos migrate upgrade heads
 ```
 
-Build and validate clean wheel installations with `sh scripts/validate_wheels.sh`. The
-`migration-smoke` Docker target performs the same resource-discovery proof on top of the production
-image without copying repository migration directories into that image.
+Build and validate clean wheel installations with `sh scripts/validate_wheels.sh`. With the
+documented separated-role test environment configured, this builds and installs the wheels in a
+clean Python 3.13 environment, changes to an unrelated directory, performs a real PostgreSQL role
+bootstrap plus upgrade/downgrade/replay, and verifies heads and immutable inventory. CI repeats that
+database proof with the production-derived `migration-smoke` image, which contains installed wheels
+and no copied repository migration tree.

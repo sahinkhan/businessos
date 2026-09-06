@@ -136,7 +136,15 @@ Global EAV is prohibited.
 
 - Every owning module owns its migrations.
 - Alembic revisions are the explicit, versioned production migration mechanism.
-- The BusinessOS framework coordinates module revision discovery, dependency order, compatibility preflight and upgrade execution.
+- The BusinessOS framework builds one canonical graph across core and every discovered module,
+  rejects cycles and shared revision/branch-label symbol collisions before connecting to the
+  database, and intentionally supports deterministic multiple heads.
+- Installed-module inventory is append-compatible and tamper-detecting. It records stable module,
+  namespace, packaged-resource location, distribution, version, ancestry, dependency, branch-label
+  and SHA-256 revision facts. Historical removal or rewrite fails preflight.
+- Migration execution and inventory advancement use one PostgreSQL transaction protected by a
+  transaction-scoped advisory lock. Failure or cancellation advances neither schema history nor
+  inventory.
 - SQLAlchemy `create_all`, metadata diff application or any other runtime ORM auto-sync is prohibited in production.
 - Use expand-contract for rolling/compatible evolution.
 - Destructive cleanup occurs only after old runtime/contracts are outside the supported compatibility window.

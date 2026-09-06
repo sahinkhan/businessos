@@ -64,7 +64,6 @@ class ProofModule:
     def __init__(self) -> None:
         package = files("businessos_proof")
         manifest_data = json.loads(package.joinpath("manifest.json").read_text(encoding="utf-8"))
-        manifest_data["migrations"] = [str(package.joinpath("migrations", "versions"))]
         self.manifest = ModuleManifest.model_validate(manifest_data)
         self.started = False
         self.events_consumed = 0

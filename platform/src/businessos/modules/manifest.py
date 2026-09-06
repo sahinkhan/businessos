@@ -45,6 +45,10 @@ class ModuleManifest(BaseModel):
     capabilities: tuple[str, ...] = ()
     permissions: tuple[str, ...] = ()
     migrations: tuple[str, ...] = ()
+    migration_namespace: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]*$",
+    )
     supported_tenancy_modes: tuple[str, ...] = (
         "dedicated",
         "database_per_tenant",
@@ -62,6 +66,10 @@ class ModuleManifest(BaseModel):
             raise ValueError("manifest contains an invalid version or compatibility range") from exc
         if self.execution_type is ModuleExecutionType.IN_PROCESS and not self.entry_point:
             raise ValueError("in-process modules require an entry_point")
+        if self.migrations and self.migration_namespace is None:
+            raise ValueError("modules with migrations require a migration_namespace")
+        if not self.migrations and self.migration_namespace is not None:
+            raise ValueError("migration_namespace requires at least one migration location")
         dependency_ids = [dependency.module_id for dependency in self.dependencies]
         if len(dependency_ids) != len(set(dependency_ids)):
             raise ValueError("module dependencies must be unique")

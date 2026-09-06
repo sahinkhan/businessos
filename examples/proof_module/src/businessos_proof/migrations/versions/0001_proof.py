@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 
 revision: str = "proof_0001"
 down_revision: str | Sequence[str] | None = "0001_phase1_kernel"
-branch_labels: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = ("module_example_phase1_proof",)
 depends_on: str | Sequence[str] | None = None
 
 

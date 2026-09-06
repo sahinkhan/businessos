@@ -11,6 +11,7 @@
   "dependencies": [],
   "capabilities": ["object-storage"],
   "permissions": ["example.phase1-proof.read", "example.phase1-proof.write"],
-  "migrations": [],
+  "migrations": ["python://businessos_proof/migrations/versions"],
+  "migration_namespace": "module_example_phase1_proof",
   "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
 }

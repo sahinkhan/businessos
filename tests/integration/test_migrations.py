@@ -27,6 +27,7 @@ def test_alembic_upgrades_empty_database_and_is_replayable(
     assert rows == [
         ("eventing", "inbox_receipts"),
         ("eventing", "outbox_messages"),
+        ("platform_module", "installed_module_migrations"),
         ("platform_module", "module_runtime_state"),
     ]
 

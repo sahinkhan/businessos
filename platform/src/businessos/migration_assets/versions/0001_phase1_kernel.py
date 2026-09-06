@@ -99,12 +99,13 @@ def upgrade() -> None:
         )
 
     op.execute("GRANT USAGE ON SCHEMA eventing TO businessos_app, businessos_ops")
-    op.execute("GRANT USAGE ON SCHEMA platform_module TO businessos_app")
+    op.execute("GRANT USAGE ON SCHEMA platform_module TO businessos_app, businessos_ops")
     op.execute("GRANT SELECT, INSERT ON eventing.outbox_messages TO businessos_app")
     op.execute("GRANT SELECT, INSERT ON eventing.inbox_receipts TO businessos_app")
     op.execute("GRANT SELECT, UPDATE ON eventing.outbox_messages TO businessos_ops")
     op.execute("GRANT SELECT, INSERT ON eventing.inbox_receipts TO businessos_ops")
     op.execute("GRANT SELECT ON platform_module.module_runtime_state TO businessos_app")
+    op.execute("GRANT SELECT ON platform_module.module_runtime_state TO businessos_ops")
 
 
 def downgrade() -> None:

@@ -49,6 +49,7 @@ class ProofModule:
         dependencies: tuple[ModuleDependency, ...] = (),
         version: str = "1.0.0",
         migrations: tuple[str, ...] = ("migrations/v1",),
+        migration_namespace: str | None = "example_proof",
     ) -> None:
         self.manifest = ModuleManifest(
             module_id=module_id,
@@ -61,6 +62,7 @@ class ProofModule:
             entry_point="proof:module",
             dependencies=dependencies,
             migrations=migrations,
+            migration_namespace=migration_namespace if migrations else None,
         )
         self.lifecycle: list[str] = []
 

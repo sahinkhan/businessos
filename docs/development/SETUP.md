@@ -11,6 +11,11 @@ The Phase 1 runtime requires Python 3.13 or newer. Docker Compose is the support
 
 Do not add business-domain concepts to the protected framework.
 
+Trusted first-party in-process modules import BusinessOS contracts only from `businessos.sdk`.
+Module-owned repositories execute SQLAlchemy statements through
+`HandlingContext.unit_of_work.persistence`; that adapter is bound to the active framework
+transaction and intentionally exposes no commit or rollback operation.
+
 ## Docker Development
 
 Copy `.env.example` to `.env` only when local overrides are needed. The committed Compose defaults are development-only credentials.
@@ -63,7 +68,7 @@ With the Compose infrastructure running:
 ```bash
 ruff format --check platform/src platform/migrations examples tests
 ruff check platform/src platform/migrations examples tests
-mypy platform/src tests/unit tests/conformance examples/proof_module/src
+mypy platform/src tests examples/proof_module/src
 pytest -q tests/unit
 BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
 BOS_TEST_DATABASE_RUNTIME_URL=postgresql://businessos_app:businessos-application@localhost:5432/postgres \

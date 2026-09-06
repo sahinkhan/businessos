@@ -25,7 +25,7 @@ def _settings(database_url: str) -> Settings:
 @pytest.mark.integration
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_unit_of_work_commits_state_and_outbox_atomically(
+async def test_unit_of_work_commits_outbox_with_trusted_tenant_context(
     migrated_database_url: str,
 ) -> None:
     database = Database(_settings(migrated_database_url))

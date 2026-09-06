@@ -1,18 +1,27 @@
 """Explicit framework-owned Unit of Work and transaction boundaries."""
 
+from collections.abc import Callable, Mapping
 from types import TracebackType
-from typing import Protocol, Self
+from typing import Any, Protocol, Self
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.engine import Result
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.base import Executable
 
 from businessos.context import TenantContext
 from businessos.errors import ConfigurationError
+from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.models import OutboxMessage
 from businessos.persistence.outbox import PendingOutboxMessage
 
+SessionFactory = Callable[[], AsyncSession]
+
 
 class UnitOfWork(Protocol):
+    @property
+    def persistence(self) -> TransactionalPersistence: ...
+
     async def __aenter__(self) -> Self: ...
 
     async def __aexit__(
@@ -40,7 +49,7 @@ class SQLAlchemyUnitOfWork:
 
     def __init__(
         self,
-        sessions: async_sessionmaker[AsyncSession],
+        sessions: SessionFactory,
         tenant_context: TenantContext | None,
     ) -> None:
         self._sessions = sessions
@@ -84,6 +93,10 @@ class SQLAlchemyUnitOfWork:
         session = self._require_session()
         await session.rollback()
 
+    @property
+    def persistence(self) -> TransactionalPersistence:
+        return SQLAlchemyTransactionalPersistence(self._require_session())
+
     def add_outbox(self, message: PendingOutboxMessage) -> None:
         session = self._require_session()
         session.add(
@@ -105,12 +118,31 @@ class SQLAlchemyUnitOfWork:
         return self.session
 
 
+class SQLAlchemyTransactionalPersistence:
+    """Restricted adapter over the Unit-of-Work-owned SQLAlchemy session."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def execute(
+        self,
+        statement: Executable,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> Result[Any]:
+        if parameters is None:
+            return await self._session.execute(statement)
+        return await self._session.execute(statement, parameters)
+
+    async def flush(self) -> None:
+        await self._session.flush()
+
+
 class SQLAlchemyUnitOfWorkFactory:
     def __init__(
         self,
-        sessions: async_sessionmaker[AsyncSession],
+        sessions: SessionFactory,
         *,
-        system_sessions: async_sessionmaker[AsyncSession] | None = None,
+        system_sessions: SessionFactory | None = None,
     ) -> None:
         self._sessions = sessions
         self._system_sessions = system_sessions

@@ -14,7 +14,7 @@ from businessos.messages import (
     MessageDispatcher,
     Query,
 )
-from businessos.persistence import PendingOutboxMessage, UnitOfWork
+from businessos.persistence import PendingOutboxMessage, TransactionalPersistence, UnitOfWork
 
 
 class ChangeName(Command):
@@ -35,6 +35,10 @@ class FakeUnitOfWork:
         self.timeline = timeline
         self.messages: list[PendingOutboxMessage] = []
         self.committed = False
+
+    @property
+    def persistence(self) -> TransactionalPersistence:
+        raise NotImplementedError
 
     async def __aenter__(self) -> Self:
         self.timeline.append("begin")

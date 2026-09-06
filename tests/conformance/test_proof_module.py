@@ -62,6 +62,8 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
     assert app.runtime is not None
 
     app.runtime.migrations.upgrade(postgres_migration_database_url, "proof_0001")
+    historical_id = uuid4()
+    historical_tenant = uuid4()
     connection_url = postgres_migration_database_url.replace(
         "postgresql+psycopg://", "postgresql://", 1
     )
@@ -71,6 +73,12 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
             "WHERE table_schema = 'mod_example_phase1_proof' "
             "AND table_name = 'proof_records' ORDER BY ordinal_position"
         ).fetchall()
+        connection.execute(
+            "INSERT INTO mod_example_phase1_proof.proof_records "
+            "(id, tenant_id, value) VALUES (%s, %s, %s)",
+            (historical_id, historical_tenant, "pre-idempotency"),
+        )
+        connection.commit()
     assert [row[0] for row in columns_v1] == ["id", "tenant_id", "value"]
 
     app.runtime.migrations.upgrade(postgres_migration_database_url)
@@ -84,8 +92,21 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
             "SELECT policyname FROM pg_policies "
             "WHERE schemaname = 'mod_example_phase1_proof' AND tablename = 'proof_records'"
         ).fetchall()
-    assert [row[0] for row in columns_v2] == ["id", "tenant_id", "value", "description"]
+        historical_command_id = connection.execute(
+            "SELECT command_id FROM mod_example_phase1_proof.proof_records WHERE id = %s",
+            (historical_id,),
+        ).fetchone()
+    assert [row[0] for row in columns_v2] == [
+        "id",
+        "tenant_id",
+        "value",
+        "description",
+        "command_id",
+        "created_at",
+    ]
     assert policies == [("proof_records_tenant_isolation",)]
+    assert historical_command_id is not None
+    assert historical_command_id[0] is not None
 
     app.runtime.migrations.downgrade(postgres_migration_database_url)
     app.runtime.migrations.upgrade(postgres_migration_database_url)
@@ -121,13 +142,23 @@ async def test_external_module_conforms_without_protected_core_edits(
     await app.startup()
     assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.ENABLED
     transport = httpx.ASGITransport(app=cast(Any, app))
+    command_id = uuid4()
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        stored = await client.post("/proof/value", json={"value": "external-module"})
+        stored = await client.post(
+            "/proof/value",
+            json={"command_id": str(command_id), "value": "external-module"},
+        )
+        repeated = await client.post(
+            "/proof/value",
+            json={"command_id": str(command_id), "value": "ignored-retry"},
+        )
         loaded = await client.get("/proof/value")
         invalid = await client.post("/proof/value", json={})
 
     assert stored.status_code == 202
     assert stored.json() == {"stored": True}
+    assert repeated.status_code == 202
+    assert repeated.json() == {"stored": False}
     assert loaded.status_code == 200
     assert loaded.json() == {"value": "external-module"}
     assert invalid.status_code == 422
@@ -140,11 +171,19 @@ async def test_external_module_conforms_without_protected_core_edits(
         "postgresql+psycopg://", "postgresql://", 1
     )
     with psycopg.connect(connection_url) as connection:
-        outbox_count = connection.execute(
-            "SELECT count(*) FROM eventing.outbox_messages WHERE tenant_id = %s",
-            (tenant.tenant_id,),
+        counts = connection.execute(
+            "SELECT "
+            "(SELECT count(*) FROM mod_example_phase1_proof.proof_records WHERE tenant_id = %s), "
+            "(SELECT count(*) FROM eventing.outbox_messages WHERE tenant_id = %s)",
+            (tenant.tenant_id, tenant.tenant_id),
         ).fetchone()
-    assert outbox_count == (1,)
+        stored_value = connection.execute(
+            "SELECT value FROM mod_example_phase1_proof.proof_records "
+            "WHERE tenant_id = %s AND command_id = %s",
+            (tenant.tenant_id, command_id),
+        ).fetchone()
+    assert counts == (1, 1)
+    assert stored_value == ("external-module",)
 
     plan = app.runtime.upgrades.plan((module.manifest,))
     assert plan.ordered_module_ids == (module.manifest.module_id,)

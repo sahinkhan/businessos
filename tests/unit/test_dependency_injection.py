@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import pytest
@@ -13,7 +13,7 @@ async def test_request_dependency_is_cached_and_torn_down() -> None:
     lifecycle: list[str] = []
 
     @asynccontextmanager
-    async def resource() -> AsyncIterator[str]:
+    async def resource() -> AsyncGenerator[str]:
         lifecycle.append("enter")
         yield "value"
         lifecycle.append("exit")

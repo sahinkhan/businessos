@@ -1,5 +1,6 @@
 """Framework-owned PostgreSQL persistence contracts and implementations."""
 
+from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.database import Database
 from businessos.persistence.models import Base, InboxReceipt, ModuleRuntimeState, OutboxMessage
 from businessos.persistence.outbox import PendingOutboxMessage
@@ -19,6 +20,7 @@ __all__ = [
     "PendingOutboxMessage",
     "SQLAlchemyUnitOfWork",
     "SQLAlchemyUnitOfWorkFactory",
+    "TransactionalPersistence",
     "UnitOfWork",
     "UnitOfWorkFactory",
 ]

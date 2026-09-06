@@ -3,20 +3,49 @@
 import json
 from importlib.resources import files
 from typing import ClassVar
+from uuid import UUID, uuid4
 
-from businessos.context import RequestContext, TenantContext
-from businessos.dependencies import MESSAGE_DISPATCHER, OBJECT_STORAGE
-from businessos.di import RequestDependencyScope
-from businessos.errors import BusinessOSError
-from businessos.features import FeatureFlag
-from businessos.http import Request, Response
-from businessos.messages import Command, DomainEvent, HandlingContext, Query
-from businessos.metadata import MetadataDeclaration
-from businessos.modules import ModuleManifest, ModuleRegistration
-from businessos.permissions import PermissionDeclaration
+from pydantic import Field
+from sqlalchemy import Column, DateTime, MetaData, Table, Text, func, select
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
+from sqlalchemy.dialects.postgresql import insert
+
+from businessos.sdk import (
+    MESSAGE_DISPATCHER,
+    OBJECT_STORAGE,
+    BusinessOSError,
+    Command,
+    DomainEvent,
+    FeatureFlag,
+    HandlingContext,
+    MetadataDeclaration,
+    ModuleManifest,
+    ModuleRegistration,
+    PermissionDeclaration,
+    Query,
+    Request,
+    RequestContext,
+    RequestDependencyScope,
+    Response,
+    TenantContext,
+)
+
+metadata = MetaData()
+PROOF_RECORDS = Table(
+    "proof_records",
+    metadata,
+    Column("id", PGUUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", PGUUID(as_uuid=True), nullable=False),
+    Column("command_id", PGUUID(as_uuid=True), nullable=False),
+    Column("value", Text(), nullable=False),
+    Column("description", Text()),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="mod_example_phase1_proof",
+)
 
 
 class StoreProof(Command):
+    command_id: UUID = Field(default_factory=uuid4)
     value: str
 
 
@@ -26,6 +55,8 @@ class ReadProof(Query):
 
 class ProofStored(DomainEvent):
     event_type: ClassVar[str] = "example.phase1_proof.stored"
+    record_id: UUID
+    command_id: UUID
     value: str
 
 
@@ -92,10 +123,27 @@ class ProofModule:
 
     async def _store(self, command: StoreProof, context: HandlingContext) -> object:
         tenant = self._tenant(context.request)
+        record_id = uuid4()
+        statement = (
+            insert(PROOF_RECORDS)
+            .values(
+                id=record_id,
+                tenant_id=tenant.tenant_id,
+                command_id=command.command_id,
+                value=command.value,
+            )
+            .on_conflict_do_nothing(index_elements=["tenant_id", "command_id"])
+            .returning(PROOF_RECORDS.c.id)
+        )
+        result = await context.unit_of_work.persistence.execute(statement)
+        if result.scalar_one_or_none() is None:
+            return {"stored": False}
         context.emit(
             ProofStored(
                 tenant_id=tenant.tenant_id,
                 correlation_id=context.request.correlation_id,
+                record_id=record_id,
+                command_id=command.command_id,
                 value=command.value,
             )
         )
@@ -103,9 +151,16 @@ class ProofModule:
 
     async def _read(self, _: ReadProof, context: HandlingContext) -> object:
         tenant = self._tenant(context.request)
-        storage = await context.dependencies.resolve(OBJECT_STORAGE)
-        value = await storage.get(tenant.tenant_id, "phase1-proof/value.txt")
-        return {"value": value.decode("utf-8")}
+        result = await context.unit_of_work.persistence.execute(
+            select(PROOF_RECORDS.c.value)
+            .where(PROOF_RECORDS.c.tenant_id == tenant.tenant_id)
+            .order_by(PROOF_RECORDS.c.created_at.desc(), PROOF_RECORDS.c.id.desc())
+            .limit(1)
+        )
+        value = result.scalar_one_or_none()
+        if value is None:
+            raise BusinessOSError("not_found", "Proof value not found", status_code=404)
+        return {"value": value}
 
     async def _project(
         self,

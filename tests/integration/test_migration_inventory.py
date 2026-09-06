@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import psycopg
@@ -262,3 +263,31 @@ def test_inventory_is_append_only_and_tamper_detecting(
     with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
     assert heads == {"0003_migration_graph_inventory", "history_0003"}
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_concurrent_migrations_serialize_graph_and_inventory(
+    tmp_path: Path, postgres_migration_database_url: str
+) -> None:
+    history = tmp_path / "concurrent-history"
+    _revision(
+        history,
+        "0001.py",
+        "concurrent_history_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+    )
+
+    def upgrade(_: int) -> None:
+        _coordinator(history).upgrade(postgres_migration_database_url)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert tuple(executor.map(upgrade, range(2))) == (None, None)
+
+    inventory = _inventory(postgres_migration_database_url)
+    assert inventory[2] == ["filesystem://example.history/concurrent-history"]
+    assert [item["revision"] for item in inventory[-1]] == ["concurrent_history_0001"]
+    with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
+        heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
+    assert heads == {"0003_migration_graph_inventory", "concurrent_history_0001"}

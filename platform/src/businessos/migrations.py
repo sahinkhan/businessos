@@ -9,6 +9,7 @@ import os
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from importlib.metadata import packages_distributions
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import cast
@@ -18,6 +19,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from alembic.script.revision import RevisionError
 from alembic.util.exc import CommandError
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
@@ -134,7 +136,19 @@ def _source_identity(owner: str, location: str, index: int) -> tuple[str, str]:
         package, separator, _ = resource.partition("/")
         if not package or not separator:
             raise ConfigurationError(f"Invalid migration resource URI: {location}")
-        return location, f"python:{package}"
+        distributions = sorted(
+            {canonicalize_name(name) for name in packages_distributions().get(package, ())}
+        )
+        if len(distributions) > 1:
+            raise ConfigurationError(
+                f"Migration package '{package}' must belong to exactly one distribution"
+            )
+        identity = (
+            f"python-distribution:{distributions[0]}"
+            if distributions
+            else f"python-package:{package}"
+        )
+        return location, identity
     name = Path(location).name or f"source-{index}"
     return f"filesystem://{owner}/{name}", f"module:{owner}"
 
@@ -168,13 +182,14 @@ class MigrationCoordinator:
 
     def sources(self) -> tuple[MigrationSource, ...]:
         core_location = "python://businessos/migration_assets/versions"
+        _, core_distribution = _source_identity(CORE_OWNER, core_location, 0)
         sources = [
             MigrationSource(
                 owner=CORE_OWNER,
                 namespace=CORE_NAMESPACE,
                 location=core_location,
                 logical_location=core_location,
-                distribution_identity="python:businessos",
+                distribution_identity=core_distribution,
             )
         ]
         for registered in self._modules.ordered():
@@ -574,6 +589,18 @@ class MigrationCoordinator:
             raise ConfigurationError(
                 f"Installed module '{module_id}' changed distribution identity"
             )
+        if stored.inventory_format not in (None, 1, INVENTORY_FORMAT_VERSION):
+            raise ConfigurationError(
+                f"Installed module '{module_id}' uses unsupported inventory format"
+            )
+        if (
+            stored.inventory_format == INVENTORY_FORMAT_VERSION
+            and stored.revision_ids
+            and not stored.revision_manifest
+        ):
+            raise ConfigurationError(
+                f"Installed module '{module_id}' has incomplete revision history"
+            )
         current_revision_ids = {revision.revision for revision in revisions}
         removed = sorted(set(stored.revision_ids) - current_revision_ids)
         if removed:
@@ -596,6 +623,18 @@ class MigrationCoordinator:
         current_manifest = {
             cast(str, item["revision"]): item for item in self._revision_manifest(revisions)
         }
+        historical_ids = [item.get("revision") for item in stored.revision_manifest]
+        if not all(isinstance(item, str) for item in historical_ids):
+            raise ConfigurationError(f"Installed module '{module_id}' has invalid revision history")
+        typed_historical_ids = cast(list[str], historical_ids)
+        if len(typed_historical_ids) != len(set(typed_historical_ids)):
+            raise ConfigurationError(
+                f"Installed module '{module_id}' has duplicate revision history"
+            )
+        if set(typed_historical_ids) != set(stored.revision_ids) and stored.revision_manifest:
+            raise ConfigurationError(
+                f"Installed module '{module_id}' has inconsistent revision history"
+            )
         for historical in stored.revision_manifest:
             revision_id = historical.get("revision")
             if not isinstance(revision_id, str):

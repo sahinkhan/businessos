@@ -98,6 +98,40 @@ def test_plan_supports_core_and_two_independent_module_heads(tmp_path: Path) -> 
     )
 
 
+def test_plan_supports_a_valid_cross_module_merge_revision(tmp_path: Path) -> None:
+    alpha_path = tmp_path / "alpha"
+    beta_path = tmp_path / "beta"
+    merge_path = tmp_path / "merge"
+    _revision(alpha_path, "0001.py", "alpha_0001", branch_label="module_alpha")
+    _revision(beta_path, "0001.py", "beta_0001", branch_label="module_beta")
+    _revision(
+        merge_path,
+        "0001.py",
+        "merge_0001",
+        down_revision=("alpha_0001", "beta_0001"),
+        branch_label="module_merge",
+    )
+    merge_dependencies = (
+        ModuleDependency(module_id="example.alpha", version=">=1"),
+        ModuleDependency(module_id="example.beta", version=">=1"),
+    )
+
+    plan = MigrationCoordinator(
+        _registry(
+            MigrationModule("example.alpha", alpha_path, "module_alpha"),
+            MigrationModule("example.beta", beta_path, "module_beta"),
+            MigrationModule(
+                "example.merge",
+                merge_path,
+                "module_merge",
+                dependencies=merge_dependencies,
+            ),
+        )
+    ).plan()
+
+    assert plan.heads == ("0003_migration_graph_inventory", "merge_0001")
+
+
 def test_plan_rejects_duplicate_revision_and_branch_label(tmp_path: Path) -> None:
     duplicate_revision_path = tmp_path / "duplicate-revision"
     _revision(

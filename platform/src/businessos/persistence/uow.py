@@ -106,11 +106,21 @@ class SQLAlchemyUnitOfWork:
 
 
 class SQLAlchemyUnitOfWorkFactory:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        *,
+        system_sessions: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
         self._sessions = sessions
+        self._system_sessions = system_sessions
 
     def for_tenant(self, context: TenantContext) -> SQLAlchemyUnitOfWork:
         return SQLAlchemyUnitOfWork(self._sessions, context)
 
     def system(self) -> SQLAlchemyUnitOfWork:
-        return SQLAlchemyUnitOfWork(self._sessions, None)
+        if self._system_sessions is None:
+            raise ConfigurationError(
+                "System Unit of Work requires an explicitly configured operational database role"
+            )
+        return SQLAlchemyUnitOfWork(self._system_sessions, None)

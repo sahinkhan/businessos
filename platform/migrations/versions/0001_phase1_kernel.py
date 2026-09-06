@@ -19,6 +19,8 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS eventing")
     op.execute("CREATE SCHEMA IF NOT EXISTS platform_module")
+    op.execute("REVOKE ALL ON SCHEMA eventing FROM PUBLIC")
+    op.execute("REVOKE ALL ON SCHEMA platform_module FROM PUBLIC")
 
     op.create_table(
         "outbox_messages",
@@ -61,7 +63,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint("consumer", "event_id", name="pk_inbox_receipts"),
+        sa.PrimaryKeyConstraint("tenant_id", "consumer", "event_id", name="pk_inbox_receipts"),
         schema="eventing",
     )
     op.create_index(
@@ -85,6 +87,24 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("module_id", name="pk_module_runtime_state"),
         schema="platform_module",
     )
+
+    tenant_expression = "tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid"
+    for table_name in ("outbox_messages", "inbox_receipts"):
+        qualified = f"eventing.{table_name}"
+        op.execute(f"ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY")
+        op.execute(f"ALTER TABLE {qualified} FORCE ROW LEVEL SECURITY")
+        op.execute(
+            f"CREATE POLICY {table_name}_tenant_isolation ON {qualified} "
+            f"TO businessos_app USING ({tenant_expression}) WITH CHECK ({tenant_expression})"
+        )
+
+    op.execute("GRANT USAGE ON SCHEMA eventing TO businessos_app, businessos_ops")
+    op.execute("GRANT USAGE ON SCHEMA platform_module TO businessos_app")
+    op.execute("GRANT SELECT, INSERT ON eventing.outbox_messages TO businessos_app")
+    op.execute("GRANT SELECT, INSERT ON eventing.inbox_receipts TO businessos_app")
+    op.execute("GRANT SELECT, UPDATE ON eventing.outbox_messages TO businessos_ops")
+    op.execute("GRANT SELECT, INSERT ON eventing.inbox_receipts TO businessos_ops")
+    op.execute("GRANT SELECT ON platform_module.module_runtime_state TO businessos_app")
 
 
 def downgrade() -> None:

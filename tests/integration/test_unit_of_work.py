@@ -54,8 +54,9 @@ async def test_unit_of_work_commits_state_and_outbox_atomically(
         unit_of_work.add_outbox(message)
         await unit_of_work.commit()
 
-    async with database.sessions() as session:
-        count = await session.scalar(select(func.count()).select_from(OutboxMessage))
+    async with factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        count = await unit_of_work.session.scalar(select(func.count()).select_from(OutboxMessage))
     await database.close()
 
     assert count == 1
@@ -85,8 +86,9 @@ async def test_unit_of_work_rolls_back_without_explicit_commit(
     async with factory.for_tenant(tenant) as unit_of_work:
         unit_of_work.add_outbox(message)
 
-    async with database.sessions() as session:
-        count = await session.scalar(
+    async with factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        count = await unit_of_work.session.scalar(
             select(func.count())
             .select_from(OutboxMessage)
             .where(OutboxMessage.id == message.event_id)

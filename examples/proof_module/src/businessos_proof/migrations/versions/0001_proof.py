@@ -18,6 +18,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS mod_example_phase1_proof")
+    op.execute("REVOKE ALL ON SCHEMA mod_example_phase1_proof FROM PUBLIC")
     op.create_table(
         "proof_records",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -33,11 +34,17 @@ def upgrade() -> None:
         schema="mod_example_phase1_proof",
     )
     op.execute("ALTER TABLE mod_example_phase1_proof.proof_records ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE mod_example_phase1_proof.proof_records FORCE ROW LEVEL SECURITY")
     op.execute(
         "CREATE POLICY proof_records_tenant_isolation "
         "ON mod_example_phase1_proof.proof_records "
         "USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid) "
         "WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)"
+    )
+    op.execute("GRANT USAGE ON SCHEMA mod_example_phase1_proof TO businessos_app")
+    op.execute(
+        "GRANT SELECT, INSERT, UPDATE, DELETE "
+        "ON mod_example_phase1_proof.proof_records TO businessos_app"
     )
 
 

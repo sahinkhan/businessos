@@ -38,9 +38,16 @@ def _settings(database_url: str) -> Settings:
 @pytest.mark.integration
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_outbox_survives_publish_failure_and_retries(migrated_database_url: str) -> None:
+async def test_outbox_survives_publish_failure_and_retries(
+    migrated_database_url: str,
+    postgres_operations_database_url: str,
+) -> None:
     database = Database(_settings(migrated_database_url))
-    factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    operations_database = Database(_settings(postgres_operations_database_url))
+    factory = SQLAlchemyUnitOfWorkFactory(
+        database.sessions,
+        system_sessions=operations_database.sessions,
+    )
     tenant = TenantContext(uuid4(), uuid4(), uuid4())
     pending = PendingOutboxMessage(
         tenant_id=tenant.tenant_id,
@@ -57,8 +64,9 @@ async def test_outbox_survives_publish_failure_and_retries(migrated_database_url
     publisher = OutboxPublisher(factory, provider)
     assert await publisher.publish_batch() == 0
 
-    async with database.sessions() as session:
-        stored = await session.scalar(
+    async with factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        stored = await unit_of_work.session.scalar(
             select(OutboxMessage).where(OutboxMessage.id == pending.event_id)
         )
         assert stored is not None
@@ -68,14 +76,16 @@ async def test_outbox_survives_publish_failure_and_retries(migrated_database_url
 
     provider.failing = False
     assert await publisher.publish_batch() == 1
-    async with database.sessions() as session:
-        stored = await session.scalar(
+    async with factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        stored = await unit_of_work.session.scalar(
             select(OutboxMessage).where(OutboxMessage.id == pending.event_id)
         )
         assert stored is not None
         assert stored.published_at is not None
         assert stored.attempts == 2
     await database.close()
+    await operations_database.close()
 
     assert provider.messages[0][0] == "businessos.events.proof.changed"
     assert provider.messages[0][2]["tenant-id"] == str(tenant.tenant_id)
@@ -110,7 +120,8 @@ async def test_inbox_claim_is_durable_and_idempotent(migrated_database_url: str)
             tenant_id=tenant.tenant_id,
         )
 
-    async with database.sessions() as session:
-        receipts = (await session.scalars(select(InboxReceipt))).all()
+    async with factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        receipts = (await unit_of_work.session.scalars(select(InboxReceipt))).all()
     await database.close()
     assert len(receipts) == 1

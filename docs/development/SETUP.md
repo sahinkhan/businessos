@@ -19,7 +19,7 @@ Start infrastructure and apply the protected runtime migration:
 
 ```bash
 docker compose up -d postgres redis nats object-storage
-docker compose run --rm app alembic upgrade head
+docker compose run --rm migrate
 ```
 
 Start Uvicorn with source reload:
@@ -48,6 +48,14 @@ python -m pip install -e examples/proof_module
 
 Configuration uses `BOS_`-prefixed environment variables. `BOS_DATABASE_URL` must use SQLAlchemy's `postgresql+psycopg://` dialect. Secrets belong in environment/secret providers and must not be committed.
 
+The development database uses separate roles:
+
+- `businessos_migrator` owns the database and schema objects and is used only by migrations.
+- `businessos_app` is the `NOSUPERUSER`, `NOBYPASSRLS`, non-owner application role.
+- `businessos_ops` has explicit cross-tenant eventing privileges for approved operational workers; the application never uses it.
+
+The checked-in credentials are local-development values only. Production deployments must supply these roles and credentials through deployment secrets.
+
 ## Required Validation
 
 With the Compose infrastructure running:
@@ -57,9 +65,13 @@ ruff format --check platform/src platform/migrations examples tests
 ruff check platform/src platform/migrations examples tests
 mypy platform/src tests/unit tests/conformance examples/proof_module/src
 pytest -q tests/unit
-BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos:businessos@localhost:5432/postgres \
+BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
+BOS_TEST_DATABASE_RUNTIME_URL=postgresql://businessos_app:businessos-application@localhost:5432/postgres \
+BOS_TEST_DATABASE_OPERATIONS_URL=postgresql://businessos_ops:businessos-operations@localhost:5432/postgres \
   pytest -q tests/integration -m postgres
-BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos:businessos@localhost:5432/postgres \
+BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
+BOS_TEST_DATABASE_RUNTIME_URL=postgresql://businessos_app:businessos-application@localhost:5432/postgres \
+BOS_TEST_DATABASE_OPERATIONS_URL=postgresql://businessos_ops:businessos-operations@localhost:5432/postgres \
   pytest -q tests/conformance
 git diff --check
 ```

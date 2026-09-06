@@ -78,7 +78,7 @@ class Inbox:
         statement = (
             insert(InboxReceipt)
             .values(consumer=consumer, event_id=event_id, tenant_id=tenant_id)
-            .on_conflict_do_nothing(index_elements=["consumer", "event_id"])
+            .on_conflict_do_nothing(index_elements=["tenant_id", "consumer", "event_id"])
             .returning(InboxReceipt.event_id)
         )
         claimed = await session.scalar(statement)

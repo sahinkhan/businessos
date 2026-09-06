@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     app_version: str | None = None
-    database_url: str = "postgresql+psycopg://businessos:businessos@localhost:5432/businessos"
+    database_url: str = (
+        "postgresql+psycopg://businessos_app:businessos-application@localhost:5432/businessos"
+    )
     database_pool_size: int = Field(default=5, ge=1, le=100)
     database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
     database_readiness_enabled: bool = True

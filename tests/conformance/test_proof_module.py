@@ -6,15 +6,13 @@ import httpx
 import psycopg
 import pytest
 from businessos_proof import ProofModule
-from sqlalchemy import func, select
 
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
-from businessos.dependencies import DATABASE, OBJECT_STORAGE
+from businessos.dependencies import OBJECT_STORAGE
 from businessos.di import DependencyScope
 from businessos.modules import ModuleState, discover_modules
-from businessos.persistence import OutboxMessage
 from businessos.security import Authorizer, RequestIdentity
 
 
@@ -57,13 +55,16 @@ def _settings(database_url: str) -> Settings:
 @pytest.mark.postgres
 def test_external_module_owns_replayable_v1_to_v2_migrations(
     postgres_database_url: str,
+    postgres_migration_database_url: str,
 ) -> None:
     module = ProofModule()
     app = create_application(_settings(postgres_database_url), modules=(module,))
     assert app.runtime is not None
 
-    app.runtime.migrations.upgrade(postgres_database_url, "proof_0001")
-    connection_url = postgres_database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    app.runtime.migrations.upgrade(postgres_migration_database_url, "proof_0001")
+    connection_url = postgres_migration_database_url.replace(
+        "postgresql+psycopg://", "postgresql://", 1
+    )
     with psycopg.connect(connection_url) as connection:
         columns_v1 = connection.execute(
             "SELECT column_name FROM information_schema.columns "
@@ -72,7 +73,7 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
         ).fetchall()
     assert [row[0] for row in columns_v1] == ["id", "tenant_id", "value"]
 
-    app.runtime.migrations.upgrade(postgres_database_url)
+    app.runtime.migrations.upgrade(postgres_migration_database_url)
     with psycopg.connect(connection_url) as connection:
         columns_v2 = connection.execute(
             "SELECT column_name FROM information_schema.columns "
@@ -86,9 +87,9 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
     assert [row[0] for row in columns_v2] == ["id", "tenant_id", "value", "description"]
     assert policies == [("proof_records_tenant_isolation",)]
 
-    app.runtime.migrations.downgrade(postgres_database_url)
-    app.runtime.migrations.upgrade(postgres_database_url)
-    app.runtime.migrations.downgrade(postgres_database_url)
+    app.runtime.migrations.downgrade(postgres_migration_database_url)
+    app.runtime.migrations.upgrade(postgres_migration_database_url)
+    app.runtime.migrations.downgrade(postgres_migration_database_url)
 
 
 @pytest.mark.integration
@@ -96,6 +97,7 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
 @pytest.mark.asyncio
 async def test_external_module_conforms_without_protected_core_edits(
     postgres_database_url: str,
+    postgres_migration_database_url: str,
 ) -> None:
     discovered = tuple(module for module in discover_modules() if isinstance(module, ProofModule))
     assert len(discovered) == 1
@@ -109,7 +111,7 @@ async def test_external_module_conforms_without_protected_core_edits(
         authorizer=Authorizer(AllowAllPolicy()),
     )
     assert app.runtime is not None
-    await asyncio.to_thread(app.runtime.migrations.upgrade, postgres_database_url)
+    await asyncio.to_thread(app.runtime.migrations.upgrade, postgres_migration_database_url)
     app.container.register(
         OBJECT_STORAGE,
         lambda _: storage,
@@ -134,11 +136,15 @@ async def test_external_module_conforms_without_protected_core_edits(
     assert app.runtime.metadata.get("example.phase1-proof.form").version == 2
     assert app.runtime.permissions.get("example.phase1-proof.write").description
 
-    async with app.container.request_scope() as dependencies:
-        database = await dependencies.resolve(DATABASE)
-        async with database.sessions() as session:
-            outbox_count = await session.scalar(select(func.count()).select_from(OutboxMessage))
-    assert outbox_count == 1
+    connection_url = postgres_migration_database_url.replace(
+        "postgresql+psycopg://", "postgresql://", 1
+    )
+    with psycopg.connect(connection_url) as connection:
+        outbox_count = connection.execute(
+            "SELECT count(*) FROM eventing.outbox_messages WHERE tenant_id = %s",
+            (tenant.tenant_id,),
+        ).fetchone()
+    assert outbox_count == (1,)
 
     plan = app.runtime.upgrades.plan((module.manifest,))
     assert plan.ordered_module_ids == (module.manifest.module_id,)
@@ -147,4 +153,4 @@ async def test_external_module_conforms_without_protected_core_edits(
     await app.shutdown()
     await app.runtime.lifecycle.retire(module.manifest.module_id)
     assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.REMOVED
-    await asyncio.to_thread(app.runtime.migrations.downgrade, postgres_database_url)
+    await asyncio.to_thread(app.runtime.migrations.downgrade, postgres_migration_database_url)

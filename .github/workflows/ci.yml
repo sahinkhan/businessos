@@ -13,21 +13,29 @@ jobs:
         image: postgres:17-alpine
         env:
           POSTGRES_DB: businessos
-          POSTGRES_USER: businessos
-          POSTGRES_PASSWORD: businessos
+          POSTGRES_USER: businessos_migrator
+          POSTGRES_PASSWORD: businessos-migration
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U businessos -d businessos"
+          --health-cmd "pg_isready -U businessos_migrator -d businessos"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 20
 
     env:
-      BOS_TEST_DATABASE_ADMIN_URL: postgresql://businessos:businessos@localhost:5432/postgres
+      BOS_TEST_DATABASE_ADMIN_URL: postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres
+      BOS_TEST_DATABASE_RUNTIME_URL: postgresql://businessos_app:businessos-application@localhost:5432/postgres
+      BOS_TEST_DATABASE_OPERATIONS_URL: postgresql://businessos_ops:businessos-operations@localhost:5432/postgres
 
     steps:
       - uses: actions/checkout@v4
+      - name: Create least-privileged database roles
+        env:
+          PGPASSWORD: businessos-migration
+        run: >-
+          psql -h localhost -U businessos_migrator -d businessos
+          --file docker/postgres/init/001-roles.sql
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"

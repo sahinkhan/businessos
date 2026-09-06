@@ -49,9 +49,9 @@ class InboxReceipt(Base):
     __tablename__ = "inbox_receipts"
     __table_args__ = ({"schema": "eventing"},)
 
+    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
     consumer: Mapped[str] = mapped_column(String(200), primary_key=True)
     event_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
-    tenant_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False, index=True)
     processed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

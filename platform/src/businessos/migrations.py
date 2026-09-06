@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from importlib.resources import as_file, files
@@ -14,6 +15,10 @@ from typing import cast
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
+from alembic.script.revision import RevisionError
+from alembic.util.exc import CommandError
+from packaging.version import InvalidVersion, Version
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
 
@@ -23,20 +28,26 @@ from businessos.modules import ModuleRegistry, ModuleState
 CORE_OWNER = "businessos.core"
 CORE_NAMESPACE = "businessos_core"
 RESOURCE_PREFIX = "python://"
+INVENTORY_FORMAT_VERSION = 2
+MIGRATION_LOCK_NAME = "businessos.migrations"
 
 
 @dataclass(frozen=True, slots=True)
 class MigrationSource:
-    """One owner-scoped migration source resolved from a path or package resource."""
+    """One owner-scoped migration source with stable installed identity."""
 
     owner: str
     namespace: str
     location: str
+    logical_location: str
+    distribution_identity: str
     allowed_dependencies: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
 class MigrationRevision:
+    """Canonical immutable facts for one discovered revision."""
+
     revision: str
     owner: str
     namespace: str
@@ -44,6 +55,9 @@ class MigrationRevision:
     dependencies: tuple[str, ...]
     branch_labels: tuple[str, ...]
     source_file: str
+    logical_location: str
+    distribution_identity: str
+    fingerprint: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +71,18 @@ class MigrationPlan:
 class _ResolvedSource:
     source: MigrationSource
     path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredInventory:
+    module_id: str
+    module_version: str
+    migration_namespace: str
+    locations: tuple[str, ...]
+    revision_ids: tuple[str, ...]
+    distribution_identity: str | None
+    inventory_format: int | None
+    revision_manifest: tuple[Mapping[str, object], ...]
 
 
 def _tuple_value(value: object) -> tuple[str, ...]:
@@ -102,6 +128,38 @@ def _literal_assignments(path: Path) -> dict[str, object]:
     return values
 
 
+def _source_identity(owner: str, location: str, index: int) -> tuple[str, str]:
+    if location.startswith(RESOURCE_PREFIX):
+        resource = location.removeprefix(RESOURCE_PREFIX)
+        package, separator, _ = resource.partition("/")
+        if not package or not separator:
+            raise ConfigurationError(f"Invalid migration resource URI: {location}")
+        return location, f"python:{package}"
+    name = Path(location).name or f"source-{index}"
+    return f"filesystem://{owner}/{name}", f"module:{owner}"
+
+
+def _json_sequence(value: object, field: str) -> Sequence[object]:
+    parsed = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(parsed, list):
+        raise ConfigurationError(f"Stored migration inventory has invalid {field}")
+    return cast(Sequence[object], parsed)
+
+
+def _json_strings(value: object, field: str) -> tuple[str, ...]:
+    sequence = _json_sequence(value, field)
+    if not all(isinstance(item, str) for item in sequence):
+        raise ConfigurationError(f"Stored migration inventory has invalid {field}")
+    return tuple(cast(str, item) for item in sequence)
+
+
+def _json_mappings(value: object, field: str) -> tuple[Mapping[str, object], ...]:
+    sequence = _json_sequence(value, field)
+    if not all(isinstance(item, dict) for item in sequence):
+        raise ConfigurationError(f"Stored migration inventory has invalid {field}")
+    return tuple(cast(Mapping[str, object], item) for item in sequence)
+
+
 class MigrationCoordinator:
     """Validate and execute the complete protected/module migration graph."""
 
@@ -109,11 +167,14 @@ class MigrationCoordinator:
         self._modules = modules
 
     def sources(self) -> tuple[MigrationSource, ...]:
+        core_location = "python://businessos/migration_assets/versions"
         sources = [
             MigrationSource(
                 owner=CORE_OWNER,
                 namespace=CORE_NAMESPACE,
-                location="python://businessos/migration_assets/versions",
+                location=core_location,
+                logical_location=core_location,
+                distribution_identity="python:businessos",
             )
         ]
         for registered in self._modules.ordered():
@@ -127,15 +188,20 @@ class MigrationCoordinator:
             allowed = frozenset(
                 {CORE_OWNER, *(dependency.module_id for dependency in manifest.dependencies)}
             )
-            sources.extend(
-                MigrationSource(
-                    owner=manifest.module_id,
-                    namespace=manifest.migration_namespace,
-                    location=location,
-                    allowed_dependencies=allowed,
+            for index, location in enumerate(manifest.migrations):
+                logical_location, distribution_identity = _source_identity(
+                    manifest.module_id, location, index
                 )
-                for location in manifest.migrations
-            )
+                sources.append(
+                    MigrationSource(
+                        owner=manifest.module_id,
+                        namespace=manifest.migration_namespace,
+                        location=location,
+                        logical_location=logical_location,
+                        distribution_identity=distribution_identity,
+                        allowed_dependencies=allowed,
+                    )
+                )
         return tuple(sources)
 
     @contextmanager
@@ -160,7 +226,8 @@ class MigrationCoordinator:
                     path = Path(location).resolve()
                 if not path.is_dir():
                     raise ConfigurationError(
-                        f"Migration location is unavailable for '{source.owner}': {location}"
+                        f"Migration location is unavailable for '{source.owner}': "
+                        f"{source.logical_location}"
                     )
                 resolved.append(_ResolvedSource(source, path))
             yield tuple(resolved)
@@ -169,7 +236,7 @@ class MigrationCoordinator:
         revisions: list[MigrationRevision] = []
         revision_owners: dict[str, MigrationRevision] = {}
         namespace_owners: dict[str, str] = {}
-        namespace_declarations: dict[str, str] = {}
+        branch_declarations: dict[str, str] = {}
         owner_sources: dict[str, list[MigrationSource]] = {}
 
         for item in resolved:
@@ -185,18 +252,28 @@ class MigrationCoordinator:
                 path for path in item.path.glob("*.py") if path.name != "__init__.py"
             )
             if not migration_files:
-                raise ConfigurationError(f"Migration source has no revisions: {source.location}")
+                raise ConfigurationError(
+                    f"Migration source has no revisions: {source.logical_location}"
+                )
             for path in migration_files:
                 values = _literal_assignments(path)
                 revision_id = cast(str, values["revision"])
+                labels = _tuple_value(values.get("branch_labels"))
+                if len(labels) != len(set(labels)):
+                    raise ConflictError(
+                        f"Migration '{revision_id}' declares a duplicate branch label"
+                    )
                 revision = MigrationRevision(
                     revision=revision_id,
                     owner=source.owner,
                     namespace=source.namespace,
                     down_revisions=_tuple_value(values.get("down_revision")),
                     dependencies=_tuple_value(values.get("depends_on")),
-                    branch_labels=_tuple_value(values.get("branch_labels")),
-                    source_file=f"{source.location}/{path.name}",
+                    branch_labels=labels,
+                    source_file=f"{source.logical_location}/{path.name}",
+                    logical_location=source.logical_location,
+                    distribution_identity=source.distribution_identity,
+                    fingerprint=hashlib.sha256(path.read_bytes()).hexdigest(),
                 )
                 duplicate = revision_owners.get(revision_id)
                 if duplicate is not None:
@@ -207,16 +284,29 @@ class MigrationCoordinator:
                 revision_owners[revision_id] = revision
                 revisions.append(revision)
                 for label in revision.branch_labels:
-                    previous_revision = namespace_declarations.setdefault(label, revision_id)
+                    previous_revision = branch_declarations.setdefault(label, revision_id)
                     if previous_revision != revision_id:
                         raise ConflictError(
                             f"Migration branch-label collision '{label}' in revisions "
                             f"'{previous_revision}' and '{revision_id}'"
                         )
 
-        for owner, sources in owner_sources.items():
+        shared_symbols = sorted(set(revision_owners).intersection(branch_declarations))
+        if shared_symbols:
+            symbol = shared_symbols[0]
+            raise ConflictError(
+                f"Migration symbol '{symbol}' is both a revision ID and a branch label"
+            )
+
+        for owner, sources in sorted(owner_sources.items()):
+            namespaces = {source.namespace for source in sources}
+            distributions = {source.distribution_identity for source in sources}
+            if len(namespaces) != 1 or len(distributions) != 1:
+                raise ConfigurationError(
+                    f"Migration owner '{owner}' has inconsistent namespace or distribution identity"
+                )
             namespace = sources[0].namespace
-            declared_by = namespace_declarations.get(namespace)
+            declared_by = branch_declarations.get(namespace)
             if declared_by is None:
                 raise ConfigurationError(
                     f"Migration owner '{owner}' does not declare branch label '{namespace}'"
@@ -252,9 +342,37 @@ class MigrationCoordinator:
                     )
             referenced_as_parent.update(revision.down_revisions)
 
+        self._reject_cycles(revision_owners)
         ordered = tuple(sorted(revisions, key=lambda item: (item.owner, item.revision)))
         heads = tuple(sorted(known - referenced_as_parent))
-        return MigrationPlan(self.sources(), ordered, heads)
+        plan = MigrationPlan(self.sources(), ordered, heads)
+        self._validate_alembic_revision_map(resolved, heads)
+        return plan
+
+    @staticmethod
+    def _reject_cycles(revisions: Mapping[str, MigrationRevision]) -> None:
+        states: dict[str, int] = {}
+        stack: list[str] = []
+
+        def visit(revision_id: str) -> None:
+            state = states.get(revision_id, 0)
+            if state == 2:
+                return
+            if state == 1:
+                start = stack.index(revision_id)
+                cycle = (*stack[start:], revision_id)
+                raise ConflictError("Migration dependency cycle: " + " -> ".join(cycle))
+            states[revision_id] = 1
+            stack.append(revision_id)
+            revision = revisions[revision_id]
+            prerequisites = sorted(set((*revision.down_revisions, *revision.dependencies)))
+            for prerequisite in prerequisites:
+                visit(prerequisite)
+            stack.pop()
+            states[revision_id] = 2
+
+        for revision_id in sorted(revisions):
+            visit(revision_id)
 
     def plan(self, database_url: str | None = None) -> MigrationPlan:
         with self._resolved_sources() as resolved:
@@ -264,12 +382,19 @@ class MigrationCoordinator:
         return plan
 
     @staticmethod
-    def _configuration(database_url: str, resolved: Sequence[_ResolvedSource]) -> Config:
+    def _configuration(
+        database_url: str | None,
+        resolved: Sequence[_ResolvedSource],
+        connection: Connection | None = None,
+    ) -> Config:
         core_versions = next(item.path for item in resolved if item.source.owner == CORE_OWNER)
         config = Config()
-        config.attributes["database_url"] = database_url
+        if database_url is not None:
+            config.attributes["database_url"] = database_url
+            config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
+        if connection is not None:
+            config.attributes["connection"] = connection
         config.set_main_option("script_location", str(core_versions.parent))
-        config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
         config.set_main_option("path_separator", "os")
         config.set_main_option(
             "version_locations",
@@ -277,41 +402,86 @@ class MigrationCoordinator:
         )
         return config
 
+    def _validate_alembic_revision_map(
+        self, resolved: Sequence[_ResolvedSource], expected_heads: tuple[str, ...]
+    ) -> None:
+        try:
+            script = ScriptDirectory.from_config(self._configuration(None, resolved))
+            alembic_heads = tuple(sorted(script.get_heads()))
+        except (CommandError, RevisionError) as exc:
+            raise ConfigurationError(f"Alembic migration graph is invalid: {exc}") from exc
+        if alembic_heads != expected_heads:
+            raise ConfigurationError(
+                "Canonical migration heads do not match Alembic heads: "
+                f"canonical={expected_heads}, alembic={alembic_heads}"
+            )
+
     def upgrade(self, database_url: str, revision: str = "heads") -> None:
         with self._resolved_sources() as resolved:
             plan = self._build_plan(resolved)
-            self._validate_database_inventory(database_url, plan)
-            command.upgrade(self._configuration(database_url, resolved), revision)
-        self._persist_inventory(database_url, plan)
+            engine = create_engine(database_url)
+            try:
+                with engine.connect() as connection, connection.begin():
+                    self._lock_migrations(connection)
+                    self._validate_database_inventory_connection(connection, plan)
+                    command.upgrade(
+                        self._configuration(database_url, resolved, connection), revision
+                    )
+                    self._persist_inventory(connection, plan)
+            finally:
+                engine.dispose()
 
     def downgrade(self, database_url: str, revision: str = "base") -> None:
         with self._resolved_sources() as resolved:
             plan = self._build_plan(resolved)
-            self._validate_database_inventory(database_url, plan)
-            command.downgrade(self._configuration(database_url, resolved), revision)
+            engine = create_engine(database_url)
+            try:
+                with engine.connect() as connection, connection.begin():
+                    self._lock_migrations(connection)
+                    self._validate_database_inventory_connection(connection, plan)
+                    command.downgrade(
+                        self._configuration(database_url, resolved, connection), revision
+                    )
+                    self._persist_inventory(connection, plan)
+            finally:
+                engine.dispose()
+
+    @staticmethod
+    def _lock_migrations(connection: Connection) -> None:
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_name, 0))"),
+            {"lock_name": MIGRATION_LOCK_NAME},
+        )
 
     def _validate_database_inventory(self, database_url: str, plan: MigrationPlan) -> None:
         engine = create_engine(database_url)
         try:
             with engine.connect() as connection:
-                applied = self._applied_revisions(connection)
-                known = {revision.revision for revision in plan.revisions}
-                missing = sorted(applied - known)
-                if missing:
-                    raise ConfigurationError(
-                        "Database contains revisions whose migration packages are unavailable: "
-                        + ", ".join(missing)
-                    )
-                installed = self._installed_modules(connection)
-                discovered = {source.owner for source in plan.sources if source.owner != CORE_OWNER}
-                unavailable = sorted(installed - discovered)
-                if unavailable:
-                    raise ConfigurationError(
-                        "Installed module migration packages are unavailable: "
-                        + ", ".join(unavailable)
-                    )
+                self._validate_database_inventory_connection(connection, plan)
         finally:
             engine.dispose()
+
+    def _validate_database_inventory_connection(
+        self, connection: Connection, plan: MigrationPlan
+    ) -> None:
+        applied = self._applied_revisions(connection)
+        known = {revision.revision for revision in plan.revisions}
+        missing = sorted(applied - known)
+        if missing:
+            raise ConfigurationError(
+                "Database contains revisions whose migration packages are unavailable: "
+                + ", ".join(missing)
+            )
+
+        inventories = self._stored_inventories(connection)
+        discovered = {source.owner for source in plan.sources if source.owner != CORE_OWNER}
+        unavailable = sorted(set(inventories) - discovered)
+        if unavailable:
+            raise ConfigurationError(
+                "Installed module migration packages are unavailable: " + ", ".join(unavailable)
+            )
+        for module_id, stored in sorted(inventories.items()):
+            self._validate_stored_module(plan, module_id, stored)
 
     @staticmethod
     def _applied_revisions(connection: Connection) -> set[str]:
@@ -323,71 +493,218 @@ class MigrationCoordinator:
         return set(connection.execute(text("SELECT version_num FROM alembic_version")).scalars())
 
     @staticmethod
-    def _installed_modules(connection: Connection) -> set[str]:
+    def _inventory_columns(connection: Connection) -> set[str]:
+        return set(
+            connection.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'platform_module' "
+                    "AND table_name = 'installed_module_migrations'"
+                )
+            ).scalars()
+        )
+
+    def _stored_inventories(self, connection: Connection) -> dict[str, _StoredInventory]:
         exists = connection.execute(
             text("SELECT to_regclass('platform_module.installed_module_migrations')")
         ).scalar_one()
         if exists is None:
-            return set()
-        return set(
-            connection.execute(
-                text("SELECT module_id FROM platform_module.installed_module_migrations")
-            ).scalars()
+            return {}
+        columns = self._inventory_columns(connection)
+        has_graph = {
+            "distribution_identity",
+            "inventory_format",
+            "revision_manifest",
+        }.issubset(columns)
+        graph_fields = (
+            "distribution_identity, inventory_format, revision_manifest"
+            if has_graph
+            else "NULL AS distribution_identity, NULL AS inventory_format, "
+            "'[]'::jsonb AS revision_manifest"
+        )
+        rows = connection.execute(
+            text(
+                "SELECT module_id, module_version, migration_namespace, locations, "
+                f"revision_ids, {graph_fields} "
+                "FROM platform_module.installed_module_migrations"
+            )
+        ).mappings()
+        inventories: dict[str, _StoredInventory] = {}
+        for row in rows:
+            module_id = row["module_id"]
+            module_version = row["module_version"]
+            namespace = row["migration_namespace"]
+            if not all(isinstance(value, str) for value in (module_id, module_version, namespace)):
+                raise ConfigurationError("Stored migration inventory has invalid identity fields")
+            distribution = row["distribution_identity"]
+            inventory_format = row["inventory_format"]
+            inventories[cast(str, module_id)] = _StoredInventory(
+                module_id=cast(str, module_id),
+                module_version=cast(str, module_version),
+                migration_namespace=cast(str, namespace),
+                locations=_json_strings(row["locations"], "locations"),
+                revision_ids=_json_strings(row["revision_ids"], "revision_ids"),
+                distribution_identity=(distribution if isinstance(distribution, str) else None),
+                inventory_format=(inventory_format if isinstance(inventory_format, int) else None),
+                revision_manifest=_json_mappings(row["revision_manifest"], "revision_manifest"),
+            )
+        return inventories
+
+    def _validate_stored_module(
+        self, plan: MigrationPlan, module_id: str, stored: _StoredInventory
+    ) -> None:
+        sources = tuple(source for source in plan.sources if source.owner == module_id)
+        revisions = tuple(revision for revision in plan.revisions if revision.owner == module_id)
+        if not sources:
+            raise ConfigurationError(
+                f"Installed module migration package is unavailable: {module_id}"
+            )
+        namespace = sources[0].namespace
+        locations = tuple(sorted(source.logical_location for source in sources))
+        distributions = {source.distribution_identity for source in sources}
+        distribution = next(iter(distributions))
+        if stored.migration_namespace != namespace:
+            raise ConfigurationError(f"Installed module '{module_id}' changed migration namespace")
+        if tuple(sorted(stored.locations)) != locations:
+            raise ConfigurationError(f"Installed module '{module_id}' changed migration location")
+        if (
+            stored.distribution_identity is not None
+            and stored.distribution_identity != distribution
+        ):
+            raise ConfigurationError(
+                f"Installed module '{module_id}' changed distribution identity"
+            )
+        current_revision_ids = {revision.revision for revision in revisions}
+        removed = sorted(set(stored.revision_ids) - current_revision_ids)
+        if removed:
+            raise ConfigurationError(
+                f"Installed module '{module_id}' removed historical revisions: "
+                + ", ".join(removed)
+            )
+        current_version = self._module_version(module_id)
+        try:
+            if Version(current_version) < Version(stored.module_version):
+                raise ConfigurationError(
+                    f"Installed module '{module_id}' cannot downgrade from "
+                    f"{stored.module_version} to {current_version}"
+                )
+        except InvalidVersion as exc:
+            raise ConfigurationError(
+                f"Installed module '{module_id}' has invalid recorded version"
+            ) from exc
+
+        current_manifest = {
+            cast(str, item["revision"]): item for item in self._revision_manifest(revisions)
+        }
+        for historical in stored.revision_manifest:
+            revision_id = historical.get("revision")
+            if not isinstance(revision_id, str):
+                raise ConfigurationError(
+                    f"Installed module '{module_id}' has invalid revision history"
+                )
+            current = current_manifest.get(revision_id)
+            if current is None:
+                raise ConfigurationError(
+                    f"Installed module '{module_id}' removed historical revision '{revision_id}'"
+                )
+            if dict(historical) != current:
+                raise ConfigurationError(
+                    f"Installed module '{module_id}' rewrote historical revision '{revision_id}'"
+                )
+
+    def _module_version(self, module_id: str) -> str:
+        return self._modules.get(module_id).module.manifest.version
+
+    @staticmethod
+    def _revision_manifest(
+        revisions: Sequence[MigrationRevision],
+    ) -> tuple[dict[str, object], ...]:
+        return tuple(
+            {
+                "revision": revision.revision,
+                "parents": sorted(revision.down_revisions),
+                "dependencies": sorted(revision.dependencies),
+                "branch_labels": sorted(revision.branch_labels),
+                "logical_location": revision.logical_location,
+                "distribution_identity": revision.distribution_identity,
+                "fingerprint": revision.fingerprint,
+            }
+            for revision in sorted(revisions, key=lambda item: item.revision)
         )
 
-    def _persist_inventory(self, database_url: str, plan: MigrationPlan) -> None:
-        revisions_by_owner: dict[str, list[str]] = {}
-        locations_by_owner: dict[str, list[str]] = {}
-        namespaces: dict[str, str] = {}
-        for source in plan.sources:
-            if source.owner == CORE_OWNER:
-                continue
-            locations_by_owner.setdefault(source.owner, []).append(source.location)
-            namespaces[source.owner] = source.namespace
-        for revision in plan.revisions:
-            revisions_by_owner.setdefault(revision.owner, []).append(revision.revision)
+    def _persist_inventory(self, connection: Connection, plan: MigrationPlan) -> None:
+        exists = connection.execute(
+            text("SELECT to_regclass('platform_module.installed_module_migrations')")
+        ).scalar_one()
+        if exists is None:
+            return
+        columns = self._inventory_columns(connection)
+        has_graph = {
+            "distribution_identity",
+            "inventory_format",
+            "revision_manifest",
+        }.issubset(columns)
 
-        engine = create_engine(database_url)
-        try:
-            with engine.begin() as connection:
-                exists = connection.execute(
-                    text("SELECT to_regclass('platform_module.installed_module_migrations')")
-                ).scalar_one()
-                if exists is None:
-                    return
-                for registered in self._modules.entries():
-                    manifest = registered.module.manifest
-                    if not manifest.migrations:
-                        continue
-                    lifecycle_state = (
-                        "retired"
-                        if registered.state is ModuleState.REMOVED
-                        else registered.state.value
-                    )
-                    connection.execute(
-                        text(
-                            "INSERT INTO platform_module.installed_module_migrations "
-                            "(module_id, module_version, migration_namespace, locations, "
-                            "revision_ids, lifecycle_state) "
-                            "VALUES (:module_id, :module_version, :migration_namespace, "
-                            "CAST(:locations AS jsonb), CAST(:revision_ids AS jsonb), "
-                            ":lifecycle_state) "
-                            "ON CONFLICT (module_id) DO UPDATE SET "
-                            "module_version = EXCLUDED.module_version, "
-                            "migration_namespace = EXCLUDED.migration_namespace, "
-                            "locations = EXCLUDED.locations, revision_ids = EXCLUDED.revision_ids, "
-                            "lifecycle_state = EXCLUDED.lifecycle_state, updated_at = now()"
+        for registered in self._modules.entries():
+            manifest = registered.module.manifest
+            if not manifest.migrations:
+                continue
+            sources = tuple(source for source in plan.sources if source.owner == manifest.module_id)
+            revisions = tuple(
+                revision for revision in plan.revisions if revision.owner == manifest.module_id
+            )
+            locations = sorted(source.logical_location for source in sources)
+            distribution = next(iter({source.distribution_identity for source in sources}))
+            revision_ids = sorted(revision.revision for revision in revisions)
+            lifecycle_state = (
+                "retired" if registered.state is ModuleState.REMOVED else registered.state.value
+            )
+            parameters: dict[str, object] = {
+                "module_id": manifest.module_id,
+                "module_version": manifest.version,
+                "migration_namespace": manifest.migration_namespace,
+                "locations": json.dumps(locations),
+                "revision_ids": json.dumps(revision_ids),
+                "lifecycle_state": lifecycle_state,
+            }
+            if has_graph:
+                parameters.update(
+                    {
+                        "distribution_identity": distribution,
+                        "inventory_format": INVENTORY_FORMAT_VERSION,
+                        "revision_manifest": json.dumps(
+                            self._revision_manifest(revisions), sort_keys=True
                         ),
-                        {
-                            "module_id": manifest.module_id,
-                            "module_version": manifest.version,
-                            "migration_namespace": namespaces[manifest.module_id],
-                            "locations": json.dumps(sorted(locations_by_owner[manifest.module_id])),
-                            "revision_ids": json.dumps(
-                                sorted(revisions_by_owner.get(manifest.module_id, []))
-                            ),
-                            "lifecycle_state": lifecycle_state,
-                        },
-                    )
-        finally:
-            engine.dispose()
+                    }
+                )
+                statement = text(
+                    "INSERT INTO platform_module.installed_module_migrations "
+                    "(module_id, module_version, migration_namespace, locations, revision_ids, "
+                    "lifecycle_state, distribution_identity, inventory_format, revision_manifest) "
+                    "VALUES (:module_id, :module_version, :migration_namespace, "
+                    "CAST(:locations AS jsonb), CAST(:revision_ids AS jsonb), :lifecycle_state, "
+                    ":distribution_identity, :inventory_format, "
+                    "CAST(:revision_manifest AS jsonb)) "
+                    "ON CONFLICT (module_id) DO UPDATE SET "
+                    "module_version = EXCLUDED.module_version, "
+                    "migration_namespace = EXCLUDED.migration_namespace, "
+                    "locations = EXCLUDED.locations, revision_ids = EXCLUDED.revision_ids, "
+                    "lifecycle_state = EXCLUDED.lifecycle_state, "
+                    "distribution_identity = EXCLUDED.distribution_identity, "
+                    "inventory_format = EXCLUDED.inventory_format, "
+                    "revision_manifest = EXCLUDED.revision_manifest, updated_at = now()"
+                )
+            else:
+                statement = text(
+                    "INSERT INTO platform_module.installed_module_migrations "
+                    "(module_id, module_version, migration_namespace, locations, revision_ids, "
+                    "lifecycle_state) VALUES (:module_id, :module_version, "
+                    ":migration_namespace, CAST(:locations AS jsonb), "
+                    "CAST(:revision_ids AS jsonb), :lifecycle_state) "
+                    "ON CONFLICT (module_id) DO UPDATE SET "
+                    "module_version = EXCLUDED.module_version, "
+                    "migration_namespace = EXCLUDED.migration_namespace, "
+                    "locations = EXCLUDED.locations, revision_ids = EXCLUDED.revision_ids, "
+                    "lifecycle_state = EXCLUDED.lifecycle_state, updated_at = now()"
+                )
+            connection.execute(statement, parameters)

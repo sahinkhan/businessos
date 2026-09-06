@@ -60,5 +60,7 @@ async def run_async_migrations() -> None:
 
 if context.is_offline_mode():
     run_migrations_offline()
+elif connection := config.attributes.get("connection"):
+    do_run_migrations(connection)
 else:
     asyncio.run(run_async_migrations())

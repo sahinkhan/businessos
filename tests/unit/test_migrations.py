@@ -44,17 +44,21 @@ def _revision(
     filename: str,
     revision: str,
     *,
-    down_revision: str | None = "0001_phase1_kernel",
-    branch_label: str | None = None,
+    down_revision: str | tuple[str, ...] | None = "0001_phase1_kernel",
+    branch_label: str | tuple[str, ...] | None = None,
+    depends_on: str | tuple[str, ...] | None = None,
+    marker: str = "",
 ) -> None:
+    labels = (branch_label,) if isinstance(branch_label, str) else branch_label
     directory.mkdir(parents=True, exist_ok=True)
     directory.joinpath(filename).write_text(
         "\n".join(
             (
                 f"revision = {revision!r}",
                 f"down_revision = {down_revision!r}",
-                f"branch_labels = {((branch_label,) if branch_label else None)!r}",
-                "depends_on = None",
+                f"branch_labels = {labels!r}",
+                f"depends_on = {depends_on!r}",
+                f"marker = {marker!r}",
             )
         ),
         encoding="utf-8",
@@ -83,7 +87,7 @@ def test_plan_supports_core_and_two_independent_module_heads(tmp_path: Path) -> 
     plan = coordinator.plan()
 
     assert plan.heads == (
-        "0002_module_migration_inventory",
+        "0003_migration_graph_inventory",
         "alpha_0001",
         "beta_0001",
     )
@@ -112,6 +116,91 @@ def test_plan_rejects_duplicate_revision_and_branch_label(tmp_path: Path) -> Non
                 )
             )
         ).plan()
+
+
+def test_plan_rejects_revision_and_branch_label_shared_symbol(tmp_path: Path) -> None:
+    path = tmp_path / "shared-symbol"
+    _revision(path, "0001.py", "shared_symbol", branch_label="module_shared_symbol")
+    _revision(path, "0002.py", "shared_0002", branch_label="shared_symbol")
+
+    with pytest.raises(ConflictError, match="both a revision ID and a branch label"):
+        MigrationCoordinator(
+            _registry(MigrationModule("example.shared-symbol", path, "module_shared_symbol"))
+        ).plan()
+
+
+def test_plan_rejects_self_and_multi_node_cycles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    self_path = tmp_path / "self-cycle"
+    _revision(
+        self_path,
+        "0001.py",
+        "self_0001",
+        down_revision="self_0001",
+        branch_label="module_self_cycle",
+    )
+    coordinator = MigrationCoordinator(
+        _registry(MigrationModule("example.self-cycle", self_path, "module_self_cycle"))
+    )
+
+    def unexpected_engine(_: str) -> object:
+        raise AssertionError("database engine created before graph preflight")
+
+    monkeypatch.setattr("businessos.migrations.create_engine", unexpected_engine)
+    with pytest.raises(ConflictError, match="self_0001 -> self_0001"):
+        coordinator.upgrade("postgresql+psycopg://unused")
+
+    multi_path = tmp_path / "multi-cycle"
+    _revision(
+        multi_path,
+        "0001.py",
+        "cycle_0001",
+        down_revision="cycle_0002",
+        branch_label="module_multi_cycle",
+    )
+    _revision(multi_path, "0002.py", "cycle_0002", down_revision="cycle_0001")
+    with pytest.raises(
+        ConflictError,
+        match=r"cycle_0001 -> cycle_0002 -> cycle_0001",
+    ):
+        MigrationCoordinator(
+            _registry(MigrationModule("example.multi-cycle", multi_path, "module_multi_cycle"))
+        ).plan()
+
+
+def test_plan_rejects_cross_module_dependency_cycle(tmp_path: Path) -> None:
+    alpha_path = tmp_path / "alpha-cycle"
+    beta_path = tmp_path / "beta-cycle"
+    _revision(
+        alpha_path,
+        "0001.py",
+        "alpha_cycle_0001",
+        down_revision="beta_cycle_0001",
+        branch_label="module_alpha_cycle",
+    )
+    _revision(
+        beta_path,
+        "0001.py",
+        "beta_cycle_0001",
+        down_revision="alpha_cycle_0001",
+        branch_label="module_beta_cycle",
+    )
+    alpha = MigrationModule(
+        "example.alpha-cycle",
+        alpha_path,
+        "module_alpha_cycle",
+        dependencies=(ModuleDependency(module_id="example.beta-cycle", version=">=1"),),
+    )
+    beta = MigrationModule(
+        "example.beta-cycle",
+        beta_path,
+        "module_beta_cycle",
+        dependencies=(ModuleDependency(module_id="example.alpha-cycle", version=">=1"),),
+    )
+
+    with pytest.raises(ConfigurationError, match="Circular module dependency"):
+        MigrationCoordinator(_registry(alpha, beta)).plan()
 
     alpha_path = tmp_path / "alpha"
     beta_path = tmp_path / "beta"

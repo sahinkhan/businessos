@@ -15,7 +15,7 @@ import psycopg
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-EXPECTED_HEADS = {"0003_migration_graph_inventory", "proof_0003"}
+EXPECTED_HEADS = {"0004_strict_migration_inventory", "proof_0003"}
 
 
 def _required(name: str) -> str:

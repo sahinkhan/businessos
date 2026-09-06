@@ -1,10 +1,14 @@
 import asyncio
+import copy
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import cast
 
 import psycopg
 import pytest
+from psycopg import sql
+from psycopg.types.json import Jsonb
 
 from businessos.errors import ConfigurationError
 from businessos.migrations import MigrationCoordinator
@@ -113,6 +117,184 @@ def _inventory(
         ).fetchone()
     assert row is not None
     return row
+
+
+def _raw_inventory(database_url: str) -> dict[str, object]:
+    with psycopg.connect(_psycopg_url(database_url)) as connection:
+        row = connection.execute(
+            "SELECT module_id, module_version, migration_namespace, locations, revision_ids, "
+            "distribution_identity, inventory_format, revision_manifest "
+            "FROM platform_module.installed_module_migrations "
+            "WHERE module_id = 'example.history'"
+        ).fetchone()
+    assert row is not None
+    return dict(
+        zip(
+            (
+                "module_id",
+                "module_version",
+                "migration_namespace",
+                "locations",
+                "revision_ids",
+                "distribution_identity",
+                "inventory_format",
+                "revision_manifest",
+            ),
+            row,
+            strict=True,
+        )
+    )
+
+
+def _replace_inventory(database_url: str, inventory: dict[str, object]) -> None:
+    with psycopg.connect(_psycopg_url(database_url)) as connection:
+        constraints = connection.execute(
+            "SELECT constraint_name FROM information_schema.table_constraints "
+            "WHERE table_schema = 'platform_module' "
+            "AND table_name = 'installed_module_migrations' "
+            "AND constraint_type = 'CHECK' AND constraint_name LIKE 'ck_%'"
+        ).fetchall()
+        for (constraint,) in constraints:
+            connection.execute(
+                sql.SQL(
+                    "ALTER TABLE platform_module.installed_module_migrations DROP CONSTRAINT {}"
+                ).format(sql.Identifier(constraint))
+            )
+        connection.execute(
+            "UPDATE platform_module.installed_module_migrations SET "
+            "module_id = %s, module_version = %s, migration_namespace = %s, "
+            "locations = %s, revision_ids = %s, distribution_identity = %s, "
+            "inventory_format = %s, revision_manifest = %s "
+            "WHERE module_id = 'example.history'",
+            (
+                inventory["module_id"],
+                inventory["module_version"],
+                inventory["migration_namespace"],
+                Jsonb(inventory["locations"]),
+                Jsonb(inventory["revision_ids"]),
+                inventory["distribution_identity"],
+                inventory["inventory_format"],
+                Jsonb(inventory["revision_manifest"]),
+            ),
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "empty_manifest",
+        "empty_revision_ids",
+        "duplicate_revision_ids",
+        "manifest_id_mismatch",
+        "missing_manifest_field",
+        "invalid_fingerprint",
+        "wrong_json_type",
+        "null_nested_value",
+        "unknown_manifest_field",
+        "additional_unknown_revision",
+        "blank_identity",
+    ),
+)
+def test_format_2_inventory_rejects_malformed_persisted_rows_before_migration(
+    corruption: str,
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+) -> None:
+    history = tmp_path / "strict-history"
+    _revision(
+        history,
+        "0001.py",
+        "strict_history_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+    )
+    coordinator = _coordinator(history)
+    coordinator.upgrade(postgres_migration_database_url)
+    malformed = copy.deepcopy(_raw_inventory(postgres_migration_database_url))
+    revision_ids = malformed["revision_ids"]
+    manifest = malformed["revision_manifest"]
+    assert isinstance(revision_ids, list)
+    assert isinstance(manifest, list)
+    assert isinstance(manifest[0], dict)
+    first_manifest = cast(dict[str, object], manifest[0])
+
+    if corruption == "empty_manifest":
+        malformed["revision_manifest"] = []
+    elif corruption == "empty_revision_ids":
+        malformed["revision_ids"] = []
+    elif corruption == "duplicate_revision_ids":
+        malformed["revision_ids"] = [revision_ids[0], revision_ids[0]]
+    elif corruption == "manifest_id_mismatch":
+        malformed["revision_ids"] = ["different_0001"]
+    elif corruption == "missing_manifest_field":
+        del first_manifest["dependencies"]
+    elif corruption == "invalid_fingerprint":
+        first_manifest["fingerprint"] = "not-a-sha256"
+    elif corruption == "wrong_json_type":
+        malformed["revision_ids"] = "strict_history_0001"
+    elif corruption == "null_nested_value":
+        first_manifest["fingerprint"] = None
+    elif corruption == "unknown_manifest_field":
+        first_manifest["unexpected"] = "field"
+    elif corruption == "additional_unknown_revision":
+        unknown = copy.deepcopy(first_manifest)
+        unknown["revision"] = "unknown_0002"
+        malformed["revision_ids"] = [revision_ids[0], "unknown_0002"]
+        malformed["revision_manifest"] = [first_manifest, unknown]
+    elif corruption == "blank_identity":
+        malformed["module_version"] = ""
+    else:  # pragma: no cover - parametrization is closed
+        raise AssertionError(corruption)
+
+    _replace_inventory(postgres_migration_database_url, malformed)
+    before = _raw_inventory(postgres_migration_database_url)
+    with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
+        heads_before = tuple(
+            connection.execute("SELECT version_num FROM alembic_version ORDER BY version_num")
+        )
+
+    with pytest.raises(ConfigurationError):
+        coordinator.upgrade(postgres_migration_database_url)
+
+    assert _raw_inventory(postgres_migration_database_url) == before
+    with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
+        heads_after = tuple(
+            connection.execute("SELECT version_num FROM alembic_version ORDER BY version_num")
+        )
+    assert heads_after == heads_before
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_retained_format_1_inventory_is_accepted_and_promoted(
+    tmp_path: Path, postgres_migration_database_url: str
+) -> None:
+    history = tmp_path / "retained-format-1"
+    _revision(
+        history,
+        "0001.py",
+        "retained_history_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+    )
+    coordinator = _coordinator(history)
+    coordinator.upgrade(postgres_migration_database_url)
+    retained = _raw_inventory(postgres_migration_database_url)
+    retained["inventory_format"] = 1
+    retained["distribution_identity"] = "legacy:unknown"
+    retained["revision_manifest"] = []
+    _replace_inventory(postgres_migration_database_url, retained)
+
+    coordinator.upgrade(postgres_migration_database_url)
+
+    promoted = _raw_inventory(postgres_migration_database_url)
+    assert promoted["inventory_format"] == 2
+    assert promoted["distribution_identity"] == "module:example.history"
+    assert promoted["revision_ids"] == ["retained_history_0001"]
+    promoted_manifest = cast(list[dict[str, object]], promoted["revision_manifest"])
+    assert [item["revision"] for item in promoted_manifest] == ["retained_history_0001"]
 
 
 @pytest.mark.integration
@@ -262,7 +444,7 @@ def test_inventory_is_append_only_and_tamper_detecting(
     assert _inventory(postgres_migration_database_url) == appended_inventory
     with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
-    assert heads == {"0003_migration_graph_inventory", "history_0003"}
+    assert heads == {"0004_strict_migration_inventory", "history_0003"}
 
 
 @pytest.mark.integration
@@ -290,4 +472,4 @@ def test_concurrent_migrations_serialize_graph_and_inventory(
     assert [item["revision"] for item in inventory[-1]] == ["concurrent_history_0001"]
     with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
-    assert heads == {"0003_migration_graph_inventory", "concurrent_history_0001"}
+    assert heads == {"0004_strict_migration_inventory", "concurrent_history_0001"}

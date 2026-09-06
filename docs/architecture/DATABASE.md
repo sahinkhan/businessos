@@ -141,7 +141,10 @@ Global EAV is prohibited.
   database, and intentionally supports deterministic multiple heads.
 - Installed-module inventory is append-compatible and tamper-detecting. It records stable module,
   namespace, packaged-resource location, distribution, version, ancestry, dependency, branch-label
-  and SHA-256 revision facts. Historical removal or rewrite fails preflight.
+  and SHA-256 revision facts. Format-2 records use a strict, closed schema: identity and revision
+  arrays are non-empty and unique, manifest entries have exact fields and canonical types, and the
+  manifest has a one-to-one ordered relationship with recorded revision IDs. Malformed persisted
+  history fails preflight before Alembic or schema work; historical removal or rewrite also fails.
 - Migration execution and inventory advancement use one PostgreSQL transaction protected by a
   transaction-scoped advisory lock. Failure or cancellation advances neither schema history nor
   inventory.

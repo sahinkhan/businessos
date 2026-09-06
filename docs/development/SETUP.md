@@ -139,7 +139,10 @@ graph manifest containing logical package locations, distribution identity, name
 parents, dependencies, labels and revision fingerprints. Future releases may append revisions or
 valid merge revisions, but may not remove or rewrite recorded history. The coordinator serializes
 migration and inventory updates with a PostgreSQL advisory transaction lock and commits them
-together.
+together. Current format-2 rows are validated as a strict closed structure before normalization;
+empty or duplicate revision lists, incomplete or unknown manifest fields, malformed fingerprints
+and any manifest/list mismatch stop the migration before database changes. Retained format-1 rows
+remain readable only for their one-way promotion to the current format.
 
 From any working directory, an installed environment can inspect or execute the complete graph:
 

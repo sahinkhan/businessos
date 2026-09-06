@@ -289,7 +289,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
                 "SELECT oid FROM pg_database WHERE datname = current_database()"
             ).fetchone()
         assert retained == ("retained-value", "retained-description")
-        assert revisions == {("0003_migration_graph_inventory",), ("proof_0003",)}
+        assert revisions == {("0004_strict_migration_inventory",), ("proof_0003",)}
         assert roles == [
             ("businessos_app", False, False, False),
             ("businessos_migrator", False, False, False),

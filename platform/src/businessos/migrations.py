@@ -6,13 +6,14 @@ import ast
 import hashlib
 import json
 import os
+import re
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from importlib.metadata import packages_distributions
 from importlib.resources import as_file, files
 from pathlib import Path
-from typing import cast
+from typing import Self, cast
 
 from alembic import command
 from alembic.config import Config
@@ -21,6 +22,7 @@ from alembic.script.revision import RevisionError
 from alembic.util.exc import CommandError
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
 
@@ -32,6 +34,12 @@ CORE_NAMESPACE = "businessos_core"
 RESOURCE_PREFIX = "python://"
 INVENTORY_FORMAT_VERSION = 2
 MIGRATION_LOCK_NAME = "businessos.migrations"
+REVISION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+MODULE_PATTERN = r"^[a-z][a-z0-9_.-]+$"
+NAMESPACE_PATTERN = r"^[a-z][a-z0-9_]*$"
+LOGICAL_LOCATION_PATTERN = r"^(?:python|filesystem)://[^\s]+$"
+DISTRIBUTION_PATTERN = r"^(?:python-distribution|python-package|module):[a-z0-9][a-z0-9_.-]*$"
+FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +93,98 @@ class _StoredInventory:
     distribution_identity: str | None
     inventory_format: int | None
     revision_manifest: tuple[Mapping[str, object], ...]
+
+
+class _StoredRevision(BaseModel):
+    """Strict persisted form of one immutable migration revision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    revision: str = Field(pattern=REVISION_PATTERN)
+    parents: list[str]
+    dependencies: list[str]
+    branch_labels: list[str]
+    logical_location: str = Field(pattern=LOGICAL_LOCATION_PATTERN)
+    distribution_identity: str = Field(pattern=DISTRIBUTION_PATTERN)
+    fingerprint: str = Field(pattern=FINGERPRINT_PATTERN)
+
+    @field_validator("parents", "dependencies")
+    @classmethod
+    def validate_revision_references(cls, values: list[str]) -> list[str]:
+        if any(not re.fullmatch(REVISION_PATTERN, value) for value in values):
+            raise ValueError("revision references must be canonical strings")
+        if len(values) != len(set(values)):
+            raise ValueError("revision references must be unique")
+        return values
+
+    @field_validator("branch_labels")
+    @classmethod
+    def validate_branch_labels(cls, values: list[str]) -> list[str]:
+        if any(not re.fullmatch(NAMESPACE_PATTERN, value) for value in values):
+            raise ValueError("branch labels must be canonical strings")
+        if len(values) != len(set(values)):
+            raise ValueError("branch labels must be unique")
+        return values
+
+
+class _Format2Inventory(BaseModel):
+    """Fail-closed schema for the current persisted inventory format."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    module_id: str = Field(pattern=MODULE_PATTERN)
+    module_version: str = Field(min_length=1)
+    migration_namespace: str = Field(pattern=NAMESPACE_PATTERN)
+    locations: list[str] = Field(min_length=1)
+    revision_ids: list[str] = Field(min_length=1)
+    distribution_identity: str = Field(pattern=DISTRIBUTION_PATTERN)
+    inventory_format: int
+    revision_manifest: list[_StoredRevision] = Field(min_length=1)
+
+    @field_validator("module_version")
+    @classmethod
+    def validate_module_version(cls, value: str) -> str:
+        try:
+            Version(value)
+        except InvalidVersion as exc:
+            raise ValueError("module version must be valid") from exc
+        return value
+
+    @field_validator("locations")
+    @classmethod
+    def validate_locations(cls, values: list[str]) -> list[str]:
+        if any(not re.fullmatch(LOGICAL_LOCATION_PATTERN, value) for value in values):
+            raise ValueError("locations must be canonical logical URIs")
+        if len(values) != len(set(values)):
+            raise ValueError("locations must be unique")
+        return values
+
+    @field_validator("revision_ids")
+    @classmethod
+    def validate_revision_ids(cls, values: list[str]) -> list[str]:
+        if any(not re.fullmatch(REVISION_PATTERN, value) for value in values):
+            raise ValueError("revision IDs must be canonical strings")
+        if len(values) != len(set(values)):
+            raise ValueError("revision IDs must be unique")
+        return values
+
+    @model_validator(mode="after")
+    def validate_manifest_relationship(self) -> Self:
+        if self.inventory_format != INVENTORY_FORMAT_VERSION:
+            raise ValueError("inventory format does not match the format-2 schema")
+        manifest_ids = [item.revision for item in self.revision_manifest]
+        if len(manifest_ids) != len(set(manifest_ids)):
+            raise ValueError("manifest revision IDs must be unique")
+        if manifest_ids != self.revision_ids:
+            raise ValueError("manifest and revision IDs must have an exact ordered relationship")
+        if any(item.logical_location not in self.locations for item in self.revision_manifest):
+            raise ValueError("manifest contains an unknown logical location")
+        if any(
+            item.distribution_identity != self.distribution_identity
+            for item in self.revision_manifest
+        ):
+            raise ValueError("manifest contains an inconsistent distribution identity")
+        return self
 
 
 def _tuple_value(value: object) -> tuple[str, ...]:
@@ -165,13 +265,6 @@ def _json_strings(value: object, field: str) -> tuple[str, ...]:
     if not all(isinstance(item, str) for item in sequence):
         raise ConfigurationError(f"Stored migration inventory has invalid {field}")
     return tuple(cast(str, item) for item in sequence)
-
-
-def _json_mappings(value: object, field: str) -> tuple[Mapping[str, object], ...]:
-    sequence = _json_sequence(value, field)
-    if not all(isinstance(item, dict) for item in sequence):
-        raise ConfigurationError(f"Stored migration inventory has invalid {field}")
-    return tuple(cast(Mapping[str, object], item) for item in sequence)
 
 
 class MigrationCoordinator:
@@ -549,21 +642,94 @@ class MigrationCoordinator:
             module_id = row["module_id"]
             module_version = row["module_version"]
             namespace = row["migration_namespace"]
-            if not all(isinstance(value, str) for value in (module_id, module_version, namespace)):
-                raise ConfigurationError("Stored migration inventory has invalid identity fields")
             distribution = row["distribution_identity"]
             inventory_format = row["inventory_format"]
-            inventories[cast(str, module_id)] = _StoredInventory(
-                module_id=cast(str, module_id),
-                module_version=cast(str, module_version),
-                migration_namespace=cast(str, namespace),
-                locations=_json_strings(row["locations"], "locations"),
-                revision_ids=_json_strings(row["revision_ids"], "revision_ids"),
-                distribution_identity=(distribution if isinstance(distribution, str) else None),
-                inventory_format=(inventory_format if isinstance(inventory_format, int) else None),
-                revision_manifest=_json_mappings(row["revision_manifest"], "revision_manifest"),
-            )
+            try:
+                if inventory_format == INVENTORY_FORMAT_VERSION:
+                    validated = _Format2Inventory.model_validate(
+                        {
+                            "module_id": module_id,
+                            "module_version": module_version,
+                            "migration_namespace": namespace,
+                            "locations": _json_sequence(row["locations"], "locations"),
+                            "revision_ids": _json_sequence(row["revision_ids"], "revision_ids"),
+                            "distribution_identity": distribution,
+                            "inventory_format": inventory_format,
+                            "revision_manifest": _json_sequence(
+                                row["revision_manifest"], "revision_manifest"
+                            ),
+                        }
+                    )
+                    stored = _StoredInventory(
+                        module_id=validated.module_id,
+                        module_version=validated.module_version,
+                        migration_namespace=validated.migration_namespace,
+                        locations=tuple(validated.locations),
+                        revision_ids=tuple(validated.revision_ids),
+                        distribution_identity=validated.distribution_identity,
+                        inventory_format=validated.inventory_format,
+                        revision_manifest=tuple(
+                            item.model_dump() for item in validated.revision_manifest
+                        ),
+                    )
+                else:
+                    stored = self._legacy_inventory(
+                        module_id=module_id,
+                        module_version=module_version,
+                        namespace=namespace,
+                        locations=row["locations"],
+                        revision_ids=row["revision_ids"],
+                        distribution=distribution,
+                        inventory_format=inventory_format,
+                    )
+            except (ValidationError, ValueError, TypeError) as exc:
+                raise ConfigurationError("Stored migration inventory is malformed") from exc
+            inventories[stored.module_id] = stored
         return inventories
+
+    @staticmethod
+    def _legacy_inventory(
+        *,
+        module_id: object,
+        module_version: object,
+        namespace: object,
+        locations: object,
+        revision_ids: object,
+        distribution: object,
+        inventory_format: object,
+    ) -> _StoredInventory:
+        if inventory_format is not None and (
+            type(inventory_format) is not int or inventory_format != 1
+        ):
+            raise ValueError("unsupported inventory format")
+        if not isinstance(module_id, str) or not re.fullmatch(MODULE_PATTERN, module_id):
+            raise ValueError("invalid module ID")
+        if not isinstance(module_version, str):
+            raise ValueError("invalid module version")
+        Version(module_version)
+        if not isinstance(namespace, str) or not re.fullmatch(NAMESPACE_PATTERN, namespace):
+            raise ValueError("invalid migration namespace")
+        typed_locations = _json_strings(locations, "locations")
+        typed_revision_ids = _json_strings(revision_ids, "revision_ids")
+        if not typed_locations or len(typed_locations) != len(set(typed_locations)):
+            raise ValueError("invalid migration locations")
+        if any(not re.fullmatch(LOGICAL_LOCATION_PATTERN, item) for item in typed_locations):
+            raise ValueError("invalid migration location")
+        if not typed_revision_ids or len(typed_revision_ids) != len(set(typed_revision_ids)):
+            raise ValueError("invalid revision IDs")
+        if any(not re.fullmatch(REVISION_PATTERN, item) for item in typed_revision_ids):
+            raise ValueError("invalid revision ID")
+        typed_distribution = distribution if isinstance(distribution, str) else None
+        return _StoredInventory(
+            module_id=module_id,
+            module_version=module_version,
+            migration_namespace=namespace,
+            locations=typed_locations,
+            revision_ids=typed_revision_ids,
+            distribution_identity=typed_distribution,
+            inventory_format=inventory_format,
+            revision_manifest=(),
+        )
 
     def _validate_stored_module(
         self, plan: MigrationPlan, module_id: str, stored: _StoredInventory
@@ -583,23 +749,11 @@ class MigrationCoordinator:
         if tuple(sorted(stored.locations)) != locations:
             raise ConfigurationError(f"Installed module '{module_id}' changed migration location")
         if (
-            stored.distribution_identity is not None
+            stored.inventory_format == INVENTORY_FORMAT_VERSION
             and stored.distribution_identity != distribution
         ):
             raise ConfigurationError(
                 f"Installed module '{module_id}' changed distribution identity"
-            )
-        if stored.inventory_format not in (None, 1, INVENTORY_FORMAT_VERSION):
-            raise ConfigurationError(
-                f"Installed module '{module_id}' uses unsupported inventory format"
-            )
-        if (
-            stored.inventory_format == INVENTORY_FORMAT_VERSION
-            and stored.revision_ids
-            and not stored.revision_manifest
-        ):
-            raise ConfigurationError(
-                f"Installed module '{module_id}' has incomplete revision history"
             )
         current_revision_ids = {revision.revision for revision in revisions}
         removed = sorted(set(stored.revision_ids) - current_revision_ids)
@@ -623,18 +777,6 @@ class MigrationCoordinator:
         current_manifest = {
             cast(str, item["revision"]): item for item in self._revision_manifest(revisions)
         }
-        historical_ids = [item.get("revision") for item in stored.revision_manifest]
-        if not all(isinstance(item, str) for item in historical_ids):
-            raise ConfigurationError(f"Installed module '{module_id}' has invalid revision history")
-        typed_historical_ids = cast(list[str], historical_ids)
-        if len(typed_historical_ids) != len(set(typed_historical_ids)):
-            raise ConfigurationError(
-                f"Installed module '{module_id}' has duplicate revision history"
-            )
-        if set(typed_historical_ids) != set(stored.revision_ids) and stored.revision_manifest:
-            raise ConfigurationError(
-                f"Installed module '{module_id}' has inconsistent revision history"
-            )
         for historical in stored.revision_manifest:
             revision_id = historical.get("revision")
             if not isinstance(revision_id, str):

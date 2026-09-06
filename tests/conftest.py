@@ -36,6 +36,7 @@ def postgres_database_url() -> Iterator[str]:
 @pytest.fixture
 def migrated_database_url(postgres_database_url: str) -> Iterator[str]:
     config = Config("alembic.ini")
+    config.attributes["database_url"] = postgres_database_url
     config.set_main_option("sqlalchemy.url", postgres_database_url)
     command.upgrade(config, "head")
     try:

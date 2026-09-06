@@ -13,7 +13,7 @@ from pydantic import BaseModel
 class Response:
     status_code: int = 200
     body: bytes = b""
-    headers: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict[str, str])
 
     @classmethod
     def text(

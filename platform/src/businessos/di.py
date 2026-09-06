@@ -72,7 +72,7 @@ class Container:
         await self._exit_stack.aclose()
         self._singletons.clear()
 
-    async def _resolve(
+    async def resolve_for_scope(
         self,
         key: DependencyKey[T],
         request_cache: dict[DependencyKey[Any], object],
@@ -94,7 +94,8 @@ class Container:
             self._exit_stack if registration.scope is DependencyScope.SINGLETON else request_stack
         )
         if isinstance(value, AbstractAsyncContextManager):
-            value = await stack.enter_async_context(value)
+            context_manager = cast(AbstractAsyncContextManager[object], value)
+            value = await stack.enter_async_context(context_manager)
         if registration.scope is not DependencyScope.TRANSIENT:
             cache[key] = value
         return cast(T, value)
@@ -129,4 +130,4 @@ class RequestDependencyScope(
     async def resolve(self, key: DependencyKey[T]) -> T:
         if not self._entered:
             raise ConfigurationError("Dependency scope must be entered before resolution")
-        return await self._container._resolve(key, self._cache, self._exit_stack, self)
+        return await self._container.resolve_for_scope(key, self._cache, self._exit_stack, self)

@@ -58,13 +58,17 @@ class HandlingContext:
     request: RequestContext
     dependencies: RequestDependencyScope
     unit_of_work: UnitOfWork
-    _events: list[DomainEvent] = field(default_factory=list)
+    _events: list[DomainEvent] = field(default_factory=list[DomainEvent])
 
     def emit(self, event: DomainEvent) -> None:
         if self.request.tenant is None or event.tenant_id != self.request.tenant.tenant_id:
             raise ValueError("Event tenant must match the trusted request tenant")
         self.unit_of_work.add_outbox(event.to_outbox())
         self._events.append(event)
+
+    @property
+    def emitted_events(self) -> tuple[DomainEvent, ...]:
+        return tuple(self._events)
 
 
 class HandlerRegistry:
@@ -140,7 +144,7 @@ class MessageDispatcher:
             handling = HandlingContext(context, dependencies, unit_of_work)
             result = await self.commands.get(message)(message, handling)
             await unit_of_work.commit()
-        for event in handling._events:
+        for event in handling.emitted_events:
             await self.events.publish(event, context, dependencies)
         return result
 

@@ -119,17 +119,17 @@ class BusinessOSApplication:
     async def _handle_http(
         self, scope: HTTPScope, receive: ASGIReceiveCallable, send: ASGISendCallable
     ) -> None:
-        generated_context = RequestContext()
-        headers = self._headers(scope)
-        identity = RequestIdentity(
-            method=scope["method"],
-            path=scope["path"],
-            headers=headers,
-            correlation_id=headers.get("x-correlation-id", generated_context.correlation_id),
-            trace_id=headers.get("traceparent", generated_context.trace_id),
-        )
-        context = await self._context_resolver.resolve(identity)
         try:
+            generated_context = RequestContext()
+            headers = self._headers(scope)
+            identity = RequestIdentity(
+                method=scope["method"],
+                path=scope["path"],
+                headers=headers,
+                correlation_id=headers.get("x-correlation-id", generated_context.correlation_id),
+                trace_id=headers.get("traceparent", generated_context.trace_id),
+            )
+            context = await self._context_resolver.resolve(identity)
             match = self.router.match(scope["method"], scope["path"])
             request = Request(
                 scope,
@@ -139,10 +139,11 @@ class BusinessOSApplication:
                 body_limit_bytes=self.settings.request_body_limit_bytes,
             )
             async with self.container.request_scope() as dependencies:
-                if match.route.permission is not None:
-                    authorizer = await dependencies.resolve(AUTHORIZER)
-                    await authorizer.require(context, match.route.permission)
-                endpoint = self._endpoint(match.route.handler, dependencies)
+                endpoint = self._endpoint(
+                    match.route.handler,
+                    dependencies,
+                    permission=match.route.permission,
+                )
                 response = await compose_middleware(tuple(self._middleware), endpoint)(request)
         except BusinessOSError as exc:
             response = Response.json(exc.payload(), status_code=exc.status_code)
@@ -169,8 +170,13 @@ class BusinessOSApplication:
     def _endpoint(
         handler: Callable[[Request, RequestDependencyScope], Awaitable[Response]],
         dependencies: RequestDependencyScope,
+        *,
+        permission: str | None,
     ) -> Callable[[Request], Awaitable[Response]]:
         async def endpoint(request: Request) -> Response:
+            if permission is not None:
+                authorizer = await dependencies.resolve(AUTHORIZER)
+                await authorizer.require(request.context, permission)
             return await handler(request, dependencies)
 
         return endpoint

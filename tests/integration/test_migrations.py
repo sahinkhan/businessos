@@ -8,6 +8,7 @@ from alembic.config import Config
 @pytest.mark.postgres
 def test_alembic_upgrades_empty_database_and_is_replayable(postgres_database_url: str) -> None:
     config = Config("alembic.ini")
+    config.attributes["database_url"] = postgres_database_url
     config.set_main_option("sqlalchemy.url", postgres_database_url)
 
     command.upgrade(config, "head")

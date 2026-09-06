@@ -31,6 +31,7 @@ class MigrationCoordinator:
 
     def configuration(self, database_url: str) -> Config:
         config = Config(str(self._config_path))
+        config.attributes["database_url"] = database_url
         config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
         config.set_main_option(
             "version_locations",

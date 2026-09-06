@@ -94,7 +94,18 @@ def create_application(
         migrations=migrations,
     )
     runtime_placeholder["runtime"] = runtime
-    diagnostics = Diagnostics(version)
+    diagnostics = Diagnostics(
+        version,
+        module_snapshot=lambda: tuple(
+            {
+                "module_id": registered.module.manifest.module_id,
+                "version": registered.module.manifest.version,
+                "state": registered.state.value,
+                "error": registered.error,
+            }
+            for registered in module_registry.entries()
+        ),
+    )
     if resolved_settings.database_readiness_enabled:
         diagnostics.add_readiness_check("postgresql", database.readiness)
     diagnostics.register_routes(router)

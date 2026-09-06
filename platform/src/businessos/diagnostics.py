@@ -8,6 +8,7 @@ from businessos.di import RequestDependencyScope
 from businessos.http import Request, Response, Router
 
 ReadinessCheck = Callable[[], Awaitable[None]]
+ModuleSnapshot = Callable[[], tuple[dict[str, object], ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,9 +19,10 @@ class ReadinessResult:
 
 
 class Diagnostics:
-    def __init__(self, version: str) -> None:
+    def __init__(self, version: str, module_snapshot: ModuleSnapshot | None = None) -> None:
         self._version = version
         self._checks: dict[str, ReadinessCheck] = {}
+        self._module_snapshot = module_snapshot or (lambda: ())
 
     def add_readiness_check(self, name: str, check: ReadinessCheck) -> None:
         if name in self._checks:
@@ -60,6 +62,10 @@ class Diagnostics:
         async def version(_: Request, __: RequestDependencyScope) -> Response:
             return Response.json({"version": self._version})
 
+        async def modules(_: Request, __: RequestDependencyScope) -> Response:
+            return Response.json({"modules": list(self._module_snapshot())})
+
         router.add_route("GET", "/livez", live, name="platform.liveness")
         router.add_route("GET", "/readyz", ready, name="platform.readiness")
         router.add_route("GET", "/version", version, name="platform.version")
+        router.add_route("GET", "/diagnostics/modules", modules, name="platform.modules")

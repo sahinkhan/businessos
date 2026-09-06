@@ -27,6 +27,7 @@ async def test_diagnostic_endpoints_are_available_through_custom_asgi_app() -> N
         liveness = await client.get("/livez")
         readiness = await client.get("/readyz")
         version = await client.get("/version")
+        modules = await client.get("/diagnostics/modules")
 
     assert liveness.status_code == 200
     assert liveness.json() == {"status": "live"}
@@ -34,6 +35,8 @@ async def test_diagnostic_endpoints_are_available_through_custom_asgi_app() -> N
     assert readiness.json() == {"status": "ready", "checks": []}
     assert version.status_code == 200
     assert "version" in version.json()
+    assert modules.status_code == 200
+    assert modules.json() == {"modules": []}
     assert liveness.headers["x-correlation-id"]
 
 

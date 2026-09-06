@@ -132,8 +132,19 @@ async def test_module_lifecycle_registries_permissions_and_upgrade_plan() -> Non
     transport = httpx.ASGITransport(app=cast(Any, app))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/proof")
+        diagnostics = await client.get("/diagnostics/modules")
     assert response.status_code == 200
     assert response.json() == {"tenant_id": str(tenant.tenant_id)}
+    assert diagnostics.json() == {
+        "modules": [
+            {
+                "module_id": "example.proof",
+                "version": "1.0.0",
+                "state": "enabled",
+                "error": None,
+            }
+        ]
+    }
 
     target = module.manifest.model_copy(
         update={"version": "2.0.0", "migrations": ("migrations/v1", "migrations/v2")}

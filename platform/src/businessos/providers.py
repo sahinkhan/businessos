@@ -1,5 +1,8 @@
 """Provider capability contracts and replaceable infrastructure adapters."""
 
+# Third-party provider clients expose incomplete type information at their dynamic boundaries.
+# pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
+
 import asyncio
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol, cast

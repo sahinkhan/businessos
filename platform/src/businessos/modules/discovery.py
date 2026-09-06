@@ -8,7 +8,7 @@ ENTRY_POINT_GROUP = "businessos.modules"
 
 
 def discover_modules(entries: tuple[EntryPoint, ...] | None = None) -> tuple[BusinessOSModule, ...]:
-    selected = entries or tuple(entry_points(group=ENTRY_POINT_GROUP))
+    selected = entries if entries is not None else tuple(entry_points(group=ENTRY_POINT_GROUP))
     modules: list[BusinessOSModule] = []
     for entry in sorted(selected, key=lambda item: (item.name, item.value)):
         loaded = entry.load()

@@ -6,12 +6,14 @@ import ast
 import asyncio
 import hashlib
 import json
+import logging
 import multiprocessing
 import os
 import re
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from enum import Enum, auto
 from importlib.metadata import packages_distributions
 from importlib.resources import as_file, files
 from multiprocessing.connection import Connection as ProcessConnection
@@ -48,6 +50,8 @@ NAMESPACE_PATTERN = r"^[a-z][a-z0-9_]*$"
 LOGICAL_LOCATION_PATTERN = r"^(?:python|filesystem)://[^\s]+$"
 DISTRIBUTION_PATTERN = r"^(?:python-distribution|python-package|module):[a-z0-9][a-z0-9_.-]*$"
 FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
+
+logger = logging.getLogger("businessos.migrations")
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +201,51 @@ class _Format2Inventory(BaseModel):
 
 class _MigrationProcessAborted(Exception):
     """Internal control flow used to roll back an uncommitted child transaction."""
+
+
+class _AsyncMigrationState(Enum):
+    """Parent-side state for one authorized async migration transaction."""
+
+    WAITING_FOR_OUTCOME = auto()
+    TERMINAL_OUTCOME_STORED = auto()
+    CLEANING_UP = auto()
+    FINISHED = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class _MigrationTerminalOutcome:
+    """Validated durable result retained independently from cleanup transport state."""
+
+    committed: bool
+    error_type: str | None = None
+    error_message: str | None = None
+
+    @classmethod
+    def from_message(cls, message: object) -> Self:
+        if not isinstance(message, tuple):
+            raise RuntimeError("Migration child returned an invalid terminal outcome")
+        parts = cast(tuple[object, ...], message)
+        if len(parts) == 2 and parts[0] == "committed" and parts[1] is None:
+            return cls(committed=True)
+        if (
+            len(parts) == 3
+            and parts[0] == "error"
+            and isinstance(parts[1], str)
+            and isinstance(parts[2], str)
+        ):
+            return cls(
+                committed=False,
+                error_type=parts[1],
+                error_message=parts[2],
+            )
+        raise RuntimeError("Migration child returned an invalid terminal outcome")
+
+    def resolve(self) -> None:
+        if self.committed:
+            return
+        assert self.error_type is not None
+        assert self.error_message is not None
+        raise RuntimeError(f"Migration child failed ({self.error_type}): {self.error_message}")
 
 
 def _tuple_value(value: object) -> tuple[str, ...]:
@@ -663,6 +712,8 @@ class MigrationCoordinator:
         child.close()
         commit_authorized = False
         backend_pid: int | None = None
+        state = _AsyncMigrationState.WAITING_FOR_OUTCOME
+        terminal_outcome: _MigrationTerminalOutcome | None = None
         try:
             while True:
                 try:
@@ -684,18 +735,30 @@ class MigrationCoordinator:
                                     await phase_callback("commit_authorized")
                             else:
                                 parent.send("continue")
-                        elif kind == "committed":
-                            self._join_finished_process(process)
-                            await self._wait_backend_stopped(database_url, backend_pid)
-                            return
-                        elif kind == "error":
-                            self._join_finished_process(process)
-                            await self._wait_backend_stopped(database_url, backend_pid)
-                            error_type = cast(str, message[1])
-                            error_message = cast(str, message[2])
-                            raise RuntimeError(
-                                f"Migration child failed ({error_type}): {error_message}"
+                        elif kind in {"committed", "error"}:
+                            assert state is _AsyncMigrationState.WAITING_FOR_OUTCOME
+                            terminal_outcome = _MigrationTerminalOutcome.from_message(message)
+                            state = _AsyncMigrationState.TERMINAL_OUTCOME_STORED
+                            assert state is _AsyncMigrationState.TERMINAL_OUTCOME_STORED
+                            cleanup_task = asyncio.create_task(
+                                self._cleanup_after_terminal_outcome(
+                                    database_url,
+                                    backend_pid,
+                                    process,
+                                    parent,
+                                    phase_callback,
+                                )
                             )
+                            state = _AsyncMigrationState.CLEANING_UP
+                            diagnostics = await self._await_cleanup_without_cancellation(
+                                cleanup_task
+                            )
+                            assert state is _AsyncMigrationState.CLEANING_UP
+                            state = _AsyncMigrationState.FINISHED
+                            self._log_cleanup_diagnostics(diagnostics)
+                            assert state is _AsyncMigrationState.FINISHED
+                            terminal_outcome.resolve()
+                            return
                         else:
                             raise RuntimeError(
                                 "Migration child returned an invalid protocol message"
@@ -705,11 +768,19 @@ class MigrationCoordinator:
                             f"Migration child exited without an outcome (exit {process.exitcode})"
                         )
                     await asyncio.sleep(0.01)
+                except EOFError as exc:
+                    if terminal_outcome is not None:
+                        # The terminal path never reads the pipe again. This guard documents
+                        # that any later transport closure is cleanup-only information.
+                        continue
+                    await self._stop_process(process, parent)
+                    await self._wait_backend_stopped(database_url, backend_pid)
+                    raise RuntimeError(
+                        "Migration child pipe closed before a terminal outcome"
+                    ) from exc
                 except asyncio.CancelledError:
                     if commit_authorized:
-                        task = asyncio.current_task()
-                        if task is not None:
-                            task.uncancel()
+                        self._drain_current_task_cancellation()
                         continue
                     backend_pid = self._drain_backend_pid(parent, backend_pid)
                     await self._stop_process(process, parent)
@@ -717,6 +788,83 @@ class MigrationCoordinator:
                     raise
         finally:
             parent.close()
+
+    async def _cleanup_after_terminal_outcome(
+        self,
+        database_url: str,
+        backend_pid: int | None,
+        process: BaseProcess,
+        protocol: ProcessConnection,
+        phase_callback: Callable[[str], Awaitable[None]] | None,
+    ) -> tuple[str, ...]:
+        """Own terminal cleanup without allowing diagnostics to replace its outcome."""
+
+        diagnostics: list[str] = []
+        if phase_callback is not None:
+            try:
+                await phase_callback("terminal_outcome_stored")
+            except BaseException as exc:
+                diagnostics.append(type(exc).__qualname__)
+
+        try:
+            self._join_finished_process(process)
+        except BaseException as exc:
+            diagnostics.append(type(exc).__qualname__)
+        while process.is_alive():
+            try:
+                await self._stop_process(process, protocol)
+            except BaseException as stop_exc:
+                diagnostics.append(type(stop_exc).__qualname__)
+        process.join(0)
+
+        while True:
+            try:
+                await self._wait_backend_stopped(database_url, backend_pid)
+                break
+            except BaseException as exc:
+                diagnostics.append(type(exc).__qualname__)
+                try:
+                    if not await self._backend_is_active(database_url, backend_pid):
+                        break
+                except BaseException as check_exc:
+                    diagnostics.append(type(check_exc).__qualname__)
+                await asyncio.sleep(0.01)
+        try:
+            protocol.close()
+        except BaseException as exc:
+            diagnostics.append(type(exc).__qualname__)
+        return tuple(diagnostics)
+
+    @classmethod
+    async def _await_cleanup_without_cancellation(
+        cls, cleanup_task: asyncio.Task[tuple[str, ...]]
+    ) -> tuple[str, ...]:
+        """Drain repeated caller cancellation while an owned cleanup task completes."""
+
+        while True:
+            try:
+                diagnostics = await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                cls._drain_current_task_cancellation()
+                continue
+            cls._drain_current_task_cancellation()
+            return diagnostics
+
+    @staticmethod
+    def _drain_current_task_cancellation() -> None:
+        task = asyncio.current_task()
+        if task is None:
+            return
+        while task.cancelling():
+            task.uncancel()
+
+    @staticmethod
+    def _log_cleanup_diagnostics(diagnostics: tuple[str, ...]) -> None:
+        if diagnostics:
+            logger.warning(
+                "Migration terminal cleanup completed with diagnostic types: %s",
+                ",".join(diagnostics),
+            )
 
     @staticmethod
     def _join_finished_process(process: BaseProcess) -> None:
@@ -744,6 +892,7 @@ class MigrationCoordinator:
         if process.is_alive():
             process.kill()
             await cls._wait_process(process, MIGRATION_PROCESS_KILL_SECONDS)
+        process.join(0)
         if process.is_alive():
             raise RuntimeError("Cancelled migration child could not be stopped")
 
@@ -803,6 +952,21 @@ class MigrationCoordinator:
                 if task is not None:
                     task.uncancel()
         raise RuntimeError("Migration PostgreSQL session did not reach a terminal state")
+
+    @staticmethod
+    async def _backend_is_active(database_url: str, backend_pid: int | None) -> bool:
+        if backend_pid is None:
+            return False
+        psycopg_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        connection = await psycopg.AsyncConnection.connect(psycopg_url)
+        try:
+            cursor = await connection.execute(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = %s)",
+                (backend_pid,),
+            )
+            return await cursor.fetchone() == (True,)
+        finally:
+            await connection.close()
 
     @staticmethod
     def _process_entry(

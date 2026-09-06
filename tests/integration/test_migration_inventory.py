@@ -2,6 +2,7 @@ import asyncio
 import copy
 import multiprocessing
 import shutil
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
@@ -80,9 +81,16 @@ def _revision(
 ) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     if failure == "error":
-        upgrade = '    raise RuntimeError("forced migration failure")'
+        upgrade = "\n".join(
+            (
+                *(f"    op.execute({statement!r})" for statement in statements),
+                '    raise RuntimeError("forced migration failure")',
+            )
+        )
     elif failure == "cancel":
         upgrade = "    raise __import__('asyncio').CancelledError()"
+    elif failure == "exit":
+        upgrade = "    __import__('os')._exit(17)"
     else:
         upgrade = "\n".join(f"    op.execute({statement!r})" for statement in statements)
         if not upgrade:
@@ -748,24 +756,170 @@ async def test_cancellation_after_commit_authorization_returns_durable_success(
     coordinator = _coordinator(history)
     application_name = "businessos-cancel-after-commit"
     database_url = f"{postgres_migration_database_url}?application_name={application_name}"
-    commit_authorized = asyncio.Event()
-    never_release = asyncio.Event()
+    terminal_outcome_stored = asyncio.Event()
+    release_cleanup = asyncio.Event()
 
     async def observe(phase: str) -> None:
-        if phase == "commit_authorized":
-            commit_authorized.set()
-            await never_release.wait()
+        if phase == "terminal_outcome_stored":
+            terminal_outcome_stored.set()
+            await release_cleanup.wait()
 
     baseline_processes = _migration_processes()
     task = asyncio.create_task(coordinator.upgrade_async(database_url, _phase_callback=observe))
-    await asyncio.wait_for(commit_authorized.wait(), timeout=10)
-    task.cancel()
+    await asyncio.wait_for(terminal_outcome_stored.wait(), timeout=10)
+    for _ in range(3):
+        task.cancel()
+        await asyncio.sleep(0)
+    assert not task.done()
+    release_cleanup.set()
     await task
 
+    assert not task.cancelled()
+    assert task.cancelling() == 0
     assert _migration_processes() == baseline_processes
     assert _migration_sessions(database_url, application_name) == 0
     heads, inventory, table_exists = _database_snapshot(database_url, table)
     assert set(heads) == {"0004_strict_migration_inventory", "cancel_after_commit_0001"}
+    assert inventory is not None
+    assert table_exists
+    _assert_advisory_lock_available(database_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+async def test_repeated_cancellation_preserves_terminal_migration_error(
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = tmp_path / "cancel-after-error"
+    table = "public.cancel_after_error"
+    _revision(
+        history,
+        "0001.py",
+        "cancel_after_error_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+        failure="error",
+        statements=(f"CREATE TABLE {table} (id integer PRIMARY KEY)",),
+    )
+    coordinator = _coordinator(history)
+    application_name = "businessos-cancel-after-error"
+    database_url = f"{postgres_migration_database_url}?application_name={application_name}"
+    terminal_outcome_stored = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    original_wait = cast(
+        Callable[[str, int | None], Awaitable[None]],
+        vars(MigrationCoordinator)["_wait_backend_stopped"],
+    )
+
+    async def wait_then_report_diagnostic(url: str, backend_pid: int | None) -> None:
+        await original_wait(url, backend_pid)
+        raise RuntimeError("test cleanup diagnostic")
+
+    monkeypatch.setattr(
+        MigrationCoordinator,
+        "_wait_backend_stopped",
+        staticmethod(wait_then_report_diagnostic),
+    )
+
+    async def observe(phase: str) -> None:
+        if phase == "terminal_outcome_stored":
+            terminal_outcome_stored.set()
+            await release_cleanup.wait()
+
+    baseline_processes = _migration_processes()
+    baseline_snapshot = _database_snapshot(database_url, table)
+    task = asyncio.create_task(coordinator.upgrade_async(database_url, _phase_callback=observe))
+    await asyncio.wait_for(terminal_outcome_stored.wait(), timeout=10)
+    for _ in range(3):
+        task.cancel()
+        await asyncio.sleep(0)
+    assert not task.done()
+    release_cleanup.set()
+
+    with pytest.raises(RuntimeError, match="forced migration failure"):
+        await task
+
+    assert not task.cancelled()
+    assert task.cancelling() == 0
+    assert _migration_processes() == baseline_processes
+    assert _migration_sessions(database_url, application_name) == 0
+    assert _database_snapshot(database_url, table) == baseline_snapshot
+    _assert_advisory_lock_available(database_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+async def test_pipe_eof_before_terminal_outcome_is_worker_failure(
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+) -> None:
+    history = tmp_path / "eof-before-outcome"
+    table = "public.eof_before_outcome"
+    _revision(
+        history,
+        "0001.py",
+        "eof_before_outcome_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+        failure="exit",
+    )
+    coordinator = _coordinator(history)
+    application_name = "businessos-eof-before-outcome"
+    database_url = f"{postgres_migration_database_url}?application_name={application_name}"
+    baseline_processes = _migration_processes()
+    baseline_snapshot = _database_snapshot(database_url, table)
+
+    with pytest.raises(RuntimeError, match="pipe closed before a terminal outcome"):
+        await coordinator.upgrade_async(database_url)
+
+    assert _migration_processes() == baseline_processes
+    assert _migration_sessions(database_url, application_name) == 0
+    assert _database_snapshot(database_url, table) == baseline_snapshot
+    _assert_advisory_lock_available(database_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+async def test_cleanup_diagnostic_does_not_replace_committed_outcome(
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history = tmp_path / "cleanup-diagnostic"
+    table = "public.cleanup_diagnostic"
+    _revision(
+        history,
+        "0001.py",
+        "cleanup_diagnostic_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+        statements=(f"CREATE TABLE {table} (id integer PRIMARY KEY)",),
+    )
+    coordinator = _coordinator(history)
+    application_name = "businessos-cleanup-diagnostic"
+    database_url = f"{postgres_migration_database_url}?application_name={application_name}"
+    original_wait = cast(
+        Callable[[str, int | None], Awaitable[None]],
+        vars(MigrationCoordinator)["_wait_backend_stopped"],
+    )
+
+    async def wait_then_report_diagnostic(url: str, backend_pid: int | None) -> None:
+        await original_wait(url, backend_pid)
+        raise RuntimeError("test cleanup diagnostic")
+
+    monkeypatch.setattr(
+        MigrationCoordinator,
+        "_wait_backend_stopped",
+        staticmethod(wait_then_report_diagnostic),
+    )
+
+    await coordinator.upgrade_async(database_url)
+
+    assert _migration_sessions(database_url, application_name) == 0
+    heads, inventory, table_exists = _database_snapshot(database_url, table)
+    assert set(heads) == {"0004_strict_migration_inventory", "cleanup_diagnostic_0001"}
     assert inventory is not None
     assert table_exists
     _assert_advisory_lock_available(database_url)

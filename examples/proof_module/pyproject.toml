@@ -21,4 +21,3 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 businessos_proof = ["manifest.json", "migrations/versions/*.py"]
-

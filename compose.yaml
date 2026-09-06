@@ -62,4 +62,3 @@ volumes:
   businessos-postgres:
   businessos-nats:
   businessos-objects:
-

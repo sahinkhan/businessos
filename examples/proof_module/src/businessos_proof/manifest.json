@@ -14,4 +14,3 @@
   "migrations": [],
   "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
 }
-

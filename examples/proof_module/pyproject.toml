@@ -7,7 +7,11 @@ name = "businessos-phase1-proof"
 version = "2.0.0"
 description = "External BusinessOS Phase 1 architecture proof module"
 requires-python = ">=3.13"
-dependencies = ["businessos>=0.1,<1"]
+dependencies = [
+  "businessos>=0.1,<1",
+  "pydantic>=2.10,<3",
+  "sqlalchemy>=2.0.36,<3",
+]
 
 [project.entry-points."businessos.modules"]
 phase1-proof = "businessos_proof:ProofModule"

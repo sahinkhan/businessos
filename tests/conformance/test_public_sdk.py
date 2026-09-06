@@ -1,4 +1,5 @@
 import ast
+import tomllib
 from pathlib import Path
 
 
@@ -16,3 +17,15 @@ def test_external_proof_module_imports_businessos_only_through_public_sdk() -> N
         )
 
     assert imports == [(package / "module.py", "businessos.sdk")]
+
+
+def test_external_proof_module_declares_every_direct_runtime_dependency() -> None:
+    configuration = tomllib.loads(
+        Path("examples/proof_module/pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert configuration["project"]["dependencies"] == [
+        "businessos>=0.1,<1",
+        "pydantic>=2.10,<3",
+        "sqlalchemy>=2.0.36,<3",
+    ]

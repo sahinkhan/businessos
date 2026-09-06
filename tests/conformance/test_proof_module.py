@@ -104,7 +104,10 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
         "command_id",
         "created_at",
     ]
-    assert policies == [("proof_records_tenant_isolation",)]
+    assert set(policies) == {
+        ("proof_records_migration_access",),
+        ("proof_records_tenant_isolation",),
+    }
     assert historical_command_id is not None
     assert historical_command_id[0] is not None
 

@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -14,7 +14,6 @@ from businessos.application import BusinessOSApplication
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
-from businessos.errors import NotFoundError
 from businessos.eventing import OutboxPublisher
 from businessos.modules import BusinessOSModule, discover_modules
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
@@ -49,6 +48,7 @@ class EventWorkerSettings(BaseSettings):
     durable_name: str = "businessos-events"
     publish_interval_seconds: float = Field(default=0.25, gt=0)
     publish_batch_size: int = Field(default=100, ge=1, le=10_000)
+    shutdown_timeout_seconds: float = Field(default=10.0, gt=0)
     s3_bucket: str | None = None
     s3_endpoint_url: str | None = None
     s3_region_name: str | None = None
@@ -123,6 +123,7 @@ class EventWorker:
         durable_name: str,
         publish_interval_seconds: float,
         publish_batch_size: int,
+        shutdown_timeout_seconds: float,
         subject_prefix: str = "businessos.events",
     ) -> None:
         if application.runtime is None:
@@ -134,6 +135,7 @@ class EventWorker:
         self._durable_name = durable_name
         self._publish_interval_seconds = publish_interval_seconds
         self._publish_batch_size = publish_batch_size
+        self._shutdown_timeout_seconds = shutdown_timeout_seconds
         self._subject_prefix = subject_prefix
         self._publisher = OutboxPublisher(
             SQLAlchemyUnitOfWorkFactory(
@@ -222,29 +224,90 @@ class EventWorker:
 
     async def _cleanup(self) -> None:
         errors: list[BaseException] = []
-        if self._subscription is not None:
-            try:
-                await self._subscription.close()
-            except BaseException as exc:
-                errors.append(exc)
-            self._subscription = None
         self._stop_publisher.set()
+        if self._subscription is not None:
+            errors.extend(
+                await self._run_cleanup_step(
+                    self._subscription.close,
+                    label="event subscription",
+                )
+            )
+            self._subscription = None
         if self._publisher_task is not None:
-            try:
-                await self._publisher_task
-            except BaseException as exc:
-                errors.append(exc)
+            errors.extend(
+                await self._finish_owned_task(
+                    self._publisher_task,
+                    label="outbox publisher",
+                )
+            )
             self._publisher_task = None
-        try:
-            await self.application.shutdown()
-        except BaseException as exc:
-            errors.append(exc)
-        try:
-            await self._operations_database.close()
-        except BaseException as exc:
-            errors.append(exc)
+        errors.extend(
+            await self._run_cleanup_step(
+                self.application.shutdown,
+                label="application",
+            )
+        )
+        errors.extend(
+            await self._run_cleanup_step(
+                self._operations_database.close,
+                label="operations database",
+            )
+        )
         if errors:
             raise BaseExceptionGroup("Event worker cleanup failed", errors)
+
+    async def _run_cleanup_step(
+        self,
+        cleanup: Callable[[], Awaitable[None]],
+        *,
+        label: str,
+    ) -> list[BaseException]:
+        async def run() -> None:
+            await cleanup()
+
+        task = asyncio.create_task(run(), name=f"businessos-{label.replace(' ', '-')}-cleanup")
+        return await self._finish_owned_task(task, label=label)
+
+    async def _finish_owned_task(
+        self,
+        task: asyncio.Task[None],
+        *,
+        label: str,
+    ) -> list[BaseException]:
+        done, _ = await asyncio.wait((task,), timeout=self._shutdown_timeout_seconds)
+        if task in done:
+            try:
+                task.result()
+            except BaseException as exc:
+                return [exc]
+            return []
+
+        errors: list[BaseException] = [TimeoutError(f"{label} cleanup timed out")]
+        try:
+            await EventWorker._cancel_owned_task(task)
+        except BaseException as exc:
+            errors.append(exc)
+        return errors
+
+    @staticmethod
+    async def _cancel_owned_task(task: asyncio.Task[None]) -> None:
+        for _ in range(8):
+            if task.done():
+                break
+            task.cancel()
+            await asyncio.sleep(0)
+        if not task.done():
+            task.add_done_callback(EventWorker._consume_task_result)
+            raise RuntimeError("Event worker cleanup task resisted cancellation")
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+
+    @staticmethod
+    def _consume_task_result(task: asyncio.Task[None]) -> None:
+        if not task.cancelled():
+            task.exception()
 
     async def _publish_loop(self) -> None:
         while not self._stop_publisher.is_set():
@@ -286,7 +349,7 @@ class EventWorker:
                 or event.correlation_id != correlation_id
             ):
                 raise ValueError("event payload does not match its trusted envelope")
-        except (LookupError, NotFoundError, TypeError, ValueError) as exc:
+        except (LookupError, TypeError, ValueError) as exc:
             raise PermanentDeliveryError("Invalid event envelope") from exc
 
         context = self._context_resolver.resolve(delivery, tenant_id, correlation_id)
@@ -324,7 +387,10 @@ def create_event_worker(
     if resolved_storage is not None:
         providers["object-storage"] = resolved_storage
     application = create_application(
-        Settings(database_url=settings.runtime_database_url),
+        Settings(
+            database_url=settings.runtime_database_url,
+            shutdown_timeout_seconds=settings.shutdown_timeout_seconds,
+        ),
         modules=tuple(discover_modules()) if modules is None else modules,
         authorizer=Authorizer(
             _WorkerPermissionPolicy(settings.principal_id, settings.allowed_permissions)
@@ -343,4 +409,5 @@ def create_event_worker(
         durable_name=settings.durable_name,
         publish_interval_seconds=settings.publish_interval_seconds,
         publish_batch_size=settings.publish_batch_size,
+        shutdown_timeout_seconds=settings.shutdown_timeout_seconds,
     )

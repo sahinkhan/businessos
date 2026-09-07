@@ -55,7 +55,9 @@ remain deployment-managed. The event worker is a separate process: it receives b
 cross-tenant outbox publication. Never add the operations URL to the `app` service. Worker event
 permissions are an explicit comma-separated allowlist; an empty allowlist denies every protected
 subscriber. Installation and principal UUIDs identify the trusted worker service account until the
-later identity foundation supplies that deployment integration.
+later identity foundation supplies that deployment integration. The worker's shutdown timeout
+bounds each subscription, publisher, application and database cleanup step while still attempting
+all later finalizers after an earlier timeout.
 
 Verify diagnostics:
 

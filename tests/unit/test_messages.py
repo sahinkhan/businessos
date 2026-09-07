@@ -1,11 +1,12 @@
 from types import TracebackType
 from typing import ClassVar, Self
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from businessos.context import RequestContext, TenantContext
 from businessos.di import Container
+from businessos.errors import BusinessOSError
 from businessos.messages import (
     Command,
     DomainEvent,
@@ -15,6 +16,7 @@ from businessos.messages import (
     Query,
 )
 from businessos.persistence import PendingOutboxMessage, TransactionalPersistence, UnitOfWork
+from businessos.security import Authorizer
 
 
 class ChangeName(Command):
@@ -81,6 +83,16 @@ class FakeUnitOfWorkFactory:
         return unit_of_work
 
 
+class DenyPolicy:
+    async def is_allowed(
+        self,
+        principal_id: UUID,
+        tenant: TenantContext,
+        permission: str,
+    ) -> bool:
+        return False
+
+
 @pytest.mark.asyncio
 async def test_command_commits_outbox_before_in_process_event_delivery() -> None:
     timeline: list[str] = []
@@ -139,3 +151,94 @@ async def test_query_uses_read_transaction_without_commit() -> None:
 
     assert result == "value"
     assert timeline == ["begin", "query", "rollback"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected_code"), [("tenant", "forbidden"), ("system", "unauthenticated")]
+)
+@pytest.mark.asyncio
+async def test_command_authorization_precedes_transaction_and_handler(
+    kind: str,
+    expected_code: str,
+) -> None:
+    timeline: list[str] = []
+    factory = FakeUnitOfWorkFactory(timeline)
+    authorizer = Authorizer(DenyPolicy())
+    events = EventBus(authorizer=authorizer)
+    dispatcher = MessageDispatcher(factory, events, authorizer=authorizer)
+
+    async def handle(_: ChangeName, __: HandlingContext) -> object:
+        timeline.append("handler")
+        return None
+
+    dispatcher.commands.register(
+        ChangeName,
+        "example",
+        handle,
+        permission="example.change-name",
+    )
+    context = RequestContext(
+        tenant=TenantContext(uuid4(), uuid4(), uuid4()) if kind == "tenant" else None
+    )
+    container = Container()
+    async with container.request_scope() as dependencies:
+        with pytest.raises(BusinessOSError) as raised:
+            await dispatcher.command(ChangeName(name="blocked"), context, dependencies)
+
+    assert raised.value.code == expected_code
+    assert factory.created == []
+    assert timeline == []
+
+
+@pytest.mark.asyncio
+async def test_query_and_event_permissions_are_enforced() -> None:
+    timeline: list[str] = []
+    factory = FakeUnitOfWorkFactory(timeline)
+    authorizer = Authorizer(DenyPolicy())
+    events = EventBus(authorizer=authorizer)
+    dispatcher = MessageDispatcher(factory, events, authorizer=authorizer)
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    context = RequestContext(tenant=tenant)
+
+    async def query_handler(_: ReadName, __: HandlingContext) -> object:
+        timeline.append("query")
+        return None
+
+    async def event_handler(
+        _: NameChanged,
+        __: RequestContext,
+        ___: object,
+    ) -> None:
+        timeline.append("event")
+
+    dispatcher.queries.register(
+        ReadName,
+        "example",
+        query_handler,
+        permission="example.read-name",
+    )
+    events.subscribe(
+        NameChanged,
+        "example.consumer",
+        event_handler,
+        permission="example.consume-name",
+    )
+    container = Container()
+    async with container.request_scope() as dependencies:
+        with pytest.raises(BusinessOSError) as query_error:
+            await dispatcher.query(ReadName(), context, dependencies)
+        with pytest.raises(BusinessOSError) as event_error:
+            await events.publish(
+                NameChanged(
+                    tenant_id=tenant.tenant_id,
+                    correlation_id=context.correlation_id,
+                    name="blocked",
+                ),
+                context,
+                dependencies,
+            )
+
+    assert query_error.value.code == "forbidden"
+    assert event_error.value.code == "forbidden"
+    assert factory.created == []
+    assert timeline == []

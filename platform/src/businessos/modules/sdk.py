@@ -217,26 +217,34 @@ class ModuleRegistration:
         self,
         command_type: type[C],
         handler: Callable[[C, HandlingContext], Awaitable[object]],
+        *,
+        permission: str | None = None,
     ) -> None:
         self._ensure_open()
+        self._validate_permission(permission)
         self._messages.commands.register(
             command_type,
             self.owner,
             handler,
             generation=self.generation,
+            permission=permission,
         )
 
     def query[Q: Query](
         self,
         query_type: type[Q],
         handler: Callable[[Q, HandlingContext], Awaitable[object]],
+        *,
+        permission: str | None = None,
     ) -> None:
         self._ensure_open()
+        self._validate_permission(permission)
         self._messages.queries.register(
             query_type,
             self.owner,
             handler,
             generation=self.generation,
+            permission=permission,
         )
 
     def event[E: DomainEvent](
@@ -244,28 +252,48 @@ class ModuleRegistration:
         event_type: type[E],
         subscriber: str,
         handler: Callable[[E, RequestContext, RequestDependencyScope], Awaitable[None]],
+        *,
+        permission: str | None = None,
     ) -> None:
         self._ensure_open()
+        self._validate_permission(permission)
         self._messages.events.subscribe(
             event_type,
             f"{self.owner}.{subscriber}",
             handler,
             owner=self.owner,
             generation=self.generation,
+            permission=permission,
         )
 
     def job(
         self,
         job_type: str,
         handler: Callable[[Job, RequestContext, RequestDependencyScope], Awaitable[None]],
+        *,
+        permission: str | None = None,
     ) -> None:
         self._ensure_open()
+        self._validate_permission(permission)
         self._jobs.add(
             job_type,
             self.owner,
             handler,
             generation=self.generation,
+            permission=permission,
         )
+
+    def _validate_permission(self, permission: str | None) -> None:
+        if permission is None:
+            return
+        if self._permissions.contains(
+            permission,
+            owner=self.owner,
+            generation=self.generation,
+            include_inactive=True,
+        ):
+            return
+        self._permissions.get(permission)
 
     def _ensure_open(self) -> None:
         if self._finished:

@@ -51,9 +51,14 @@ def create_application(
     container = Container()
     database = Database(resolved_settings)
     unit_of_work_factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
-    event_bus = EventBus(contributions)
-    message_dispatcher = MessageDispatcher(unit_of_work_factory, event_bus, contributions)
     resolved_authorizer = authorizer or Authorizer(DenyAllPolicyEvaluator())
+    event_bus = EventBus(contributions, resolved_authorizer)
+    message_dispatcher = MessageDispatcher(
+        unit_of_work_factory,
+        event_bus,
+        contributions,
+        resolved_authorizer,
+    )
     container.register(DATABASE, lambda _: database, scope=DependencyScope.SINGLETON)
     container.register(
         UNIT_OF_WORK_FACTORY,
@@ -71,7 +76,7 @@ def create_application(
     permissions = PermissionRegistry(contributions)
     providers = ProviderRegistry(contributions)
     features = FeatureFlagRegistry(contributions)
-    jobs = JobHandlerRegistry(contributions)
+    jobs = JobHandlerRegistry(contributions, resolved_authorizer)
     module_registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
     for module in modules:
         module_registry.add(module)

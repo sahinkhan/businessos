@@ -1,5 +1,7 @@
 """Owner-aware protected registries used by framework subsystems."""
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from businessos.activation import ContributionGate, ContributionGeneration
@@ -48,10 +50,23 @@ class OwnedRegistry[T]:
             raise NotFoundError(f"Unknown {self.kind}: {name}")
         return entry.value
 
-    def entries(self) -> tuple[OwnedValue[T], ...]:
+    def entries(self, *, include_inactive: bool = False) -> tuple[OwnedValue[T], ...]:
         return tuple(
-            entry for name in sorted(self._values) if self._is_active(entry := self._values[name])
+            self._values[name]
+            for name in sorted(self._values)
+            if include_inactive or self._is_active(self._values[name])
         )
+
+    @asynccontextmanager
+    async def admitted(self, name: str) -> AsyncGenerator[T]:
+        entry = self._values.get(name)
+        if entry is None or not self._is_active(entry):
+            raise NotFoundError(f"Unknown {self.kind}: {name}")
+        if self._gate is None:
+            yield entry.value
+            return
+        async with self._gate.admit(entry.generation):
+            yield entry.value
 
     def contains(
         self,

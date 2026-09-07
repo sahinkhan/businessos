@@ -96,9 +96,22 @@ class ProofModule:
                 default=True,
             )
         )
-        registration.command(StoreProof, self._store)
-        registration.query(ReadProof, self._read)
-        registration.event(ProofStored, "object-storage-projection", self._project)
+        registration.command(
+            StoreProof,
+            self._store,
+            permission="example.phase1-proof.write",
+        )
+        registration.query(
+            ReadProof,
+            self._read,
+            permission="example.phase1-proof.read",
+        )
+        registration.event(
+            ProofStored,
+            "object-storage-projection",
+            self._project,
+            permission="example.phase1-proof.write",
+        )
         registration.route(
             "POST",
             "/proof/value",

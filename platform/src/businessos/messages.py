@@ -13,6 +13,7 @@ from businessos.context import RequestContext
 from businessos.di import RequestDependencyScope
 from businessos.errors import ConflictError, NotFoundError
 from businessos.persistence import PendingOutboxMessage, UnitOfWork, UnitOfWorkFactory
+from businessos.security import Authorizer
 
 
 class Message(BaseModel):
@@ -77,6 +78,7 @@ class _OwnedHandler:
     owner: str
     handler: Handler
     generation: ContributionGeneration | None
+    permission: str | None
 
 
 class HandlerRegistry:
@@ -92,13 +94,19 @@ class HandlerRegistry:
         handler: Callable[[M, HandlingContext], Awaitable[object]],
         *,
         generation: ContributionGeneration | None = None,
+        permission: str | None = None,
     ) -> None:
         if message_type in self._handlers:
             current_owner = self._handlers[message_type].owner
             raise ConflictError(
                 f"{self.kind} handler for {message_type.__name__} is owned by {current_owner}"
             )
-        self._handlers[message_type] = _OwnedHandler(owner, cast(Handler, handler), generation)
+        self._handlers[message_type] = _OwnedHandler(
+            owner,
+            cast(Handler, handler),
+            generation,
+            permission,
+        )
 
     def get(self, message: Message) -> Handler:
         registered = self._handlers.get(type(message))
@@ -117,6 +125,14 @@ class HandlerRegistry:
         async with self._gate.admit(registered.generation):
             return await registered.handler(message, context)
 
+    def permission(self, message: Message) -> str | None:
+        registered = self._handlers.get(type(message))
+        if registered is None:
+            raise NotFoundError(f"No {self.kind} handler for {type(message).__name__}")
+        if self._gate is not None and not self._gate.is_active(registered.generation):
+            raise NotFoundError(f"No {self.kind} handler for {type(message).__name__}")
+        return registered.permission
+
     def remove_owner_generation(self, generation: ContributionGeneration) -> None:
         self._handlers = {
             message_type: handler
@@ -131,11 +147,17 @@ class _OwnedEventHandler:
     subscriber: str
     handler: EventHandler
     generation: ContributionGeneration | None
+    permission: str | None
 
 
 class EventBus:
-    def __init__(self, gate: ContributionGate | None = None) -> None:
+    def __init__(
+        self,
+        gate: ContributionGate | None = None,
+        authorizer: Authorizer | None = None,
+    ) -> None:
         self._gate = gate
+        self._authorizer = authorizer
         self._handlers: dict[type[DomainEvent], dict[str, _OwnedEventHandler]] = {}
 
     def subscribe[E: DomainEvent](
@@ -146,6 +168,7 @@ class EventBus:
         *,
         owner: str | None = None,
         generation: ContributionGeneration | None = None,
+        permission: str | None = None,
     ) -> None:
         handlers = self._handlers.setdefault(event_type, {})
         if subscriber in handlers:
@@ -157,6 +180,7 @@ class EventBus:
             subscriber,
             cast(EventHandler, handler),
             generation,
+            permission,
         )
 
     async def publish(
@@ -168,11 +192,19 @@ class EventBus:
         handlers = self._handlers.get(type(event), {})
         for subscriber in sorted(handlers):
             registered = handlers[subscriber]
+            await self._authorize(context, registered.permission)
             if self._gate is None:
                 await registered.handler(event, context, dependencies)
             elif self._gate.is_active(registered.generation):
                 async with self._gate.admit(registered.generation):
                     await registered.handler(event, context, dependencies)
+
+    async def _authorize(self, context: RequestContext, permission: str | None) -> None:
+        if permission is None:
+            return
+        if self._authorizer is None:
+            raise RuntimeError("Authorized event dispatch requires an authorizer")
+        await self._authorizer.require(context, permission)
 
     def remove_owner_generation(self, generation: ContributionGeneration) -> None:
         for event_type in tuple(self._handlers):
@@ -194,11 +226,13 @@ class MessageDispatcher:
         unit_of_work_factory: UnitOfWorkFactory,
         event_bus: EventBus,
         gate: ContributionGate | None = None,
+        authorizer: Authorizer | None = None,
     ) -> None:
         self.commands = HandlerRegistry("command", gate)
         self.queries = HandlerRegistry("query", gate)
         self.events = event_bus
         self._unit_of_work_factory = unit_of_work_factory
+        self._authorizer = authorizer
 
     async def command(
         self,
@@ -206,6 +240,7 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
+        await self._authorize(context, self.commands.permission(message))
         unit_of_work = self._unit_of_work(context)
         async with unit_of_work:
             handling = HandlingContext(context, dependencies, unit_of_work)
@@ -221,10 +256,18 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
+        await self._authorize(context, self.queries.permission(message))
         unit_of_work = self._unit_of_work(context)
         async with unit_of_work:
             handling = HandlingContext(context, dependencies, unit_of_work)
             return await self.queries.invoke(message, handling)
+
+    async def _authorize(self, context: RequestContext, permission: str | None) -> None:
+        if permission is None:
+            return
+        if self._authorizer is None:
+            raise RuntimeError("Authorized message dispatch requires an authorizer")
+        await self._authorizer.require(context, permission)
 
     def _unit_of_work(self, context: RequestContext) -> UnitOfWork:
         if context.tenant is None:

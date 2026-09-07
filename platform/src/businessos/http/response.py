@@ -3,10 +3,26 @@
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
 from typing import Self
+from uuid import UUID
 
 from asgiref.typing import ASGISendCallable, HTTPResponseStartEvent
 from pydantic import BaseModel
+
+
+def _json_default(value: object) -> object:
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 @dataclass(slots=True)
@@ -39,7 +55,7 @@ class Response:
         merged = {"content-type": "application/json", **dict(headers or {})}
         return cls(
             status_code=status_code,
-            body=json.dumps(content, separators=(",", ":")).encode(),
+            body=json.dumps(content, separators=(",", ":"), default=_json_default).encode(),
             headers=merged,
         )
 

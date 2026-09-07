@@ -5,6 +5,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from businessos.activation import ContributionState
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
@@ -281,6 +282,11 @@ async def test_disable_unpublishes_contributions_and_reenable_uses_new_generatio
     await app.shutdown()
     await app.runtime.lifecycle.retire(module.manifest.module_id)
     assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.RETIRED
+    with pytest.raises(NotFoundError):
+        app.router.match("GET", "/proof")
+    with pytest.raises(NotFoundError):
+        app.runtime.permissions.get("example.proof.read")
+    await second_registration.remove()
     with pytest.raises(ConfigurationError, match="Retired module"):
         await app.runtime.lifecycle.enable(module.manifest.module_id)
 
@@ -381,6 +387,10 @@ async def test_disable_stops_admission_then_drains_in_flight_route() -> None:
         await entered.wait()
         disabling = asyncio.create_task(app.runtime.lifecycle.disable(module.manifest.module_id))
         await asyncio.sleep(0)
+        assert (
+            app.runtime.contributions.state(module.registrations[-1].generation)
+            is ContributionState.DRAINING
+        )
         refused = await client.get("/blocking")
         assert refused.status_code == 404
         assert not disabling.done()
@@ -531,6 +541,10 @@ async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> 
     assert app.runtime is not None
     startup = asyncio.create_task(app.startup())
     await start_entered.wait()
+    assert (
+        app.runtime.contributions.state(module.registrations[-1].generation)
+        is ContributionState.STAGED
+    )
 
     with pytest.raises(NotFoundError):
         app.router.match("GET", "/surface")
@@ -557,6 +571,10 @@ async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> 
 
     release_start.set()
     await startup
+    assert (
+        app.runtime.contributions.state(module.registrations[-1].generation)
+        is ContributionState.ACTIVE
+    )
     assert app.runtime.contracts.get("example.surface.contract").version == "1"
     assert app.runtime.metadata.get("example.surface.view").kind == "view"
     assert app.runtime.permissions.get("example.surface.read").description

@@ -307,7 +307,7 @@ class LifecycleManager:
         )
         if dependents:
             raise ConfigurationError(
-                f"Cannot retire module '{module_id}' with enabled dependents: {dependents}"
+                f"Cannot change module '{module_id}' with enabled dependents: {dependents}"
             )
 
 

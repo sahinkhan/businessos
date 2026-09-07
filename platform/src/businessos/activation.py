@@ -4,8 +4,16 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 
 from businessos.errors import ConfigurationError, NotFoundError
+
+
+class ContributionState(StrEnum):
+    STAGED = "staged"
+    ACTIVE = "active"
+    DRAINING = "draining"
+    INACTIVE = "inactive"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,8 +26,7 @@ class ContributionGeneration:
 
 @dataclass(slots=True)
 class _GenerationState:
-    active: bool
-    accepting: bool
+    lifecycle: ContributionState
     in_flight: int
     drained: asyncio.Event
 
@@ -41,8 +48,7 @@ class ContributionGate:
         drained = asyncio.Event()
         drained.set()
         self._states[generation] = _GenerationState(
-            active=False,
-            accepting=False,
+            lifecycle=ContributionState.STAGED,
             in_flight=0,
             drained=drained,
         )
@@ -54,14 +60,16 @@ class ContributionGate:
             raise ConfigurationError(
                 f"Retired module cannot publish contributions: {generation.owner}"
             )
-        state.accepting = True
-        state.active = True
+        state.lifecycle = ContributionState.ACTIVE
 
     def is_active(self, generation: ContributionGeneration | None) -> bool:
         if generation is None:
             return True
         state = self._states.get(generation)
-        return bool(state is not None and state.active and state.accepting)
+        return bool(state is not None and state.lifecycle is ContributionState.ACTIVE)
+
+    def state(self, generation: ContributionGeneration) -> ContributionState:
+        return self._state(generation).lifecycle
 
     @asynccontextmanager
     async def admit(self, generation: ContributionGeneration | None) -> AsyncGenerator[None]:
@@ -69,7 +77,7 @@ class ContributionGate:
             yield
             return
         state = self._states.get(generation)
-        if state is None or not state.active or not state.accepting:
+        if state is None or state.lifecycle is not ContributionState.ACTIVE:
             raise NotFoundError("Module contribution is not active")
         state.in_flight += 1
         state.drained.clear()
@@ -87,10 +95,10 @@ class ContributionGate:
         timeout_seconds: float,
     ) -> None:
         state = self._state(generation)
-        state.accepting = False
-        state.active = False
+        state.lifecycle = ContributionState.DRAINING
         async with asyncio.timeout(timeout_seconds):
             await state.drained.wait()
+        state.lifecycle = ContributionState.INACTIVE
 
     def discard(self, generation: ContributionGeneration) -> None:
         state = self._states.get(generation)

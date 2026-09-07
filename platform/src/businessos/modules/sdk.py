@@ -79,18 +79,22 @@ class ModuleRegistration:
         self._gate.publish(self.generation)
 
     async def deactivate(self, *, timeout_seconds: float) -> None:
+        if self._finished:
+            return
         await self.stop_accepting(timeout_seconds=timeout_seconds)
         await self.remove()
 
     async def stop_accepting(self, *, timeout_seconds: float) -> None:
-        self._ensure_open()
+        if self._finished:
+            return
         await self._gate.close_and_drain(
             self.generation,
             timeout_seconds=timeout_seconds,
         )
 
     async def remove(self) -> None:
-        self._ensure_open()
+        if self._finished:
+            return
         await self._remove_contributions()
 
     async def rollback(self) -> None:

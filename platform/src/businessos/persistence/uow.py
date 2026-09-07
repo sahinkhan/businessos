@@ -1,5 +1,6 @@
 """Explicit framework-owned Unit of Work and transaction boundaries."""
 
+import asyncio
 from collections.abc import Callable, Mapping
 from types import TracebackType
 from typing import Any, Protocol, Self
@@ -64,12 +65,21 @@ class SQLAlchemyUnitOfWork:
         if self.session is not None:
             raise ConfigurationError("Unit of Work cannot be entered twice")
         self.session = self._sessions()
-        await self.session.begin()
-        if self.tenant_context is not None:
-            await self.session.execute(
-                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                {"tenant_id": str(self.tenant_context.tenant_id)},
-            )
+        try:
+            await self.session.begin()
+            if self.tenant_context is not None:
+                await self.session.execute(
+                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                    {"tenant_id": str(self.tenant_context.tenant_id)},
+                )
+        except BaseException as entry_error:
+            cleanup_errors, _ = await self._finish_session(rollback=True)
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "Unit of Work entry and cleanup failed",
+                    [entry_error, *cleanup_errors],
+                ) from None
+            raise
         return self
 
     async def __aexit__(
@@ -80,12 +90,17 @@ class SQLAlchemyUnitOfWork:
     ) -> None:
         if self.session is None:
             return
-        try:
-            if exc_type is not None or not self._committed:
-                await self.session.rollback()
-        finally:
-            await self.session.close()
-            self.session = None
+        cleanup_errors, cancellation_count = await self._finish_session(
+            rollback=exc_type is not None or not self._committed
+        )
+        if cleanup_errors:
+            errors: list[BaseException] = []
+            if exc_value is not None:
+                errors.append(exc_value)
+            errors.extend(cleanup_errors)
+            raise BaseExceptionGroup("Unit of Work cleanup failed", errors) from None
+        if cancellation_count and exc_type is None:
+            raise asyncio.CancelledError
 
     async def commit(self) -> None:
         session = self._require_session()
@@ -130,6 +145,41 @@ class SQLAlchemyUnitOfWork:
         if self.session is None:
             raise ConfigurationError("Unit of Work is not active")
         return self.session
+
+    async def _finish_session(self, *, rollback: bool) -> tuple[list[BaseException], int]:
+        session = self.session
+        if session is None:
+            return [], 0
+
+        async def cleanup() -> list[BaseException]:
+            errors: list[BaseException] = []
+            if rollback:
+                try:
+                    await session.rollback()
+                except BaseException as exc:
+                    errors.append(exc)
+            try:
+                await session.close()
+            except BaseException as exc:
+                errors.append(exc)
+            return errors
+
+        cleanup_task = asyncio.create_task(cleanup(), name="businessos-uow-cleanup")
+        cancellation_count = 0
+        current = asyncio.current_task()
+        if current is not None:
+            while current.cancelling():
+                current.uncancel()
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                cancellation_count += 1
+                if current is not None:
+                    while current.cancelling():
+                        current.uncancel()
+        self.session = None
+        return cleanup_task.result(), cancellation_count
 
 
 class SQLAlchemyTransactionalPersistence:

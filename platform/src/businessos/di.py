@@ -59,6 +59,7 @@ class Container:
         self._singleton_stacks: dict[DependencyKey[Any], AsyncExitStack] = {}
         self._singleton_order: list[DependencyKey[Any]] = []
         self._singleton_flights: dict[DependencyKey[Any], Task[object]] = {}
+        self._singleton_waits: dict[DependencyKey[Any], set[DependencyKey[Any]]] = {}
         self._closed = False
 
     def register(
@@ -74,6 +75,8 @@ class Container:
         generation: ContributionGeneration | None = None,
         gate: ContributionGate | None = None,
     ) -> None:
+        if self._closed:
+            raise ConfigurationError("Dependency container is closed")
         if key in self._registrations:
             raise ConflictError(f"Dependency already registered: {key.name}")
         self._registrations[key] = _Registration(
@@ -104,6 +107,8 @@ class Container:
                 errors.append(exc)
         self._singleton_order.clear()
         self._singletons.clear()
+        self._singleton_flights.clear()
+        self._singleton_waits.clear()
         self._registrations.clear()
         if errors:
             raise BaseExceptionGroup("Dependency cleanup failed", errors)
@@ -176,14 +181,23 @@ class Container:
         cached = self._singletons.get(key)
         if cached is not None or key in self._singletons:
             return cached
+        path = _resolution_path.get()
+        parent = path[-1] if path else None
+        if parent is not None:
+            self._add_singleton_wait(parent, key)
         flight = self._singleton_flights.get(key)
         if flight is None:
             flight = asyncio.create_task(
                 self._initialize_singleton(key, registration, resolver),
                 name=f"businessos-di:{key.name}",
             )
+            flight.add_done_callback(self._consume_flight_result)
             self._singleton_flights[key] = flight
-        return await asyncio.shield(flight)
+        try:
+            return await asyncio.shield(flight)
+        finally:
+            if parent is not None:
+                self._remove_singleton_wait(parent, key)
 
     async def _initialize_singleton(
         self,
@@ -206,6 +220,59 @@ class Container:
             current = asyncio.current_task()
             if self._singleton_flights.get(key) is current:
                 self._singleton_flights.pop(key, None)
+
+    def _add_singleton_wait(
+        self,
+        source: DependencyKey[Any],
+        target: DependencyKey[Any],
+    ) -> None:
+        waits = self._singleton_waits.setdefault(source, set())
+        waits.add(target)
+        path = self._wait_path(target, source, set())
+        if path is None:
+            return
+        waits.remove(target)
+        if not waits:
+            self._singleton_waits.pop(source, None)
+        cycle = (source, *path)
+        names = " -> ".join(item.name for item in cycle)
+        raise ConfigurationError(f"Dependency cycle detected: {names}")
+
+    def _remove_singleton_wait(
+        self,
+        source: DependencyKey[Any],
+        target: DependencyKey[Any],
+    ) -> None:
+        waits = self._singleton_waits.get(source)
+        if waits is None:
+            return
+        waits.discard(target)
+        if not waits:
+            self._singleton_waits.pop(source, None)
+
+    def _wait_path(
+        self,
+        current: DependencyKey[Any],
+        target: DependencyKey[Any],
+        visited: set[DependencyKey[Any]],
+    ) -> tuple[DependencyKey[Any], ...] | None:
+        if current == target:
+            return (current,)
+        if current in visited:
+            return None
+        visited.add(current)
+        for dependency in sorted(
+            self._singleton_waits.get(current, ()), key=lambda item: item.name
+        ):
+            path = self._wait_path(dependency, target, visited)
+            if path is not None:
+                return (current, *path)
+        return None
+
+    @staticmethod
+    def _consume_flight_result(flight: Task[object]) -> None:
+        if not flight.cancelled():
+            flight.exception()
 
     async def _provide(
         self,

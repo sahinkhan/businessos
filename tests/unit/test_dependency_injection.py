@@ -213,6 +213,82 @@ async def test_unrelated_singletons_initialize_in_parallel() -> None:
 
 
 @pytest.mark.asyncio
+async def test_concurrent_cross_key_singleton_cycle_fails_without_deadlock() -> None:
+    first = DependencyKey[str]("cross-cycle-first")
+    second = DependencyKey[str]("cross-cycle-second")
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+    container = Container()
+
+    async def first_provider(resolver: DependencyResolver) -> str:
+        first_started.set()
+        await second_started.wait()
+        return await resolver.resolve(second)
+
+    async def second_provider(resolver: DependencyResolver) -> str:
+        second_started.set()
+        await first_started.wait()
+        return await resolver.resolve(first)
+
+    container.register(first, first_provider, scope=DependencyScope.SINGLETON)
+    container.register(second, second_provider, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                scope.resolve(first),
+                scope.resolve(second),
+                return_exceptions=True,
+            ),
+            timeout=1,
+        )
+
+    assert all(isinstance(result, ConfigurationError) for result in results)
+    assert all("Dependency cycle detected" in str(result) for result in results)
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_unobserved_singleton_failure_is_consumed_and_retryable() -> None:
+    key = DependencyKey[str]("abandoned-failure")
+    release = asyncio.Event()
+    calls = 0
+
+    async def provider(_: DependencyResolver) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await release.wait()
+            raise RuntimeError("expected provider failure")
+        return "recovered"
+
+    container = Container()
+    container.register(key, provider, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        abandoned = asyncio.create_task(scope.resolve(key))
+        await asyncio.sleep(0)
+        abandoned.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await abandoned
+        release.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert await scope.resolve(key) == "recovered"
+
+    assert calls == 2
+    await container.close()
+
+
+def test_closed_container_rejects_new_registrations() -> None:
+    async def scenario() -> None:
+        container = Container()
+        await container.close()
+        with pytest.raises(ConfigurationError, match="closed"):
+            container.register(DependencyKey[str]("late"), lambda _: "late")
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.asyncio
 async def test_module_singletons_are_cleaned_in_reverse_order_and_removed() -> None:
     first = DependencyKey[str]("owned-first")
     second = DependencyKey[str]("owned-second")

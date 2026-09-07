@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.context import RequestContext
 from businessos.di import RequestDependencyScope
+from businessos.errors import BusinessOSError
 from businessos.registry import OwnedRegistry
 from businessos.security import Authorizer
 from businessos.telemetry import dispatch_span
@@ -135,6 +136,18 @@ class JobHandlerRegistry(OwnedRegistry[JobHandler]):
         dependencies: RequestDependencyScope,
     ) -> None:
         with dispatch_span("job", job.job_type):
+            if context.tenant is None:
+                raise BusinessOSError(
+                    "unauthenticated",
+                    "Authentication required",
+                    status_code=401,
+                )
+            if job.tenant_id != context.tenant.tenant_id:
+                raise BusinessOSError(
+                    "forbidden",
+                    "Job tenant does not match the trusted execution context",
+                    status_code=403,
+                )
             registered = self.resolve(job.job_type)
             async with self.admit_entry(registered) as handler:
                 permission = self._permissions.get((registered.name, registered.generation))

@@ -81,6 +81,41 @@ async def test_job_dispatch_enforces_permission_before_handler() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("context_kind", "expected_code"),
+    [("missing", "unauthenticated"), ("different", "forbidden")],
+)
+async def test_job_dispatch_binds_payload_tenant_to_trusted_context(
+    context_kind: str,
+    expected_code: str,
+) -> None:
+    registry = JobHandlerRegistry()
+    called = False
+
+    async def handler(job: Job, context: RequestContext, dependencies: object) -> None:
+        nonlocal called
+        called = True
+
+    registry.add("proof.rebuild", "example", handler)
+    payload_tenant_id = uuid4()
+    trusted_tenant = None if context_kind == "missing" else TenantContext(uuid4(), uuid4(), uuid4())
+    job = Job(
+        job_id=uuid4(),
+        tenant_id=payload_tenant_id,
+        job_type="proof.rebuild",
+        payload={},
+        correlation_id="job-tenant-boundary",
+    )
+    container = Container()
+    async with container.request_scope() as dependencies:
+        with pytest.raises(BusinessOSError) as raised:
+            await registry.invoke(job, RequestContext(tenant=trusted_tenant), dependencies)
+
+    assert raised.value.code == expected_code
+    assert not called
+
+
+@pytest.mark.asyncio
 async def test_job_authorization_and_handler_hold_one_generation() -> None:
     entered = asyncio.Event()
     release = asyncio.Event()

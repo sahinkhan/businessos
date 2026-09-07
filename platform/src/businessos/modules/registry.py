@@ -1,8 +1,9 @@
 """Deterministic module dependency, lifecycle and upgrade coordination."""
 
+import asyncio
 import sys
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from packaging.specifiers import SpecifierSet
@@ -22,7 +23,8 @@ class ModuleState(StrEnum):
     UPGRADING = "upgrading"
     FAILED = "failed"
     UNINSTALLING = "uninstalling"
-    REMOVED = "removed"
+    RETIRED = "retired"
+    REMOVED = "retired"
 
 
 @dataclass(slots=True)
@@ -30,6 +32,9 @@ class RegisteredModule:
     module: BusinessOSModule
     state: ModuleState = ModuleState.AVAILABLE
     error: str | None = None
+    registration: ModuleRegistration | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    started: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,64 +111,204 @@ class LifecycleManager:
         self,
         registry: ModuleRegistry,
         registration_factory: Callable[[str], ModuleRegistration],
+        *,
+        drain_timeout_seconds: float = 10.0,
     ) -> None:
         self._registry = registry
         self._registration_factory = registration_factory
+        self._drain_timeout_seconds = drain_timeout_seconds
+        self._lifecycle_lock = asyncio.Lock()
 
     async def install_all(self) -> None:
         for registered in self._registry.ordered():
             if registered.state is not ModuleState.AVAILABLE:
                 continue
             registered.state = ModuleState.INSTALLING
-            try:
-                await registered.module.register(
-                    self._registration_factory(registered.module.manifest.module_id)
-                )
-            except Exception as exc:
-                registered.state = ModuleState.FAILED
-                registered.error = str(exc)
-                raise
             registered.state = ModuleState.INSTALLED
 
     async def enable_all(self) -> None:
-        for registered in self._registry.ordered():
+        async with self._lifecycle_lock:
+            await self._enable_all()
+
+    async def _enable_all(self) -> None:
+        enabled: list[str] = []
+        try:
+            for registered in self._registry.ordered():
+                was_enabled = registered.state is ModuleState.ENABLED
+                await self._enable(registered.module.manifest.module_id)
+                if not was_enabled and registered.state is ModuleState.ENABLED:
+                    enabled.append(registered.module.manifest.module_id)
+        except BaseException as activation_error:
+            rollback_errors: list[BaseException] = []
+            for module_id in reversed(enabled):
+                try:
+                    await self._disable(module_id, validate_dependents=False)
+                except BaseException as rollback_error:
+                    rollback_errors.append(rollback_error)
+            if rollback_errors:
+                raise BaseExceptionGroup(
+                    "Module activation sequence and rollback failed",
+                    [activation_error, *rollback_errors],
+                ) from None
+            raise
+
+    async def enable(self, module_id: str) -> None:
+        async with self._lifecycle_lock:
+            await self._enable(module_id)
+
+    async def _enable(self, module_id: str) -> None:
+        registered = self._registry.get(module_id)
+        async with registered.lock:
+            if registered.state is ModuleState.ENABLED:
+                return
+            if registered.state is ModuleState.RETIRED:
+                raise ConfigurationError(f"Retired module cannot be enabled: {module_id}")
             if registered.state not in {ModuleState.INSTALLED, ModuleState.DISABLED}:
-                continue
+                return
+            registration = self._registration_factory(module_id)
+            start_attempted = False
             try:
+                await registered.module.register(registration)
+                start_attempted = True
                 await registered.module.start()
-            except Exception as exc:
+                registered.started = True
+                registration.publish()
+            except BaseException as exc:
+                rollback_errors: list[BaseException] = []
+                if start_attempted:
+                    try:
+                        await registered.module.stop()
+                        registered.started = False
+                    except BaseException as rollback_error:
+                        registered.started = True
+                        rollback_errors.append(rollback_error)
+                try:
+                    await registration.rollback()
+                except BaseException as rollback_error:
+                    rollback_errors.append(rollback_error)
                 registered.state = ModuleState.FAILED
-                registered.error = str(exc)
+                registered.error = type(exc).__name__
+                if rollback_errors:
+                    raise BaseExceptionGroup(
+                        f"Module activation and rollback failed: {module_id}",
+                        [exc, *rollback_errors],
+                    ) from None
                 raise
+            registered.registration = registration
+            registered.error = None
             registered.state = ModuleState.ENABLED
 
     async def disable_all(self) -> None:
-        for registered in reversed(self._registry.ordered()):
-            if registered.state is not ModuleState.ENABLED:
-                continue
-            try:
-                await registered.module.stop()
-            except Exception as exc:
+        async with self._lifecycle_lock:
+            errors: list[BaseException] = []
+            for registered in reversed(self._registry.ordered()):
+                try:
+                    await self._disable(
+                        registered.module.manifest.module_id,
+                        validate_dependents=False,
+                    )
+                except BaseException as exc:
+                    errors.append(exc)
+            if errors:
+                raise BaseExceptionGroup("Module disable failed", errors)
+
+    async def disable(self, module_id: str) -> None:
+        async with self._lifecycle_lock:
+            await self._disable(module_id, validate_dependents=True)
+
+    async def _disable(self, module_id: str, *, validate_dependents: bool) -> None:
+        registered = self._registry.get(module_id)
+        async with registered.lock:
+            if registered.state is ModuleState.RETIRED:
+                return
+            if (
+                registered.state is ModuleState.FAILED
+                and registered.registration is None
+                and not registered.started
+            ):
+                return
+            if registered.state not in {ModuleState.ENABLED, ModuleState.FAILED}:
+                return
+            if validate_dependents:
+                self._reject_enabled_dependents(module_id)
+            registration = registered.registration
+            if registration is None and registered.state is ModuleState.ENABLED:
+                raise ConfigurationError(f"Enabled module has no registration: {module_id}")
+            errors: list[BaseException] = []
+            if registration is not None:
+                try:
+                    await registration.stop_accepting(timeout_seconds=self._drain_timeout_seconds)
+                except BaseException as exc:
+                    registered.state = ModuleState.FAILED
+                    registered.error = type(exc).__name__
+                    raise
+            if registered.started:
+                try:
+                    await registered.module.stop()
+                    registered.started = False
+                except BaseException as exc:
+                    errors.append(exc)
+            if registration is not None:
+                try:
+                    await registration.remove()
+                    registered.registration = None
+                except BaseException as exc:
+                    errors.append(exc)
+            if errors:
                 registered.state = ModuleState.FAILED
-                registered.error = str(exc)
-                raise
+                registered.error = ",".join(type(error).__name__ for error in errors)
+                raise BaseExceptionGroup(f"Module disable failed: {module_id}", errors)
             registered.state = ModuleState.DISABLED
+            registered.error = None
 
     async def retire(self, module_id: str) -> None:
+        async with self._lifecycle_lock:
+            await self._retire(module_id)
+
+    async def _retire(self, module_id: str) -> None:
         registered = self._registry.get(module_id)
-        if registered.state is ModuleState.ENABLED:
-            await registered.module.stop()
-            registered.state = ModuleState.DISABLED
-        if registered.state not in {
-            ModuleState.INSTALLED,
-            ModuleState.DISABLED,
-            ModuleState.FAILED,
-        }:
-            raise ConfigurationError(
-                f"Module cannot retire from state {registered.state}: {module_id}"
+        self._reject_enabled_dependents(module_id)
+        if (
+            registered.state is ModuleState.ENABLED
+            or registered.started
+            or registered.registration is not None
+        ):
+            await self._disable(module_id, validate_dependents=False)
+        async with registered.lock:
+            if registered.state is ModuleState.RETIRED:
+                return
+            if registered.state not in {
+                ModuleState.INSTALLED,
+                ModuleState.DISABLED,
+                ModuleState.FAILED,
+            }:
+                raise ConfigurationError(
+                    f"Module cannot retire from state {registered.state}: {module_id}"
+                )
+            if registered.registration is not None:
+                await registered.registration.rollback()
+                registered.registration = None
+            registered.state = ModuleState.UNINSTALLING
+            registration = self._registration_factory(module_id)
+            await registration.rollback()
+            registration.retire_owner()
+            registered.state = ModuleState.RETIRED
+            registered.error = None
+
+    def _reject_enabled_dependents(self, module_id: str) -> None:
+        dependents = tuple(
+            candidate.module.manifest.module_id
+            for candidate in self._registry.entries()
+            if candidate.state is ModuleState.ENABLED
+            and any(
+                dependency.module_id == module_id
+                for dependency in candidate.module.manifest.dependencies
             )
-        registered.state = ModuleState.UNINSTALLING
-        registered.state = ModuleState.REMOVED
+        )
+        if dependents:
+            raise ConfigurationError(
+                f"Cannot retire module '{module_id}' with enabled dependents: {dependents}"
+            )
 
 
 class UpgradeCoordinator:

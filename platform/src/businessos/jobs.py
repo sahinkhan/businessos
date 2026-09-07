@@ -1,11 +1,17 @@
 """BusinessOS background-job contracts."""
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from businessos.activation import ContributionGate, ContributionGeneration
+from businessos.context import RequestContext
+from businessos.di import RequestDependencyScope
+from businessos.registry import OwnedRegistry
 
 
 class BackoffStrategy(StrEnum):
@@ -91,3 +97,23 @@ class JobProgressStore(Protocol):
 
 class DeadLetterStore(Protocol):
     async def put(self, dead_letter: DeadLetter) -> None: ...
+
+
+JobHandler = Callable[[Job, RequestContext, RequestDependencyScope], Awaitable[None]]
+
+
+class JobHandlerRegistry(OwnedRegistry[JobHandler]):
+    """Owner-scoped job handler contracts; execution is provided by a later adapter."""
+
+    def __init__(self, gate: ContributionGate | None = None) -> None:
+        super().__init__("job handler", gate)
+
+    def add(
+        self,
+        job_type: str,
+        owner: str,
+        handler: JobHandler,
+        *,
+        generation: ContributionGeneration | None = None,
+    ) -> None:
+        self.register(job_type, owner, handler, generation=generation)

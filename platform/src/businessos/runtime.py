@@ -2,10 +2,13 @@
 
 from dataclasses import dataclass
 
+from businessos.activation import ContributionGate
 from businessos.contracts import ContractRegistry
 from businessos.di import Container
 from businessos.features import FeatureFlagRegistry
 from businessos.http import Router
+from businessos.http.middleware import MiddlewareRegistry
+from businessos.jobs import JobHandlerRegistry
 from businessos.messages import EventBus, MessageDispatcher
 from businessos.metadata import MetadataRegistry
 from businessos.migrations import MigrationCoordinator
@@ -21,7 +24,9 @@ from businessos.providers import ProviderRegistry
 
 @dataclass(frozen=True, slots=True)
 class FrameworkRuntime:
+    contributions: ContributionGate
     router: Router
+    middleware: MiddlewareRegistry
     container: Container
     contracts: ContractRegistry
     metadata: MetadataRegistry
@@ -30,12 +35,14 @@ class FrameworkRuntime:
     features: FeatureFlagRegistry
     events: EventBus
     messages: MessageDispatcher
+    jobs: JobHandlerRegistry
     modules: ModuleRegistry
     lifecycle: LifecycleManager
     upgrades: UpgradeCoordinator
     migrations: MigrationCoordinator
 
     def registration(self, owner: str) -> ModuleRegistration:
+        generation = self.contributions.reserve(owner)
         return ModuleRegistration(
             owner,
             router=self.router,
@@ -46,4 +53,8 @@ class FrameworkRuntime:
             providers=self.providers,
             messages=self.messages,
             features=self.features,
+            middleware=self.middleware,
+            jobs=self.jobs,
+            gate=self.contributions,
+            generation=generation,
         )

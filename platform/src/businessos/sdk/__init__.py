@@ -6,6 +6,8 @@ from businessos.di import DependencyKey, DependencyScope, RequestDependencyScope
 from businessos.errors import BusinessOSError
 from businessos.features import FeatureFlag
 from businessos.http import Request, Response
+from businessos.http.middleware import Middleware
+from businessos.jobs import Job
 from businessos.messages import Command, DomainEvent, HandlingContext, Query
 from businessos.metadata import MetadataDeclaration
 from businessos.modules import ModuleManifest, ModuleRegistration
@@ -22,7 +24,9 @@ __all__ = [
     "DomainEvent",
     "FeatureFlag",
     "HandlingContext",
+    "Job",
     "MetadataDeclaration",
+    "Middleware",
     "ModuleManifest",
     "ModuleRegistration",
     "PermissionDeclaration",

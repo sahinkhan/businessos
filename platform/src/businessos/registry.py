@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.errors import ConflictError, NotFoundError
 
 
@@ -10,28 +11,69 @@ class OwnedValue[T]:
     name: str
     owner: str
     value: T
+    generation: ContributionGeneration | None = None
 
 
 class OwnedRegistry[T]:
     """Reject duplicate public contract ownership and preserve stable ordering."""
 
-    def __init__(self, kind: str) -> None:
+    def __init__(self, kind: str, gate: ContributionGate | None = None) -> None:
         self.kind = kind
         self._values: dict[str, OwnedValue[T]] = {}
+        self._gate = gate
 
-    def register(self, name: str, owner: str, value: T) -> None:
+    def register(
+        self,
+        name: str,
+        owner: str,
+        value: T,
+        *,
+        generation: ContributionGeneration | None = None,
+    ) -> None:
         current = self._values.get(name)
         if current is not None:
             raise ConflictError(
                 f"{self.kind} '{name}' is already owned by module '{current.owner}'"
             )
-        self._values[name] = OwnedValue(name=name, owner=owner, value=value)
+        self._values[name] = OwnedValue(
+            name=name,
+            owner=owner,
+            value=value,
+            generation=generation,
+        )
 
     def get(self, name: str) -> T:
         entry = self._values.get(name)
-        if entry is None:
+        if entry is None or not self._is_active(entry):
             raise NotFoundError(f"Unknown {self.kind}: {name}")
         return entry.value
 
     def entries(self) -> tuple[OwnedValue[T], ...]:
-        return tuple(self._values[name] for name in sorted(self._values))
+        return tuple(
+            entry for name in sorted(self._values) if self._is_active(entry := self._values[name])
+        )
+
+    def contains(
+        self,
+        name: str,
+        *,
+        owner: str | None = None,
+        generation: ContributionGeneration | None = None,
+        include_inactive: bool = False,
+    ) -> bool:
+        entry = self._values.get(name)
+        if entry is None:
+            return False
+        if owner is not None and entry.owner != owner:
+            return False
+        if generation is not None and entry.generation != generation:
+            return False
+        return include_inactive or self._is_active(entry)
+
+    def remove_owner_generation(self, generation: ContributionGeneration) -> None:
+        self._values = {
+            name: entry for name, entry in self._values.items() if entry.generation != generation
+        }
+
+    def _is_active(self, entry: OwnedValue[T]) -> bool:
+        return self._gate is None or self._gate.is_active(entry.generation)

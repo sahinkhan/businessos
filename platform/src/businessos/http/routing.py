@@ -4,6 +4,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.di import RequestDependencyScope
 from businessos.errors import ConflictError, MethodNotAllowedError, NotFoundError
 from businessos.http.request import Request
@@ -21,6 +22,8 @@ class Route:
     handler: RouteHandler
     name: str
     permission: str | None = None
+    owner: str | None = None
+    generation: ContributionGeneration | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,8 +57,9 @@ class _CompiledRoute:
 class Router:
     """Framework-owned router with conflict rejection and stable precedence."""
 
-    def __init__(self) -> None:
+    def __init__(self, gate: ContributionGate | None = None) -> None:
         self._routes: dict[tuple[str, tuple[str, ...]], _CompiledRoute] = {}
+        self._gate = gate
 
     @property
     def routes(self) -> tuple[Route, ...]:
@@ -69,6 +73,8 @@ class Router:
         *,
         name: str | None = None,
         permission: str | None = None,
+        owner: str | None = None,
+        generation: ContributionGeneration | None = None,
     ) -> Route:
         compiled = self._compile(
             Route(
@@ -77,6 +83,8 @@ class Router:
                 handler=handler,
                 name=name or f"{method.lower()}:{path}",
                 permission=permission,
+                owner=owner,
+                generation=generation,
             )
         )
         key = (compiled.route.method, compiled.shape)
@@ -104,7 +112,11 @@ class Router:
     def _ordered_routes(self) -> tuple[_CompiledRoute, ...]:
         return tuple(
             sorted(
-                self._routes.values(),
+                (
+                    compiled
+                    for compiled in self._routes.values()
+                    if self._gate is None or self._gate.is_active(compiled.route.generation)
+                ),
                 key=lambda item: (
                     item.dynamic_count,
                     -len(item.segments),
@@ -113,6 +125,13 @@ class Router:
                 ),
             )
         )
+
+    def remove_owner_generation(self, generation: ContributionGeneration) -> None:
+        self._routes = {
+            key: compiled
+            for key, compiled in self._routes.items()
+            if compiled.route.generation != generation
+        }
 
     @classmethod
     def _compile(cls, route: Route) -> _CompiledRoute:

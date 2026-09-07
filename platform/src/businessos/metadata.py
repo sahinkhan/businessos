@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.registry import OwnedRegistry
 
 
@@ -15,8 +16,14 @@ class MetadataDeclaration(BaseModel):
 
 
 class MetadataRegistry(OwnedRegistry[MetadataDeclaration]):
-    def __init__(self) -> None:
-        super().__init__("metadata")
+    def __init__(self, gate: ContributionGate | None = None) -> None:
+        super().__init__("metadata", gate)
 
-    def add(self, owner: str, declaration: MetadataDeclaration) -> None:
-        self.register(declaration.key, owner, declaration)
+    def add(
+        self,
+        owner: str,
+        declaration: MetadataDeclaration,
+        *,
+        generation: ContributionGeneration | None = None,
+    ) -> None:
+        self.register(declaration.key, owner, declaration, generation=generation)

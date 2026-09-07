@@ -2,6 +2,7 @@
 
 from typing import Protocol
 
+from businessos.activation import ContributionGate
 from businessos.registry import OwnedRegistry
 
 
@@ -11,5 +12,5 @@ class PublicContract(Protocol):
 
 
 class ContractRegistry(OwnedRegistry[PublicContract]):
-    def __init__(self) -> None:
-        super().__init__("contract")
+    def __init__(self, gate: ContributionGate | None = None) -> None:
+        super().__init__("contract", gate)

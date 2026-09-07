@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol, cast
 from uuid import UUID
 
+from businessos.activation import ContributionGate
 from businessos.registry import OwnedRegistry
 
 
@@ -32,8 +33,8 @@ class ObjectStorageProvider(HealthProvider, Protocol):
 
 
 class ProviderRegistry(OwnedRegistry[object]):
-    def __init__(self) -> None:
-        super().__init__("provider")
+    def __init__(self, gate: ContributionGate | None = None) -> None:
+        super().__init__("provider", gate)
 
 
 class RedisCacheProvider:

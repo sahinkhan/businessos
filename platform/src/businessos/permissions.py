@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.registry import OwnedRegistry
 
 
@@ -13,8 +14,14 @@ class PermissionDeclaration(BaseModel):
 
 
 class PermissionRegistry(OwnedRegistry[PermissionDeclaration]):
-    def __init__(self) -> None:
-        super().__init__("permission")
+    def __init__(self, gate: ContributionGate | None = None) -> None:
+        super().__init__("permission", gate)
 
-    def add(self, owner: str, declaration: PermissionDeclaration) -> None:
-        self.register(declaration.key, owner, declaration)
+    def add(
+        self,
+        owner: str,
+        declaration: PermissionDeclaration,
+        *,
+        generation: ContributionGeneration | None = None,
+    ) -> None:
+        self.register(declaration.key, owner, declaration, generation=generation)

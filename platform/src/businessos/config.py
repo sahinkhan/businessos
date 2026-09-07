@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_serializer, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,8 +22,12 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     app_version: str | None = None
-    database_url: str = (
-        "postgresql+psycopg://businessos_app:businessos-application@localhost:5432/businessos"
+    database_url: str = Field(
+        default=(
+            "postgresql+psycopg://businessos_app:businessos-application@localhost:5432/businessos"
+        ),
+        repr=False,
+        exclude=True,
     )
     database_pool_size: int = Field(default=5, ge=1, le=100)
     database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
@@ -38,6 +42,10 @@ class Settings(BaseSettings):
             msg = "database_url must use the postgresql+psycopg SQLAlchemy dialect"
             raise ValueError(msg)
         return self
+
+    @field_serializer("database_url")
+    def serialize_database_url(self, _: str) -> str:
+        return "**********"
 
 
 @lru_cache(maxsize=1)

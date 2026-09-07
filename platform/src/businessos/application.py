@@ -328,6 +328,8 @@ class BusinessOSApplication:
         self, scope: HTTPScope, receive: ASGIReceiveCallable, send: ASGISendCallable
     ) -> None:
         admitted = False
+        generated_context = RequestContext()
+        response_context = generated_context
         try:
             if not self._is_operational_path(scope["path"]):
                 if self.state is not ApplicationState.RUNNING:
@@ -335,11 +337,11 @@ class BusinessOSApplication:
                         "service_unavailable",
                         "Application is not accepting requests",
                         status_code=503,
+                        public=True,
                     )
                 self._active_requests += 1
                 self._requests_drained.clear()
                 admitted = True
-            generated_context = RequestContext()
             headers = self._headers(scope)
             identity = RequestIdentity(
                 method=scope["method"],
@@ -349,6 +351,7 @@ class BusinessOSApplication:
                 trace_id=headers.get("traceparent", generated_context.trace_id),
             )
             context = await self._context_resolver.resolve(identity)
+            response_context = context
             match = self.router.match(scope["method"], scope["path"])
             request = Request(
                 scope,
@@ -374,18 +377,31 @@ class BusinessOSApplication:
                     (*self._middleware, *module_middleware), endpoint
                 )(request)
         except BusinessOSError as exc:
-            response = Response.json(exc.payload(), status_code=exc.status_code)
+            if not exc.public:
+                response = Response.json(
+                    {"code": "internal_error", "message": "Internal server error"},
+                    status_code=500,
+                )
+            else:
+                response = Response.json(
+                    exc.payload(),
+                    status_code=exc.status_code,
+                    headers=exc.headers,
+                )
         except ValidationError as exc:
             response = Response.json(
                 {
                     "code": "validation_error",
                     "message": "Request validation failed",
-                    "details": {"errors": exc.errors(include_url=False)},
+                    "details": {"errors": exc.errors(include_url=False, include_input=False)},
                 },
                 status_code=422,
             )
-        except Exception:
-            self._logger.exception("Unhandled request failure")
+        except Exception as exc:
+            self._logger.error(
+                "Unhandled request failure",
+                extra={"error_type": type(exc).__name__},
+            )
             response = Response.json(
                 {"code": "internal_error", "message": "Internal server error"},
                 status_code=500,
@@ -395,6 +411,7 @@ class BusinessOSApplication:
                 self._active_requests -= 1
                 if self._active_requests == 0:
                     self._requests_drained.set()
+        response.headers.setdefault("x-correlation-id", response_context.correlation_id)
         if scope["method"] == "HEAD":
             response.body = b""
         await response.send(send)

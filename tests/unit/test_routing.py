@@ -38,6 +38,7 @@ def test_router_distinguishes_not_found_and_method_not_allowed() -> None:
         router.match("POST", "/items")
     except MethodNotAllowedError as exc:
         assert exc.details == {"allowed_methods": ("GET",)}
+        assert exc.headers == {"allow": "GET"}
     else:
         raise AssertionError("Expected method-not-allowed error")
 

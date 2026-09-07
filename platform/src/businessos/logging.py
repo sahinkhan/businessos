@@ -24,7 +24,13 @@ class JsonFormatter(logging.Formatter):
             if context.tenant is not None:
                 payload["tenant_id"] = str(context.tenant.tenant_id)
         if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
+            exception_type = record.exc_info[0]
+            payload["exception_type"] = (
+                exception_type.__name__ if exception_type is not None else "Exception"
+            )
+        error_type = getattr(record, "error_type", None)
+        if isinstance(error_type, str):
+            payload["error_type"] = error_type
         return json.dumps(payload, separators=(",", ":"), default=str)
 
 

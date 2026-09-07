@@ -1,4 +1,6 @@
 import asyncio
+import io
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
@@ -12,6 +14,7 @@ from businessos.config import Settings
 from businessos.di import Container
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import CallNext
+from businessos.logging import JsonFormatter
 
 
 def _settings() -> Settings:
@@ -134,8 +137,56 @@ async def test_framework_serializes_expected_and_unexpected_errors() -> None:
 
     assert missing.status_code == 404
     assert missing.json()["code"] == "not_found"
+    assert missing.headers["x-correlation-id"]
     assert failed.status_code == 500
     assert failed.json() == {"code": "internal_error", "message": "Internal server error"}
+    assert failed.headers["x-correlation-id"]
+
+
+@pytest.mark.asyncio
+async def test_server_errors_and_logging_do_not_expose_exception_secrets() -> None:
+    secret = "never-print-this-handler-secret"
+    app = create_application(_settings())
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous_handlers = logger.handlers
+    previous_propagate = logger.propagate
+    logger.handlers = [handler]
+    logger.propagate = False
+
+    async def unexpected(_: Request, __: object) -> Response:
+        raise RuntimeError(secret)
+
+    async def expected(_: Request, __: object) -> Response:
+        from businessos.errors import ConfigurationError
+
+        raise ConfigurationError(secret)
+
+    app.router.add_route("GET", "/unexpected-secret", unexpected)
+    app.router.add_route("GET", "/expected-secret", expected)
+    await app.startup()
+    try:
+        transport = httpx.ASGITransport(app=cast(Any, app))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            unexpected_response = await client.get("/unexpected-secret")
+            expected_response = await client.get("/expected-secret")
+    finally:
+        await app.shutdown()
+        logger.handlers = previous_handlers
+        logger.propagate = previous_propagate
+
+    assert unexpected_response.json() == {
+        "code": "internal_error",
+        "message": "Internal server error",
+    }
+    assert expected_response.json() == {
+        "code": "internal_error",
+        "message": "Internal server error",
+    }
+    assert secret not in stream.getvalue()
+    assert "RuntimeError" in stream.getvalue()
 
 
 @pytest.mark.asyncio

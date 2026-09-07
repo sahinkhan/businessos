@@ -25,12 +25,16 @@ class BusinessOSError(Exception):
         *,
         status_code: int = 400,
         details: Mapping[str, object] | None = None,
+        headers: Mapping[str, str] | None = None,
+        public: bool | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status_code = status_code
         self.details = details
+        self.headers = dict(headers or {})
+        self.public = status_code < 500 if public is None else public
 
     def payload(self) -> ErrorPayload:
         return ErrorPayload(code=self.code, message=self.message, details=self.details)
@@ -53,6 +57,7 @@ class MethodNotAllowedError(BusinessOSError):
             "Method not allowed",
             status_code=405,
             details={"allowed_methods": allowed_methods},
+            headers={"allow": ", ".join(allowed_methods)},
         )
 
 

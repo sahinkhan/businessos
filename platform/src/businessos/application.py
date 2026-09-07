@@ -1,7 +1,9 @@
 """Custom BusinessOS ASGI application and lifecycle."""
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
@@ -33,12 +35,20 @@ LifecycleHook = Callable[[], Awaitable[None]]
 
 
 class ApplicationState(StrEnum):
-    CREATED = "created"
+    NEW = "new"
+    CREATED = "new"
     STARTING = "starting"
     RUNNING = "running"
     STOPPING = "stopping"
     STOPPED = "stopped"
     FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class _LifecycleComponent:
+    name: str
+    startup: LifecycleHook
+    shutdown: LifecycleHook
 
 
 class BusinessOSApplication:
@@ -57,15 +67,22 @@ class BusinessOSApplication:
         self.router = router
         self.container = container
         self.runtime = runtime
-        self.state = ApplicationState.CREATED
+        self.state = ApplicationState.NEW
         self._context_resolver = context_resolver or AnonymousContextResolver()
         self._middleware: list[Middleware] = [ContextMiddleware()]
         self._startup_hooks: list[LifecycleHook] = []
         self._shutdown_hooks: list[LifecycleHook] = []
+        self._components: list[_LifecycleComponent] = []
+        self._started_components: list[_LifecycleComponent] = []
+        self._lifecycle_lock = asyncio.Lock()
+        self._active_requests = 0
+        self._requests_drained = asyncio.Event()
+        self._requests_drained.set()
+        self._cleanup_complete = False
         self._logger = logging.getLogger("businessos.application")
 
     def add_middleware(self, middleware: Middleware) -> None:
-        if self.state is not ApplicationState.CREATED:
+        if self.state is not ApplicationState.NEW:
             raise RuntimeError("Middleware can only be registered before application startup")
         self._middleware.append(middleware)
 
@@ -75,34 +92,163 @@ class BusinessOSApplication:
     def on_shutdown(self, hook: LifecycleHook) -> None:
         self._shutdown_hooks.append(hook)
 
+    def add_lifecycle(
+        self,
+        name: str,
+        startup: LifecycleHook,
+        shutdown: LifecycleHook,
+    ) -> None:
+        if self.state is not ApplicationState.NEW:
+            raise RuntimeError("Lifecycle components can only be added before startup")
+        self._components.append(_LifecycleComponent(name, startup, shutdown))
+
+    async def readiness(self) -> None:
+        if self.state is not ApplicationState.RUNNING:
+            raise RuntimeError("Application lifecycle is not running")
+
     async def startup(self) -> None:
-        if self.state is ApplicationState.RUNNING:
-            return
-        if self.state not in {ApplicationState.CREATED, ApplicationState.STOPPED}:
-            raise RuntimeError(f"Cannot start application from state {self.state}")
-        self.state = ApplicationState.STARTING
-        try:
-            for hook in self._startup_hooks:
-                await hook()
-        except Exception:
-            self.state = ApplicationState.FAILED
-            raise
-        self.state = ApplicationState.RUNNING
+        async with self._lifecycle_lock:
+            if self.state is ApplicationState.RUNNING:
+                return
+            if self.state is not ApplicationState.NEW:
+                raise RuntimeError(f"Cannot start application from state {self.state}")
+            self.state = ApplicationState.STARTING
+            completed: list[_LifecycleComponent] = []
+            try:
+                async with asyncio.timeout(self.settings.startup_timeout_seconds):
+                    for component in self._components:
+                        await component.startup()
+                        completed.append(component)
+                        self._started_components.append(component)
+                    for hook in self._startup_hooks:
+                        await hook()
+            except BaseException as startup_error:
+                rollback_task = asyncio.create_task(
+                    self._startup_rollback(completed),
+                    name="businessos-startup-rollback",
+                )
+                rollback_error, _ = await self._await_cleanup(rollback_task)
+                self.state = ApplicationState.FAILED
+                self._cleanup_complete = True
+                self._started_components.clear()
+                if rollback_error is not None:
+                    raise BaseExceptionGroup(
+                        "Application startup and rollback failed",
+                        [startup_error, rollback_error],
+                    ) from None
+                raise
+            self.state = ApplicationState.RUNNING
 
     async def shutdown(self) -> None:
-        if self.state is ApplicationState.STOPPED:
-            return
-        self.state = ApplicationState.STOPPING
-        errors: list[Exception] = []
-        for hook in reversed(self._shutdown_hooks):
-            try:
-                await hook()
-            except Exception as exc:
-                errors.append(exc)
-        await self.container.close()
-        self.state = ApplicationState.STOPPED if not errors else ApplicationState.FAILED
+        async with self._lifecycle_lock:
+            if self.state is ApplicationState.STOPPED or self._cleanup_complete:
+                return
+            if self.state is ApplicationState.NEW:
+                self.state = ApplicationState.STOPPING
+            elif self.state not in {ApplicationState.RUNNING, ApplicationState.FAILED}:
+                raise RuntimeError(f"Cannot stop application from state {self.state}")
+            else:
+                self.state = ApplicationState.STOPPING
+            cleanup_task = asyncio.create_task(
+                self._shutdown_sequence(),
+                name="businessos-shutdown",
+            )
+            cleanup_error, cancellation_count = await self._await_cleanup(cleanup_task)
+            self._cleanup_complete = True
+            self.state = (
+                ApplicationState.STOPPED if cleanup_error is None else ApplicationState.FAILED
+            )
+            if cleanup_error is not None:
+                raise cleanup_error
+            if cancellation_count:
+                raise asyncio.CancelledError
+
+    async def _startup_rollback(
+        self,
+        completed: list[_LifecycleComponent],
+    ) -> None:
+        deadline = asyncio.get_running_loop().time() + self.settings.shutdown_timeout_seconds
+        errors = await self._run_cleanup_hooks(
+            [component.shutdown for component in reversed(completed)],
+            include_finalizers=True,
+            deadline=deadline,
+        )
         if errors:
-            raise ExceptionGroup("Application shutdown failed", errors)
+            raise BaseExceptionGroup("Application startup rollback failed", errors)
+
+    async def _shutdown_sequence(self) -> None:
+        errors: list[BaseException] = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.settings.shutdown_timeout_seconds
+        try:
+            async with asyncio.timeout(max(0.0, deadline - loop.time())):
+                await self._requests_drained.wait()
+        except BaseException as exc:
+            errors.append(exc)
+        errors.extend(
+            await self._run_cleanup_hooks(
+                [component.shutdown for component in reversed(self._started_components)],
+                include_finalizers=True,
+                deadline=deadline,
+            )
+        )
+        self._started_components.clear()
+        if errors:
+            raise BaseExceptionGroup("Application shutdown failed", errors)
+
+    async def _run_cleanup_hooks(
+        self,
+        hooks: list[LifecycleHook],
+        *,
+        include_finalizers: bool,
+        deadline: float,
+    ) -> list[BaseException]:
+        errors: list[BaseException] = []
+        cleanup_hooks = [*hooks]
+        if include_finalizers:
+            cleanup_hooks.extend(reversed(self._shutdown_hooks))
+            cleanup_hooks.append(self.container.close)
+        for hook in cleanup_hooks:
+
+            async def run_hook(current_hook: LifecycleHook = hook) -> None:
+                await current_hook()
+
+            task: asyncio.Task[None] = asyncio.create_task(run_hook())
+            try:
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                async with asyncio.timeout(remaining):
+                    await task
+            except BaseException as exc:
+                errors.append(exc)
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except BaseException:
+                        pass
+        return errors
+
+    @staticmethod
+    async def _await_cleanup(
+        cleanup_task: asyncio.Task[None],
+    ) -> tuple[BaseException | None, int]:
+        cancellation_count = 0
+        current = asyncio.current_task()
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                cancellation_count += 1
+                if current is not None:
+                    while current.cancelling():
+                        current.uncancel()
+            except BaseException as exc:
+                return exc, cancellation_count
+        try:
+            cleanup_task.result()
+        except BaseException as exc:
+            return exc, cancellation_count
+        return None, cancellation_count
 
     async def __call__(
         self, scope: object, receive: ASGIReceiveCallable, send: ASGISendCallable
@@ -119,7 +265,18 @@ class BusinessOSApplication:
     async def _handle_http(
         self, scope: HTTPScope, receive: ASGIReceiveCallable, send: ASGISendCallable
     ) -> None:
+        admitted = False
         try:
+            if not self._is_operational_path(scope["path"]):
+                if self.state is not ApplicationState.RUNNING:
+                    raise BusinessOSError(
+                        "service_unavailable",
+                        "Application is not accepting requests",
+                        status_code=503,
+                    )
+                self._active_requests += 1
+                self._requests_drained.clear()
+                admitted = True
             generated_context = RequestContext()
             headers = self._headers(scope)
             identity = RequestIdentity(
@@ -138,13 +295,22 @@ class BusinessOSApplication:
                 path_params=match.path_params,
                 body_limit_bytes=self.settings.request_body_limit_bytes,
             )
-            async with self.container.request_scope() as dependencies:
+            dependency_scope = (
+                RequestDependencyScope(self.container)
+                if self._is_operational_path(scope["path"])
+                and self.state in {ApplicationState.STOPPED, ApplicationState.FAILED}
+                else self.container.request_scope()
+            )
+            async with dependency_scope as dependencies:
                 endpoint = self._endpoint(
                     match.route.handler,
                     dependencies,
                     permission=match.route.permission,
                 )
-                response = await compose_middleware(tuple(self._middleware), endpoint)(request)
+                module_middleware = self.runtime.middleware.active() if self.runtime else ()
+                response = await compose_middleware(
+                    (*self._middleware, *module_middleware), endpoint
+                )(request)
         except BusinessOSError as exc:
             response = Response.json(exc.payload(), status_code=exc.status_code)
         except ValidationError as exc:
@@ -162,6 +328,11 @@ class BusinessOSApplication:
                 {"code": "internal_error", "message": "Internal server error"},
                 status_code=500,
             )
+        finally:
+            if admitted:
+                self._active_requests -= 1
+                if self._active_requests == 0:
+                    self._requests_drained.set()
         if scope["method"] == "HEAD":
             response.body = b""
         await response.send(send)
@@ -193,14 +364,32 @@ class BusinessOSApplication:
                 try:
                     await self.startup()
                 except Exception as exc:
-                    await send({"type": "lifespan.startup.failed", "message": str(exc)})
+                    self._logger.error(
+                        "Application startup failed",
+                        extra={"error_type": type(exc).__name__},
+                    )
+                    await send(
+                        {
+                            "type": "lifespan.startup.failed",
+                            "message": "Application startup failed",
+                        }
+                    )
                 else:
                     await send({"type": "lifespan.startup.complete"})
             elif message["type"] == "lifespan.shutdown":
                 try:
                     await self.shutdown()
                 except Exception as exc:
-                    await send({"type": "lifespan.shutdown.failed", "message": str(exc)})
+                    self._logger.error(
+                        "Application shutdown failed",
+                        extra={"error_type": type(exc).__name__},
+                    )
+                    await send(
+                        {
+                            "type": "lifespan.shutdown.failed",
+                            "message": "Application shutdown failed",
+                        }
+                    )
                 else:
                     await send({"type": "lifespan.shutdown.complete"})
                 return
@@ -211,3 +400,7 @@ class BusinessOSApplication:
             key.decode("latin-1").lower(): value.decode("latin-1")
             for key, value in scope.get("headers", [])
         }
+
+    @staticmethod
+    def _is_operational_path(path: str) -> bool:
+        return path in {"/livez", "/readyz", "/version", "/diagnostics/modules"}

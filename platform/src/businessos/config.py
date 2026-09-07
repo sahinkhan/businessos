@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
     database_readiness_enabled: bool = True
     request_body_limit_bytes: int = Field(default=1_048_576, ge=1)
+    startup_timeout_seconds: float = Field(default=30.0, gt=0)
     shutdown_timeout_seconds: float = Field(default=10.0, gt=0)
 
     @model_validator(mode="after")

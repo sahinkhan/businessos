@@ -130,8 +130,11 @@ def create_application(
         context_resolver=context_resolver,
     )
 
-    application.on_startup(lifecycle.install_all)
-    application.on_startup(lifecycle.enable_all)
+    async def start_modules() -> None:
+        await lifecycle.install_all()
+        await lifecycle.enable_all()
+
+    application.add_lifecycle("modules", start_modules, lifecycle.disable_all)
     application.on_shutdown(database.close)
-    application.on_shutdown(lifecycle.disable_all)
+    diagnostics.add_readiness_check("application", application.readiness)
     return application

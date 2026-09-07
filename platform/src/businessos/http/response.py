@@ -39,7 +39,7 @@ class Response:
         merged = {"content-type": "application/json", **dict(headers or {})}
         return cls(
             status_code=status_code,
-            body=json.dumps(content, separators=(",", ":"), default=str).encode(),
+            body=json.dumps(content, separators=(",", ":")).encode(),
             headers=merged,
         )
 

@@ -35,6 +35,22 @@ if TYPE_CHECKING:
 LifecycleHook = Callable[[], Awaitable[None]]
 
 
+def _public_validation_errors(exc: ValidationError) -> list[dict[str, object]]:
+    """Return only allowlisted validation metadata, never exception-derived text."""
+    public: list[dict[str, object]] = []
+    for error in exc.errors(include_url=False, include_input=False, include_context=False):
+        error_type = error.get("type")
+        if error_type == "missing":
+            code, message = "required", "Field is required"
+        elif error_type == "json_invalid":
+            code, message = "invalid_json", "Request body is not valid JSON"
+        else:
+            code, message = "invalid_value", "Value is not valid"
+        location = list(error.get("loc", ()))
+        public.append({"code": code, "location": location, "message": message})
+    return public
+
+
 class ApplicationState(StrEnum):
     NEW = "new"
     CREATED = "new"
@@ -410,7 +426,7 @@ class BusinessOSApplication:
                 {
                     "code": "validation_error",
                     "message": "Request validation failed",
-                    "details": {"errors": exc.errors(include_url=False, include_input=False)},
+                    "details": {"errors": _public_validation_errors(exc)},
                 },
                 status_code=422,
             )

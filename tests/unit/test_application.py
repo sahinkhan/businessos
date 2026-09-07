@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from pydantic import BaseModel, field_validator, model_validator
 
 from businessos.application import ApplicationState, BusinessOSApplication
 from businessos.bootstrap import create_application
@@ -277,6 +278,50 @@ async def test_server_errors_and_logging_do_not_expose_exception_secrets() -> No
     }
     assert secret not in stream.getvalue()
     assert "RuntimeError" in stream.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_validation_errors_never_expose_validator_exception_text() -> None:
+    field_secret = "FIELD_VALIDATOR_SECRET_CANARY"
+    model_secret = "MODEL_VALIDATOR_SECRET_CANARY"
+
+    class SecretBoundary(BaseModel):
+        value: str
+
+        @field_validator("value")
+        @classmethod
+        def reject_field(cls, value: str) -> str:
+            if value == "field":
+                raise ValueError(field_secret)
+            return value
+
+        @model_validator(mode="after")
+        def reject_model(self) -> "SecretBoundary":
+            if self.value == "model":
+                raise ValueError(model_secret)
+            return self
+
+    app = create_application(_settings())
+
+    async def validate(request: Request, _: object) -> Response:
+        SecretBoundary.model_validate(await request.json())
+        return Response.text("unreachable")
+
+    app.router.add_route("POST", "/validate-secret", validate)
+    await app.startup()
+    transport = httpx.ASGITransport(app=cast(Any, app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        responses = [
+            await client.post("/validate-secret", json={"value": "field"}),
+            await client.post("/validate-secret", json={"value": "model"}),
+        ]
+    await app.shutdown()
+
+    for response in responses:
+        assert response.status_code == 422
+        assert response.json()["details"]["errors"][0]["code"] == "invalid_value"
+        assert field_secret not in response.text
+        assert model_secret not in response.text
 
 
 @pytest.mark.asyncio

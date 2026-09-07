@@ -185,6 +185,41 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
             )
         ).all()
     assert len(receipts_after_restart) == 1
+
+    assert second_worker.application.runtime is not None
+    await second_worker.application.runtime.lifecycle.disable(second_module.manifest.module_id)
+    deferred_event = ProofStored(
+        tenant_id=tenant.tenant_id,
+        correlation_id="event-worker-disabled-module",
+        record_id=uuid4(),
+        command_id=uuid4(),
+        value="deliver-after-reenable",
+    )
+    async with inspection_factory.for_tenant(tenant) as unit_of_work:
+        unit_of_work.add_outbox(deferred_event.to_outbox())
+        await unit_of_work.commit()
+    await asyncio.sleep(0.5)
+    assert second_module.delivery_attempts == 0
+    async with inspection_factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        receipts_while_disabled = (
+            await unit_of_work.session.scalars(
+                select(InboxReceipt).where(InboxReceipt.event_id == deferred_event.event_id)
+            )
+        ).all()
+    assert receipts_while_disabled == []
+
+    await second_worker.application.runtime.lifecycle.enable(second_module.manifest.module_id)
+    await asyncio.wait_for(second_module.projected.wait(), timeout=10.0)
+    assert second_module.delivery_attempts == 2
+    async with inspection_factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        deferred_receipts = (
+            await unit_of_work.session.scalars(
+                select(InboxReceipt).where(InboxReceipt.event_id == deferred_event.event_id)
+            )
+        ).all()
+    assert len(deferred_receipts) == 1
     await second_worker.stop()
     await inspection_database.close()
 

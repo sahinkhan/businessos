@@ -9,10 +9,10 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from businessos.activation import ContributionGate, ContributionGeneration
+from businessos.activation import ContributionGate, ContributionGeneration, ContributionState
 from businessos.context import RequestContext
 from businessos.di import RequestDependencyScope
-from businessos.errors import ConflictError, NotFoundError
+from businessos.errors import ConflictError, DeliveryUnavailableError, NotFoundError
 from businessos.persistence import PendingOutboxMessage, UnitOfWork, UnitOfWorkFactory
 from businessos.security import Authorizer
 from businessos.telemetry import dispatch_span
@@ -189,6 +189,7 @@ class EventBus:
         self._authorizer = authorizer
         self._handlers: dict[type[DomainEvent], dict[str, _OwnedEventHandler]] = {}
         self._event_types: dict[str, type[DomainEvent]] = {}
+        self._durable_subscriber_owners: dict[type[DomainEvent], dict[str, str]] = {}
 
     def subscribe[E: DomainEvent](
         self,
@@ -204,13 +205,20 @@ class EventBus:
         if current_type is not None and current_type is not event_type:
             raise ConflictError(f"Event type is already registered: {event_type.event_type}")
         self._event_types[event_type.event_type] = event_type
+        resolved_owner = owner or subscriber
+        durable_owner = self._durable_subscriber_owners.get(event_type, {}).get(subscriber)
+        if durable_owner is not None and durable_owner != resolved_owner:
+            raise ConflictError(
+                f"Durable event subscriber is owned by another module: "
+                f"{event_type.event_type}/{subscriber}"
+            )
         handlers = self._handlers.setdefault(event_type, {})
         if subscriber in handlers:
             raise ConflictError(
                 f"Event subscriber already registered: {event_type.__name__}/{subscriber}"
             )
         handlers[subscriber] = _OwnedEventHandler(
-            owner or subscriber,
+            resolved_owner,
             subscriber,
             cast(EventHandler, handler),
             generation,
@@ -230,6 +238,16 @@ class EventBus:
             for name in sorted(handlers)
             if self._gate is None or self._gate.is_active(handlers[name].generation)
         )
+
+    def delivery_subscribers(self, event: DomainEvent) -> tuple[_OwnedEventHandler, ...]:
+        """Return the complete active obligation set or require broker redelivery."""
+        handlers = self._handlers.get(type(event), {})
+        obligated = set(self._durable_subscriber_owners.get(type(event), {}))
+        obligated.update(handlers)
+        active = self.subscribers(event)
+        if obligated - {handler.subscriber for handler in active}:
+            raise DeliveryUnavailableError("Durable event subscriber is temporarily unavailable")
+        return active
 
     async def authorize(self, context: RequestContext, permission: str | None) -> None:
         await self._authorize(context, permission)
@@ -267,8 +285,16 @@ class EventBus:
         await self._authorizer.require(context, permission)
 
     def remove_owner_generation(self, generation: ContributionGeneration) -> None:
+        generation_was_published = (
+            self._gate is not None and self._gate.state(generation) is not ContributionState.STAGED
+        )
         for event_type in tuple(self._handlers):
             handlers = self._handlers[event_type]
+            if generation_was_published:
+                durable_owners = self._durable_subscriber_owners.setdefault(event_type, {})
+                for handler in handlers.values():
+                    if handler.generation == generation:
+                        durable_owners[handler.subscriber] = handler.owner
             self._handlers[event_type] = {
                 subscriber: handler
                 for subscriber, handler in handlers.items()
@@ -276,7 +302,8 @@ class EventBus:
             }
             if not self._handlers[event_type]:
                 del self._handlers[event_type]
-                self._event_types.pop(event_type.event_type, None)
+                if not self._durable_subscriber_owners.get(event_type):
+                    self._event_types.pop(event_type.event_type, None)
 
 
 class MessageDispatcher:

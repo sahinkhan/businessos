@@ -125,7 +125,7 @@ class DurableEventConsumer:
         with consumer_span(event.event_type, event.trace_context) as trace_id:
             traced_context = replace(context, trace_id=trace_id)
             processed = 0
-            for subscriber in self._events.subscribers(event):
+            for subscriber in self._events.delivery_subscribers(event):
                 async with self._events.admitted(subscriber):
                     await self._events.authorize(traced_context, subscriber.permission)
                     unit_of_work = self._unit_of_work_factory.for_tenant(tenant)

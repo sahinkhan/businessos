@@ -49,6 +49,10 @@ class ClientDisconnectedError(BusinessOSError):
         )
 
 
+class DeliveryUnavailableError(RuntimeError):
+    """A valid durable delivery must be retried until its subscriber is available."""
+
+
 class ConfigurationError(BusinessOSError):
     def __init__(self, message: str) -> None:
         super().__init__("configuration_error", message, status_code=500)

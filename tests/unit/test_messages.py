@@ -9,7 +9,7 @@ import pytest
 from businessos.activation import ContributionGate
 from businessos.context import RequestContext, TenantContext
 from businessos.di import Container
-from businessos.errors import BusinessOSError
+from businessos.errors import BusinessOSError, ConflictError, DeliveryUnavailableError
 from businessos.messages import (
     Command,
     DomainEvent,
@@ -333,3 +333,99 @@ async def test_authorization_and_invocation_hold_one_generation(
 
     assert authorized == ["old.permission"]
     assert invoked == ["old"]
+
+
+@pytest.mark.asyncio
+async def test_durable_subscriber_is_unavailable_while_generation_is_draining() -> None:
+    gate = ContributionGate()
+    generation = gate.reserve("example")
+    events = EventBus(gate)
+
+    async def consume(_: NameChanged, __: EventHandlingContext) -> None:
+        return None
+
+    events.subscribe(
+        NameChanged,
+        "example.consumer",
+        consume,
+        owner="example",
+        generation=generation,
+    )
+    gate.publish(generation)
+    event = NameChanged(tenant_id=uuid4(), correlation_id="durable-drain", name="name")
+    assert len(events.delivery_subscribers(event)) == 1
+    async with gate.admit(generation):
+        drain = asyncio.create_task(gate.close_and_drain(generation, timeout_seconds=1))
+        await asyncio.sleep(0)
+        with pytest.raises(DeliveryUnavailableError):
+            events.delivery_subscribers(event)
+    await drain
+
+
+def test_durable_subscriber_survives_removal_and_clean_reenable() -> None:
+    gate = ContributionGate()
+    old_generation = gate.reserve("example")
+    events = EventBus(gate)
+
+    async def consume(_: NameChanged, __: EventHandlingContext) -> None:
+        return None
+
+    events.subscribe(
+        NameChanged,
+        "example.consumer",
+        consume,
+        owner="example",
+        generation=old_generation,
+    )
+    gate.publish(old_generation)
+    events.remove_owner_generation(old_generation)
+    gate.discard(old_generation)
+    event = NameChanged(tenant_id=uuid4(), correlation_id="durable-reenable", name="name")
+
+    assert isinstance(
+        events.decode(NameChanged.event_type, event.model_dump_json().encode()), NameChanged
+    )
+    with pytest.raises(DeliveryUnavailableError):
+        events.delivery_subscribers(event)
+
+    new_generation = gate.reserve("example")
+    events.subscribe(
+        NameChanged,
+        "example.consumer",
+        consume,
+        owner="example",
+        generation=new_generation,
+    )
+    with pytest.raises(DeliveryUnavailableError):
+        events.delivery_subscribers(event)
+    gate.publish(new_generation)
+    assert len(events.delivery_subscribers(event)) == 1
+
+
+def test_durable_subscriber_cannot_be_claimed_by_another_owner() -> None:
+    gate = ContributionGate()
+    generation = gate.reserve("example")
+    events = EventBus(gate)
+
+    async def consume(_: NameChanged, __: EventHandlingContext) -> None:
+        return None
+
+    events.subscribe(
+        NameChanged,
+        "shared.consumer",
+        consume,
+        owner="example",
+        generation=generation,
+    )
+    gate.publish(generation)
+    events.remove_owner_generation(generation)
+    gate.discard(generation)
+
+    with pytest.raises(ConflictError, match="owned by another module"):
+        events.subscribe(
+            NameChanged,
+            "shared.consumer",
+            consume,
+            owner="attacker",
+            generation=gate.reserve("attacker"),
+        )

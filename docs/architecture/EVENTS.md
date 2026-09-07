@@ -59,6 +59,10 @@ the non-owner, `NOBYPASSRLS` application role. The web process never receives op
 credentials. A JetStream message is acknowledged only after every admitted subscriber has either
 committed its inbox receipt and side effect or was already durably claimed. Retryable failures are
 negatively acknowledged; malformed envelopes are terminated without entering a tenant transaction.
+Subscriber obligations survive module disable/removal in the running process: a valid event is
+negatively acknowledged while any obligated subscriber generation is unavailable, then redelivered
+after a clean re-enable. Unknown but well-formed event types are likewise retried for rolling
+deployment compatibility rather than classified as malformed.
 
 Authoritative worker tenant context is established only when the framework-owned subject, headers
 and validated event payload agree on the tenant UUID, event UUID, type, version and correlation ID.
@@ -95,6 +99,9 @@ Modules use a BusinessOS job abstraction that provides:
 - tenant quotas
 - dead-letter/failure handling
 - correlation/telemetry
+
+Job dispatch requires a trusted tenant context and rejects any job whose declared tenant differs
+from that context before resolving or invoking a module handler.
 
 A module should not introduce its own queue framework without an approved ADR.
 

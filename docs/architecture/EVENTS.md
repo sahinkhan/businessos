@@ -47,6 +47,42 @@ Consumers must be idempotent.
 
 Side-effecting consumers must maintain durable deduplication/idempotency state where redelivery could otherwise duplicate business effects.
 
+The framework durable-consumer boundary claims `(tenant_id, consumer, event_id)` in the inbox
+and executes the subscriber's relational side effects through the same tenant-scoped Unit of Work.
+The inbox receipt and those effects commit or roll back together. External effects must additionally
+use a deterministic idempotency key; an inbox receipt is committed only after the handler succeeds.
+Concurrent redelivery therefore admits one transaction and makes every later delivery a no-op.
+
+The standalone framework event worker is the supported durable delivery process. It publishes
+outbox rows with the limited cross-tenant operations role, while every subscriber transaction uses
+the non-owner, `NOBYPASSRLS` application role. The web process never receives operations-role
+credentials. A JetStream message is acknowledged only after every admitted subscriber has either
+committed its inbox receipt and side effect or was already durably claimed. Retryable failures are
+negatively acknowledged; malformed envelopes are terminated without entering a tenant transaction.
+Subscriber identity, owner and delivery obligations are persisted in migration-owned kernel
+metadata using the limited operations role. They survive module disable, removal and worker
+recreation: a valid event is negatively acknowledged while any obligated subscriber generation is
+unavailable, then redelivered after a clean re-enable. Removing a package or retiring a module does
+not silently erase its durable obligations; retirement requires a reviewed migration/operational
+policy for outstanding deliveries. Unknown but structurally valid event types are retried for
+rolling-deployment compatibility. A known event type carrying an unsupported schema version is
+also retried until a compatible consumer is deployed. The common envelope requires event, tenant,
+occurrence-time and correlation identity; invalid or incomplete common envelopes are terminated as
+malformed before tenant transaction work begins.
+The complete applicable subscriber generation set is admitted atomically before any authorization,
+inbox claim or handler work starts.
+
+Authoritative worker tenant context is established only when the framework-owned subject, headers
+and validated event payload agree on the tenant UUID, event UUID, type, version and correlation ID.
+The worker service-account installation/principal identity comes from its isolated deployment
+configuration. No HTTP tenant header or one unverified broker header can select a tenant.
+
+Tenant-owned events use subjects shaped as
+`businessos.events.tenant.<tenant_uuid>.<event_type>`. The tenant segment comes from the persisted
+outbox row, never from an arbitrary publish call or client header. The envelope also preserves
+correlation/causation data and W3C `traceparent`/`tracestate` fields for producer-to-consumer span
+continuation.
+
 ## Commands vs Events
 
 Command: request that something happen. It may fail.
@@ -72,6 +108,9 @@ Modules use a BusinessOS job abstraction that provides:
 - dead-letter/failure handling
 - correlation/telemetry
 
+Job dispatch requires a trusted tenant context and rejects any job whose declared tenant differs
+from that context before resolving or invoking a module handler.
+
 A module should not introduce its own queue framework without an approved ADR.
 
 ## Durable Workflow
@@ -85,6 +124,8 @@ The implementation engine may evolve, but business modules depend on the platfor
 The custom BusinessOS framework owns command/query handler registration and dispatch, event contract registration, middleware execution, dependency scopes, trusted context propagation and Unit of Work integration. A command that changes authoritative state and emits durable events executes inside one framework-owned transaction; event publication occurs through the outbox only after commit.
 
 Modules must not create parallel in-process buses or bypass framework event and transaction coordination.
+Command dispatch never calls subscribers directly after commit. Durable event handlers run only
+through the framework inbox consumer after the outbox publisher has delivered the committed event.
 
 ## Compatibility
 

@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools==75.8.2", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "businessos"
+version = "0.1.0"
+description = "BusinessOS protected Python framework and runtime"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "BusinessOS" }]
+dependencies = [
+  "alembic>=1.14,<2",
+  "asgiref>=3.8,<4",
+  "opentelemetry-api>=1.29,<2",
+  "opentelemetry-sdk>=1.29,<2",
+  "packaging>=24.2,<26",
+  "psycopg[binary,pool]>=3.2,<4",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.7,<3",
+  "sqlalchemy[asyncio]>=2.0.36,<3",
+  "uvicorn>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "mypy>=1.14,<2",
+  "pyright>=1.1.390,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "ruff>=0.9,<1",
+]
+providers = [
+  "boto3>=1.35,<2",
+  "nats-py>=2.9,<3",
+  "redis>=5.2,<6",
+]
+
+[project.scripts]
+businessos = "businessos.__main__:main"
+
+[tool.setuptools]
+package-dir = { "" = "platform/src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["platform/src"]
+include = ["businessos*"]
+
+[tool.setuptools.package-data]
+businessos = ["migration_assets/script.py.mako", "migration_assets/versions/*.py"]
+
+[tool.pytest.ini_options]
+minversion = "8.3"
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "integration: requires external infrastructure",
+  "postgres: requires a PostgreSQL database",
+  "providers: requires Redis, NATS or S3-compatible services",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["platform/src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"platform/src/businessos/migration_assets/versions/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+mypy_path = ["platform/src", "examples/proof_module/src"]
+files = ["platform/src", "tests", "examples/proof_module/src"]
+
+[[tool.mypy.overrides]]
+module = ["boto3.*", "nats.*", "redis.*"]
+ignore_missing_imports = true
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+include = ["platform/src", "tests/unit", "tests/conformance", "examples/proof_module/src"]
+extraPaths = ["platform/src"]

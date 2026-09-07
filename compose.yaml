@@ -1,0 +1,127 @@
+services:
+  app:
+    build:
+      context: .
+      target: development
+    environment:
+      BOS_DATABASE_URL: postgresql+psycopg://businessos_app:businessos-application@postgres:5432/businessos
+      BOS_ENVIRONMENT: development
+      BOS_LOG_LEVEL: INFO
+    volumes:
+      - .:/app
+    ports:
+      - "${BOS_APP_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrate:
+    build:
+      context: .
+      target: development
+    profiles: [tools]
+    environment:
+      BOS_MIGRATION_DATABASE_URL: postgresql+psycopg://businessos_migrator:businessos-migration@postgres:5432/businessos
+    command: ["businessos", "migrate", "upgrade", "heads"]
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  event-worker:
+    build:
+      context: .
+      target: development
+    profiles: [events]
+    environment:
+      BOS_EVENT_WORKER_RUNTIME_DATABASE_URL: postgresql+psycopg://businessos_app:businessos-application@postgres:5432/businessos
+      BOS_EVENT_WORKER_OPERATIONS_DATABASE_URL: postgresql+psycopg://businessos_ops:businessos-operations@postgres:5432/businessos
+      BOS_EVENT_WORKER_NATS_URL: nats://nats:4222
+      BOS_EVENT_WORKER_INSTALLATION_ID: 00000000-0000-0000-0000-000000000001
+      BOS_EVENT_WORKER_PRINCIPAL_ID: 00000000-0000-0000-0000-000000000002
+      BOS_EVENT_WORKER_PERMISSIONS: example.phase1-proof.read,example.phase1-proof.write
+      BOS_EVENT_WORKER_SHUTDOWN_TIMEOUT_SECONDS: "10"
+      BOS_EVENT_WORKER_PROCESS_SHUTDOWN_TIMEOUT_SECONDS: "60"
+      BOS_EVENT_WORKER_S3_BUCKET: businessos-development
+      BOS_EVENT_WORKER_S3_ENDPOINT_URL: http://object-storage:9000
+      BOS_EVENT_WORKER_S3_REGION_NAME: us-east-1
+      BOS_EVENT_WORKER_S3_ACCESS_KEY: businessos
+      BOS_EVENT_WORKER_S3_SECRET_KEY: businessos-development
+      BOS_EVENT_WORKER_S3_PROVISION_BUCKET: "true"
+    command: ["businessos", "events", "run"]
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+      object-storage:
+        condition: service_started
+
+  database-bootstrap:
+    build:
+      context: .
+      target: development
+    profiles: [tools]
+    environment:
+      BOS_ADMIN_DATABASE_URL: ${BOS_ADMIN_DATABASE_URL:-postgresql://businessos_admin:businessos-administration@postgres:5432/businessos}
+      BOS_MIGRATOR_PASSWORD: ${BOS_MIGRATOR_PASSWORD:-businessos-migration}
+      BOS_APPLICATION_PASSWORD: ${BOS_APPLICATION_PASSWORD:-businessos-application}
+      BOS_OPERATIONS_PASSWORD: ${BOS_OPERATIONS_PASSWORD:-businessos-operations}
+    command: ["businessos", "database", "transition-roles"]
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    environment:
+      POSTGRES_DB: businessos
+      POSTGRES_USER: businessos_admin
+      POSTGRES_PASSWORD: businessos-administration
+    ports:
+      - "${BOS_POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d businessos"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - businessos-postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${BOS_REDIS_PORT:-6379}:6379"
+
+  nats:
+    image: nats:2-alpine@sha256:ad7a43eb7e3337c3c38ce5d784d1461791f95f730f252d2b25eee699752a0ca3
+    command: ["--jetstream", "--store_dir", "/data"]
+    ports:
+      - "${BOS_NATS_PORT:-4222}:4222"
+      - "${BOS_NATS_MONITOR_PORT:-8222}:8222"
+    volumes:
+      - businessos-nats:/data
+
+  object-storage:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: businessos
+      MINIO_ROOT_PASSWORD: businessos-development
+    ports:
+      - "${BOS_S3_PORT:-9000}:9000"
+      - "${BOS_S3_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - businessos-objects:/data
+
+volumes:
+  businessos-postgres:
+  businessos-nats:
+  businessos-objects:

@@ -1,0 +1,1 @@
+"""Protected BusinessOS Alembic revisions."""

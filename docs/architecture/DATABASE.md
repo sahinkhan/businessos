@@ -91,6 +91,12 @@ For shared-schema mode:
 - include tenant ownership in cross-table integrity strategy
 - test cross-tenant reads and writes negatively
 
+Database administration, migration ownership, runtime access and approved cross-tenant operations
+use distinct roles. Administrative role creation/ownership transition is an explicit deployment
+operation, never application startup. The runtime role is non-owner, `NOSUPERUSER`, `NOINHERIT`
+and `NOBYPASSRLS`; it cannot assume the separately credentialed operations role. Retained
+installations transition ownership and grants idempotently before migration continues.
+
 ## Financial Precision
 
 - Never use floating-point types for money.
@@ -130,7 +136,22 @@ Global EAV is prohibited.
 
 - Every owning module owns its migrations.
 - Alembic revisions are the explicit, versioned production migration mechanism.
-- The BusinessOS framework coordinates module revision discovery, dependency order, compatibility preflight and upgrade execution.
+- The BusinessOS framework builds one canonical graph across core and every discovered module,
+  rejects cycles and shared revision/branch-label symbol collisions before connecting to the
+  database, and intentionally supports deterministic multiple heads.
+- Installed-module inventory is append-compatible and tamper-detecting. It records stable module,
+  namespace, packaged-resource location, distribution, version, ancestry, dependency, branch-label
+  and SHA-256 revision facts. Format-2 records use a strict, closed schema: identity and revision
+  arrays are non-empty and unique, manifest entries have exact fields and canonical types, and the
+  manifest has a one-to-one ordered relationship with recorded revision IDs. Malformed persisted
+  history fails preflight before Alembic or schema work; historical removal or rewrite also fails.
+- Migration execution and inventory advancement use one PostgreSQL transaction protected by a
+  transaction-scoped advisory lock. Async callers use an owned migration process and a
+  parent-authorized commit protocol; cancellation before authorization terminates and joins the
+  process, closes its PostgreSQL backend, and advances neither schema history nor inventory.
+  Authorization is the commit point: cancellation after it is suppressed until the durable
+  committed or failed outcome is known, so callers never observe cancellation followed by a later
+  commit.
 - SQLAlchemy `create_all`, metadata diff application or any other runtime ORM auto-sync is prohibited in production.
 - Use expand-contract for rolling/compatible evolution.
 - Destructive cleanup occurs only after old runtime/contracts are outside the supported compatibility window.
@@ -153,6 +174,11 @@ The BusinessOS framework opens and closes Unit of Work scopes around command/que
 When a domain command produces an integration/domain event, authoritative state and the outbox record commit in the same PostgreSQL transaction and SQLAlchemy session/connection scope.
 
 Publishing to NATS occurs after commit through the outbox publisher.
+
+The migration-owned `eventing.event_subscriber_obligations` table stores non-tenant event contract
+identity and ownership. Only the isolated operations role may select or append obligations; the web
+application role has no access, and obligation removal requires an explicit reviewed migration or
+operational retirement procedure.
 
 ## Audit
 

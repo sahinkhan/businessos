@@ -75,6 +75,7 @@ Codex and developers should start with these documents:
 - [`docs/architecture/FRONTEND.md`](docs/architecture/FRONTEND.md) - frontend architecture
 - [`docs/architecture/UPGRADES.md`](docs/architecture/UPGRADES.md) - upgrade/compatibility model
 - [`docs/architecture/DEVELOPMENT.md`](docs/architecture/DEVELOPMENT.md) - engineering workflow
+- [`docs/development/SETUP.md`](docs/development/SETUP.md) - Python 3.13, Docker and validation setup
 - [`docs/adr/`](docs/adr/) - accepted architecture decisions
 - [`docs/adr/ADR-008-python-asgi-technology-baseline.md`](docs/adr/ADR-008-python-asgi-technology-baseline.md) - current Python/ASGI technology decision
 
@@ -145,9 +146,22 @@ businessos/
 
 ## Current Status
 
-Phase 0's Python/ASGI documentation cutover is complete. No backend scaffolding or business-module implementation belongs in the cutover itself; implementation begins in Phase 1 with the protected kernel and custom BusinessOS framework because later modules depend on those contracts.
+Phase 0's Python/ASGI documentation cutover is complete. Phase 1 now provides the protected custom ASGI framework foundation, PostgreSQL/Alembic runtime and an external SDK proof module. No business modules or later roadmap foundations are implemented.
 
-The first implementation milestone is the protected kernel/runtime and an external proof module that demonstrates installation, tenant-aware operation, migrations, API/UI extension, events, upgrade and lifecycle without modifying protected kernel source.
+The external proof module demonstrates discovery, installation, tenant-aware API operation,
+module-owned migrations, metadata, permissions, commands/queries, transactional outbox publication,
+durable inbox consumption, object storage, v1-to-v2 upgrade and lifecycle without importing
+protected kernel internals. Required infrastructure capabilities are health-checked before module
+activation; optional absent providers do not block the runtime.
+
+Committed events are delivered by the separate `businessos events run` worker. It keeps
+cross-tenant outbox privileges out of the web process, validates tenant/event envelope agreement,
+and acknowledges JetStream delivery only after the tenant-scoped inbox and subscriber side effects
+commit through one Unit of Work.
+
+Core and module migrations are shipped inside their respective wheels and discovered through
+package resources. The coordinator validates the complete multi-head graph before database changes;
+installed deployments can run `businessos migrate plan` from any working directory.
 
 ## Development Rule
 

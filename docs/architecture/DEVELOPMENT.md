@@ -4,6 +4,8 @@
 
 This workflow applies to human developers and Codex-assisted implementation.
 
+Executable setup and validation commands are documented in `docs/development/SETUP.md`.
+
 ## Work Unit
 
 Do not ask an agent to "build BusinessOS" as one task.

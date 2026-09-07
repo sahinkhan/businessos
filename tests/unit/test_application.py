@@ -1,4 +1,5 @@
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -200,6 +201,7 @@ async def test_startup_cancellation_rolls_back_completed_components() -> None:
     app = create_application(_settings())
     timeline: list[str] = []
     blocked = asyncio.Event()
+    blocked_entered = asyncio.Event()
 
     async def started() -> None:
         timeline.append("start")
@@ -208,13 +210,13 @@ async def test_startup_cancellation_rolls_back_completed_components() -> None:
         timeline.append("rollback")
 
     async def wait_forever() -> None:
+        blocked_entered.set()
         await blocked.wait()
 
     app.add_lifecycle("completed", started, rolled_back)
     app.add_lifecycle("blocked", wait_forever, lambda: asyncio.sleep(0))
     task = asyncio.create_task(app.startup())
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await blocked_entered.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -249,6 +251,41 @@ async def test_startup_timeout_rolls_back_completed_components() -> None:
         await app.startup()
 
     assert timeline == ["start:first", "stop:first"]
+    assert app.state is ApplicationState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_startup_timeout_repeatedly_cancels_resistant_hook_and_rolls_back() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+psycopg://test:test@db/test",
+        database_readiness_enabled=False,
+        startup_timeout_seconds=0.01,
+    )
+    app = BusinessOSApplication(settings, router=Router(), container=Container())
+    timeline: list[str] = []
+
+    async def start_first() -> None:
+        timeline.append("start:first")
+
+    async def stop_first() -> None:
+        timeline.append("stop:first")
+
+    async def resistant_start() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            timeline.append("start:cancel-once")
+            await asyncio.sleep(1)
+
+    app.add_lifecycle("first", start_first, stop_first)
+    app.add_lifecycle("resistant", resistant_start, lambda: asyncio.sleep(0))
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await app.startup()
+
+    assert time.monotonic() - started < 0.2
+    assert timeline == ["start:first", "start:cancel-once", "stop:first"]
     assert app.state is ApplicationState.FAILED
 
 
@@ -347,6 +384,46 @@ async def test_shutdown_timeout_continues_cleanup_and_reports_failure() -> None:
     assert any(isinstance(error, TimeoutError) for error in raised.value.exceptions)
     assert timeline == ["stuck:cancelled", "next:ran"]
     assert app.state is ApplicationState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_shutdown_timeout_repeatedly_cancels_resistant_hook_within_bound() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+psycopg://test:test@db/test",
+        database_readiness_enabled=False,
+        shutdown_timeout_seconds=0.01,
+    )
+    app = BusinessOSApplication(settings, router=Router(), container=Container())
+    timeline: list[str] = []
+
+    async def start() -> None:
+        return None
+
+    async def still_runs() -> None:
+        timeline.append("next:ran")
+
+    async def resistant_stop() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            timeline.append("stop:cancel-once")
+            await asyncio.sleep(1)
+
+    app.add_lifecycle("next", start, still_runs)
+    app.add_lifecycle("resistant", start, resistant_stop)
+    await app.startup()
+    started = time.monotonic()
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await app.shutdown()
+
+    assert time.monotonic() - started < 0.2
+    assert any(isinstance(error, TimeoutError) for error in raised.value.exceptions)
+    assert timeline == ["stop:cancel-once", "next:ran"]
+    assert app.state is ApplicationState.FAILED
+    active_names = {task.get_name() for task in asyncio.all_tasks() if not task.done()}
+    assert "businessos-lifecycle-startup-hook" not in active_names
+    assert "businessos-lifecycle-hook-cancellation" not in active_names
 
 
 @pytest.mark.asyncio

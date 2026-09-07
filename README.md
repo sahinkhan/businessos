@@ -154,6 +154,11 @@ durable inbox consumption, object storage, v1-to-v2 upgrade and lifecycle withou
 protected kernel internals. Required infrastructure capabilities are health-checked before module
 activation; optional absent providers do not block the runtime.
 
+Committed events are delivered by the separate `businessos events run` worker. It keeps
+cross-tenant outbox privileges out of the web process, validates tenant/event envelope agreement,
+and acknowledges JetStream delivery only after the tenant-scoped inbox and subscriber side effects
+commit through one Unit of Work.
+
 Core and module migrations are shipped inside their respective wheels and discovered through
 package resources. The coordinator validates the complete multi-head graph before database changes;
 installed deployments can run `businessos migrate plan` from any working directory.

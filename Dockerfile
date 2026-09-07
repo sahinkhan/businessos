@@ -37,7 +37,7 @@ COPY requirements/constraints-py313.txt /tmp/constraints-py313.txt
 COPY --from=wheel-builder /wheels/businessos-*.whl /tmp/wheels/
 RUN python -m pip install --no-cache-dir \
     --constraint /tmp/constraints-py313.txt \
-    /tmp/wheels/businessos-*.whl \
+    '/tmp/wheels/businessos-0.1.0-py3-none-any.whl[providers]' \
     && rm -rf /tmp/wheels /tmp/constraints-py313.txt
 USER 65532:65532
 WORKDIR /srv/businessos

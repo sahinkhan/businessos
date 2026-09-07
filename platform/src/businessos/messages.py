@@ -188,6 +188,7 @@ class EventBus:
         self._gate = gate
         self._authorizer = authorizer
         self._handlers: dict[type[DomainEvent], dict[str, _OwnedEventHandler]] = {}
+        self._event_types: dict[str, type[DomainEvent]] = {}
 
     def subscribe[E: DomainEvent](
         self,
@@ -199,6 +200,10 @@ class EventBus:
         generation: ContributionGeneration | None = None,
         permission: str | None = None,
     ) -> None:
+        current_type = self._event_types.get(event_type.event_type)
+        if current_type is not None and current_type is not event_type:
+            raise ConflictError(f"Event type is already registered: {event_type.event_type}")
+        self._event_types[event_type.event_type] = event_type
         handlers = self._handlers.setdefault(event_type, {})
         if subscriber in handlers:
             raise ConflictError(
@@ -211,6 +216,12 @@ class EventBus:
             generation,
             permission,
         )
+
+    def decode(self, event_type: str, payload: bytes) -> DomainEvent:
+        registered = self._event_types.get(event_type)
+        if registered is None:
+            raise NotFoundError(f"Unknown event type: {event_type}")
+        return registered.model_validate_json(payload)
 
     def subscribers(self, event: DomainEvent) -> tuple[_OwnedEventHandler, ...]:
         handlers = self._handlers.get(type(event), {})
@@ -265,6 +276,7 @@ class EventBus:
             }
             if not self._handlers[event_type]:
                 del self._handlers[event_type]
+                self._event_types.pop(event_type.event_type, None)
 
 
 class MessageDispatcher:

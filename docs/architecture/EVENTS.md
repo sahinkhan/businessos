@@ -53,6 +53,18 @@ The inbox receipt and those effects commit or roll back together. External effec
 use a deterministic idempotency key; an inbox receipt is committed only after the handler succeeds.
 Concurrent redelivery therefore admits one transaction and makes every later delivery a no-op.
 
+The standalone framework event worker is the supported durable delivery process. It publishes
+outbox rows with the limited cross-tenant operations role, while every subscriber transaction uses
+the non-owner, `NOBYPASSRLS` application role. The web process never receives operations-role
+credentials. A JetStream message is acknowledged only after every admitted subscriber has either
+committed its inbox receipt and side effect or was already durably claimed. Retryable failures are
+negatively acknowledged; malformed envelopes are terminated without entering a tenant transaction.
+
+Authoritative worker tenant context is established only when the framework-owned subject, headers
+and validated event payload agree on the tenant UUID, event UUID, type, version and correlation ID.
+The worker service-account installation/principal identity comes from its isolated deployment
+configuration. No HTTP tenant header or one unverified broker header can select a tenant.
+
 Tenant-owned events use subjects shaped as
 `businessos.events.tenant.<tenant_uuid>.<event_type>`. The tenant segment comes from the persisted
 outbox row, never from an arbitrary publish call or client header. The envelope also preserves

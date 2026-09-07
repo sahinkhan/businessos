@@ -43,6 +43,20 @@ Start Uvicorn with source reload:
 docker compose up --build app
 ```
 
+Start the standalone durable event worker after role bootstrap and migrations:
+
+```bash
+docker compose --profile events up --build event-worker
+```
+
+The development profile provisions only its local MinIO bucket. Production object-storage buckets
+remain deployment-managed. The event worker is a separate process: it receives both the
+`businessos_app` URL for tenant-scoped consumer transactions and the `businessos_ops` URL for
+cross-tenant outbox publication. Never add the operations URL to the `app` service. Worker event
+permissions are an explicit comma-separated allowlist; an empty allowlist denies every protected
+subscriber. Installation and principal UUIDs identify the trusted worker service account until the
+later identity foundation supplies that deployment integration.
+
 Verify diagnostics:
 
 ```bash
@@ -99,6 +113,7 @@ With the Compose infrastructure running:
 ruff format --check platform/src examples tests
 ruff check platform/src examples tests
 mypy platform/src tests examples/proof_module/src
+pytest --collect-only -q tests
 pytest -q tests/unit
 BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_admin:businessos-administration@localhost:5432/postgres \
 BOS_TEST_DATABASE_MIGRATION_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
@@ -122,6 +137,10 @@ pyright platform/src examples/proof_module/src
 HTTP ingress extracts W3C trace context and creates a server span. Command, query, event-consumer
 and job dispatch create child spans. Outbox publication restores `traceparent` and `tracestate`
 headers and always derives the tenant NATS subject from the persisted tenant UUID.
+The `businessos events run` command owns publication, durable subscription, envelope validation,
+commit-before-ack and redelivery. Its configuration uses the separate
+`BOS_EVENT_WORKER_...` namespace so operations credentials are not loaded by the web composition
+root.
 
 Provider integration tests additionally use:
 

@@ -29,6 +29,35 @@ services:
       postgres:
         condition: service_healthy
 
+  event-worker:
+    build:
+      context: .
+      target: development
+    profiles: [events]
+    environment:
+      BOS_EVENT_WORKER_RUNTIME_DATABASE_URL: postgresql+psycopg://businessos_app:businessos-application@postgres:5432/businessos
+      BOS_EVENT_WORKER_OPERATIONS_DATABASE_URL: postgresql+psycopg://businessos_ops:businessos-operations@postgres:5432/businessos
+      BOS_EVENT_WORKER_NATS_URL: nats://nats:4222
+      BOS_EVENT_WORKER_INSTALLATION_ID: 00000000-0000-0000-0000-000000000001
+      BOS_EVENT_WORKER_PRINCIPAL_ID: 00000000-0000-0000-0000-000000000002
+      BOS_EVENT_WORKER_PERMISSIONS: example.phase1-proof.read,example.phase1-proof.write
+      BOS_EVENT_WORKER_S3_BUCKET: businessos-development
+      BOS_EVENT_WORKER_S3_ENDPOINT_URL: http://object-storage:9000
+      BOS_EVENT_WORKER_S3_REGION_NAME: us-east-1
+      BOS_EVENT_WORKER_S3_ACCESS_KEY: businessos
+      BOS_EVENT_WORKER_S3_SECRET_KEY: businessos-development
+      BOS_EVENT_WORKER_S3_PROVISION_BUCKET: "true"
+    command: ["businessos", "events", "run"]
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+      object-storage:
+        condition: service_started
+
   database-bootstrap:
     build:
       context: .

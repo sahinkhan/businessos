@@ -46,6 +46,8 @@ jobs:
           pyright platform/src examples/proof_module/src
       - name: Unit tests
         run: pytest -q tests/unit
+      - name: Whole-suite collection
+        run: pytest --collect-only -q tests
       - name: PostgreSQL and provider integration tests
         run: pytest -q tests/integration
       - name: External module conformance

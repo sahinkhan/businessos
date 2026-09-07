@@ -64,6 +64,7 @@ class OutboxPublisher:
                         json.dumps(message.payload, separators=(",", ":")).encode(),
                         {
                             "event-id": str(message.id),
+                            "event-type": message.event_type,
                             "tenant-id": str(message.tenant_id),
                             "schema-version": str(message.schema_version),
                             "correlation-id": message.correlation_id,

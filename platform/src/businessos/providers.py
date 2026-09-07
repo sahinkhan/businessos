@@ -5,7 +5,9 @@
 
 import asyncio
 import inspect
-from collections.abc import Callable, Iterable, Mapping
+import logging
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import UUID
 
@@ -19,6 +21,33 @@ class HealthProvider(Protocol):
 
 class EventPublisher(HealthProvider, Protocol):
     async def publish(self, subject: str, payload: bytes, headers: Mapping[str, str]) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerEvent:
+    subject: str
+    payload: bytes
+    headers: Mapping[str, str]
+
+
+BrokerEventHandler = Callable[[BrokerEvent], Awaitable[None]]
+
+
+class EventSubscription(Protocol):
+    async def close(self) -> None: ...
+
+
+class DurableEventBroker(EventPublisher, Protocol):
+    async def subscribe(
+        self,
+        subject: str,
+        durable_name: str,
+        handler: BrokerEventHandler,
+    ) -> EventSubscription: ...
+
+
+class PermanentDeliveryError(Exception):
+    """Reject a malformed or unsupported broker delivery without retry."""
 
 
 class CacheProvider(HealthProvider, Protocol):
@@ -125,13 +154,17 @@ class NatsJetStreamPublisher:
         stream_name: str = "BUSINESSOS_EVENTS",
         subjects: tuple[str, ...] = ("businessos.events.>",),
         readiness_timeout_seconds: float = 5.0,
+        subscription_drain_timeout_seconds: float = 10.0,
     ) -> None:
         self._servers = servers
         self._stream_name = stream_name
         self._subjects = subjects
         self._readiness_timeout_seconds = readiness_timeout_seconds
+        self._subscription_drain_timeout_seconds = subscription_drain_timeout_seconds
         self._connection: Any = None
         self._jetstream: Any = None
+        self._subscriptions: list[_NatsSubscription] = []
+        self._logger = logging.getLogger("businessos.providers.nats")
 
     async def start(self) -> None:
         import nats
@@ -146,6 +179,57 @@ class NatsJetStreamPublisher:
             raise RuntimeError("NATS JetStream provider is not started")
         await self._jetstream.publish(subject, payload, headers=dict(headers))
 
+    async def subscribe(
+        self,
+        subject: str,
+        durable_name: str,
+        handler: BrokerEventHandler,
+    ) -> EventSubscription:
+        if self._jetstream is None:
+            raise RuntimeError("NATS JetStream provider is not started")
+        from nats.js.api import DeliverPolicy
+
+        async def deliver(message: Any) -> None:
+            event = BrokerEvent(
+                subject=str(message.subject),
+                payload=bytes(message.data),
+                headers={str(key): str(value) for key, value in (message.headers or {}).items()},
+            )
+            try:
+                await handler(event)
+            except PermanentDeliveryError as exc:
+                self._logger.warning(
+                    "Terminating invalid event delivery",
+                    extra={"error_type": type(exc).__name__},
+                )
+                await message.term()
+            except asyncio.CancelledError:
+                await message.nak()
+                raise
+            except Exception as exc:
+                self._logger.warning(
+                    "Event delivery will be retried",
+                    extra={"error_type": type(exc).__name__},
+                )
+                await message.nak()
+            else:
+                await message.ack()
+
+        raw_subscription = await self._jetstream.subscribe(
+            subject,
+            durable=durable_name,
+            stream=self._stream_name,
+            cb=deliver,
+            manual_ack=True,
+            deliver_policy=DeliverPolicy.NEW,
+        )
+        subscription = _NatsSubscription(
+            raw_subscription,
+            timeout_seconds=self._subscription_drain_timeout_seconds,
+        )
+        self._subscriptions.append(subscription)
+        return subscription
+
     async def readiness(self) -> None:
         if self._connection is None or self._jetstream is None:
             raise RuntimeError("NATS JetStream provider is not started")
@@ -159,8 +243,38 @@ class NatsJetStreamPublisher:
             await self._jetstream.stream_info(self._stream_name)
 
     async def close(self) -> None:
+        errors: list[BaseException] = []
+        for subscription in reversed(self._subscriptions):
+            try:
+                await subscription.close()
+            except BaseException as exc:
+                errors.append(exc)
+        self._subscriptions.clear()
         if self._connection is not None:
-            await self._connection.drain()
+            try:
+                await self._connection.drain()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise BaseExceptionGroup("NATS provider cleanup failed", errors)
+
+
+class _NatsSubscription:
+    def __init__(self, subscription: Any, *, timeout_seconds: float) -> None:
+        self._subscription = subscription
+        self._timeout_seconds = timeout_seconds
+        self._closed = False
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            async with asyncio.timeout(self._timeout_seconds):
+                await self._subscription.drain()
+        except TimeoutError:
+            await self._subscription.unsubscribe()
+            raise
 
 
 class S3ObjectStorageProvider:
@@ -174,10 +288,12 @@ class S3ObjectStorageProvider:
         region_name: str | None = None,
         access_key: str | None = None,
         secret_key: str | None = None,
+        provision_bucket: bool = False,
     ) -> None:
         import boto3
 
         self._bucket = bucket
+        self._provision_bucket = provision_bucket
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
@@ -185,6 +301,17 @@ class S3ObjectStorageProvider:
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
         )
+
+    async def start(self) -> None:
+        if not self._provision_bucket:
+            return
+        try:
+            await asyncio.to_thread(self._client.head_bucket, Bucket=self._bucket)
+        except self._client.exceptions.ClientError as exc:
+            error = exc.response.get("Error", {})
+            if str(error.get("Code")) not in {"404", "NoSuchBucket", "NotFound"}:
+                raise
+            await asyncio.to_thread(self._client.create_bucket, Bucket=self._bucket)
 
     @staticmethod
     def _key(tenant_id: UUID, key: str) -> str:

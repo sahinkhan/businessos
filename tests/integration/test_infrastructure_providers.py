@@ -84,3 +84,33 @@ async def test_s3_provider_enforces_tenant_object_prefixes() -> None:
     client.delete_object(Bucket=bucket, Key=f"tenant/{first_tenant}/shared.txt")
     client.delete_object(Bucket=bucket, Key=f"tenant/{second_tenant}/shared.txt")
     client.delete_bucket(Bucket=bucket)
+
+
+@pytest.mark.integration
+@pytest.mark.providers
+@pytest.mark.asyncio
+async def test_s3_provider_can_provision_explicit_development_bucket() -> None:
+    endpoint = _required_env("BOS_TEST_S3_ENDPOINT")
+    access_key = _required_env("BOS_TEST_S3_ACCESS_KEY")
+    secret_key = _required_env("BOS_TEST_S3_SECRET_KEY")
+    bucket = f"businessos-provision-{uuid4().hex}"
+    provider = S3ObjectStorageProvider(
+        bucket=bucket,
+        endpoint_url=endpoint,
+        region_name="us-east-1",
+        access_key=access_key,
+        secret_key=secret_key,
+        provision_bucket=True,
+    )
+
+    await provider.start()
+    await provider.readiness()
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="us-east-1",
+    )
+    client.delete_bucket(Bucket=bucket)

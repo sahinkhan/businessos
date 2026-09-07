@@ -1,13 +1,17 @@
 """Explicit framework-owned dependency registration and scopes."""
 
+import asyncio
 import inspect
+from asyncio import Task
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from types import TracebackType
 from typing import Any, Protocol, TypeVar, cast
 
+from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.errors import ConfigurationError, ConflictError
 
 T = TypeVar("T")
@@ -31,12 +35,19 @@ class DependencyScope(StrEnum):
 
 
 Provider = Callable[[DependencyResolver], object | Awaitable[object]]
+_resolution_path: ContextVar[tuple[DependencyKey[Any], ...]] = ContextVar(
+    "businessos_dependency_resolution_path",
+    default=(),
+)
 
 
 @dataclass(frozen=True, slots=True)
 class _Registration:
     provider: Provider
     scope: DependencyScope
+    owner: str | None = None
+    generation: ContributionGeneration | None = None
+    gate: ContributionGate | None = None
 
 
 class Container:
@@ -45,7 +56,9 @@ class Container:
     def __init__(self) -> None:
         self._registrations: dict[DependencyKey[Any], _Registration] = {}
         self._singletons: dict[DependencyKey[Any], object] = {}
-        self._exit_stack = AsyncExitStack()
+        self._singleton_stacks: dict[DependencyKey[Any], AsyncExitStack] = {}
+        self._singleton_order: list[DependencyKey[Any]] = []
+        self._singleton_flights: dict[DependencyKey[Any], Task[object]] = {}
         self._closed = False
 
     def register(
@@ -57,10 +70,19 @@ class Container:
         ],
         *,
         scope: DependencyScope = DependencyScope.TRANSIENT,
+        owner: str | None = None,
+        generation: ContributionGeneration | None = None,
+        gate: ContributionGate | None = None,
     ) -> None:
         if key in self._registrations:
             raise ConflictError(f"Dependency already registered: {key.name}")
-        self._registrations[key] = _Registration(cast(Provider, provider), scope)
+        self._registrations[key] = _Registration(
+            cast(Provider, provider),
+            scope,
+            owner,
+            generation,
+            gate,
+        )
 
     def request_scope(self) -> "RequestDependencyScope":
         if self._closed:
@@ -69,8 +91,51 @@ class Container:
 
     async def close(self) -> None:
         self._closed = True
-        await self._exit_stack.aclose()
+        flights = tuple(self._singleton_flights.values())
+        for flight in flights:
+            flight.cancel()
+        if flights:
+            await asyncio.gather(*flights, return_exceptions=True)
+        errors: list[BaseException] = []
+        for key in reversed(self._singleton_order):
+            try:
+                await self._singleton_stacks.pop(key).aclose()
+            except BaseException as exc:
+                errors.append(exc)
+        self._singleton_order.clear()
         self._singletons.clear()
+        self._registrations.clear()
+        if errors:
+            raise BaseExceptionGroup("Dependency cleanup failed", errors)
+
+    async def remove_owner_generation(self, generation: ContributionGeneration) -> None:
+        keys = tuple(
+            key
+            for key, registration in self._registrations.items()
+            if registration.generation == generation
+        )
+        flights = tuple(
+            flight for key in keys if (flight := self._singleton_flights.get(key)) is not None
+        )
+        if flights:
+            await asyncio.gather(*(asyncio.shield(flight) for flight in flights))
+        errors: list[BaseException] = []
+        for key in reversed(self._singleton_order):
+            if key not in keys:
+                continue
+            try:
+                await self._singleton_stacks.pop(key).aclose()
+            except BaseException as exc:
+                errors.append(exc)
+            self._singleton_order.remove(key)
+            self._singletons.pop(key, None)
+        for key in keys:
+            self._registrations.pop(key, None)
+        if errors:
+            raise BaseExceptionGroup(
+                f"Dependency cleanup failed: {generation.owner}/{generation.number}",
+                errors,
+            )
 
     async def resolve_for_scope(
         self,
@@ -79,26 +144,98 @@ class Container:
         request_stack: AsyncExitStack,
         resolver: DependencyResolver,
     ) -> T:
+        if self._closed:
+            raise ConfigurationError("Dependency container is closed")
         registration = self._registrations.get(key)
         if registration is None:
             raise ConfigurationError(f"Dependency is not registered: {key.name}")
-        cache = (
-            self._singletons if registration.scope is DependencyScope.SINGLETON else request_cache
-        )
-        if registration.scope is not DependencyScope.TRANSIENT and key in cache:
-            return cast(T, cache[key])
-        value = registration.provider(resolver)
+        if registration.gate is not None and not registration.gate.is_active(
+            registration.generation
+        ):
+            raise ConfigurationError(f"Dependency is not active: {key.name}")
+        path = _resolution_path.get()
+        if key in path:
+            cycle = (*path[path.index(key) :], key)
+            names = " -> ".join(item.name for item in cycle)
+            raise ConfigurationError(f"Dependency cycle detected: {names}")
+        if registration.scope is DependencyScope.SINGLETON:
+            return cast(T, await self._resolve_singleton(key, registration, resolver))
+        if registration.scope is DependencyScope.REQUEST and key in request_cache:
+            return cast(T, request_cache[key])
+        value = await self._provide(key, registration, resolver, request_stack)
+        if registration.scope is DependencyScope.REQUEST:
+            request_cache[key] = value
+        return cast(T, value)
+
+    async def _resolve_singleton(
+        self,
+        key: DependencyKey[Any],
+        registration: _Registration,
+        resolver: DependencyResolver,
+    ) -> object:
+        cached = self._singletons.get(key)
+        if cached is not None or key in self._singletons:
+            return cached
+        flight = self._singleton_flights.get(key)
+        if flight is None:
+            flight = asyncio.create_task(
+                self._initialize_singleton(key, registration, resolver),
+                name=f"businessos-di:{key.name}",
+            )
+            self._singleton_flights[key] = flight
+        return await asyncio.shield(flight)
+
+    async def _initialize_singleton(
+        self,
+        key: DependencyKey[Any],
+        registration: _Registration,
+        resolver: DependencyResolver,
+    ) -> object:
+        stack = AsyncExitStack()
+        await stack.__aenter__()
+        try:
+            value = await self._provide(key, registration, resolver, stack)
+            self._singletons[key] = value
+            self._singleton_stacks[key] = stack
+            self._singleton_order.append(key)
+            return value
+        except BaseException:
+            await stack.aclose()
+            raise
+        finally:
+            current = asyncio.current_task()
+            if self._singleton_flights.get(key) is current:
+                self._singleton_flights.pop(key, None)
+
+    async def _provide(
+        self,
+        key: DependencyKey[Any],
+        registration: _Registration,
+        resolver: DependencyResolver,
+        stack: AsyncExitStack,
+    ) -> object:
+        token = _resolution_path.set((*_resolution_path.get(), key))
+        try:
+            if registration.gate is None:
+                return await self._invoke_provider(registration.provider, resolver, stack)
+            async with registration.gate.admit(registration.generation):
+                return await self._invoke_provider(registration.provider, resolver, stack)
+        finally:
+            _resolution_path.reset(token)
+
+    @staticmethod
+    async def _invoke_provider(
+        provider: Provider,
+        resolver: DependencyResolver,
+        stack: AsyncExitStack,
+    ) -> object:
+        value = provider(resolver)
         if inspect.isawaitable(value):
             value = await value
-        stack = (
-            self._exit_stack if registration.scope is DependencyScope.SINGLETON else request_stack
-        )
         if isinstance(value, AbstractAsyncContextManager):
             context_manager = cast(AbstractAsyncContextManager[object], value)
             value = await stack.enter_async_context(context_manager)
-        if registration.scope is not DependencyScope.TRANSIENT:
-            cache[key] = value
-        return cast(T, value)
+        return value
 
 
 class RequestDependencyScope(

@@ -681,6 +681,42 @@ async def test_retire_rejects_enabled_dependents() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dependency_state",
+    [ModuleState.DISABLED, ModuleState.FAILED, ModuleState.RETIRED],
+)
+async def test_enable_rejects_inactive_required_dependency(
+    dependency_state: ModuleState,
+) -> None:
+    class MinimalModule(ProofModule):
+        async def register(self, registration: ModuleRegistration) -> None:
+            self.lifecycle.append("register")
+            self.registrations.append(registration)
+
+    foundation = MinimalModule("example.foundation", migrations=())
+    dependent = MinimalModule(
+        "example.dependent",
+        dependencies=(ModuleDependency(module_id="example.foundation", version=">=1"),),
+        migrations=(),
+    )
+    app = create_application(_settings(), modules=(foundation, dependent))
+    await app.startup()
+    assert app.runtime is not None
+    await app.runtime.lifecycle.disable("example.dependent")
+    await app.runtime.lifecycle.disable("example.foundation")
+    foundation_registration_count = len(foundation.registrations)
+    app.runtime.modules.get("example.foundation").state = dependency_state
+
+    with pytest.raises(ConfigurationError, match=f"found {dependency_state.value}"):
+        await app.runtime.lifecycle.enable("example.dependent")
+
+    assert app.runtime.modules.get("example.dependent").state is ModuleState.FAILED
+    assert len(dependent.registrations) == 1
+    assert len(foundation.registrations) == foundation_registration_count
+    await app.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_required_provider_capability_fails_closed_before_module_registration() -> None:
     module = ProofModule("example.capability", migrations=())
     module.manifest = module.manifest.model_copy(update={"capabilities": ("object-storage",)})

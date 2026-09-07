@@ -1,8 +1,10 @@
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 
+from businessos.activation import ContributionGate
 from businessos.context import RequestContext, TenantContext
 from businessos.di import Container
 from businessos.errors import BusinessOSError
@@ -76,3 +78,59 @@ async def test_job_dispatch_enforces_permission_before_handler() -> None:
 
     assert raised.value.code == "forbidden"
     assert not called
+
+
+@pytest.mark.asyncio
+async def test_job_authorization_and_handler_hold_one_generation() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    invoked: list[str] = []
+
+    class BlockingPolicy:
+        async def is_allowed(
+            self,
+            principal_id: object,
+            tenant: TenantContext,
+            permission: str,
+        ) -> bool:
+            entered.set()
+            await release.wait()
+            return permission == "old.permission"
+
+    gate = ContributionGate()
+    generation = gate.reserve("example")
+    registry = JobHandlerRegistry(gate, Authorizer(BlockingPolicy()))
+
+    async def handler(job: Job, context: RequestContext, dependencies: object) -> None:
+        invoked.append("old")
+
+    registry.add(
+        "proof.rebuild",
+        "example",
+        handler,
+        generation=generation,
+        permission="old.permission",
+    )
+    gate.publish(generation)
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    job = Job(
+        job_id=uuid4(),
+        tenant_id=tenant.tenant_id,
+        job_type="proof.rebuild",
+        payload={},
+        correlation_id="job-race",
+    )
+    container = Container()
+    async with container.request_scope() as dependencies:
+        task = asyncio.create_task(
+            registry.invoke(job, RequestContext(tenant=tenant), dependencies)
+        )
+        await entered.wait()
+        drain = asyncio.create_task(gate.close_and_drain(generation, timeout_seconds=1))
+        await asyncio.sleep(0)
+        assert not drain.done()
+        release.set()
+        await task
+        await drain
+
+    assert invoked == ["old"]

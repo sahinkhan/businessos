@@ -114,7 +114,7 @@ class JobHandlerRegistry(OwnedRegistry[JobHandler]):
     ) -> None:
         super().__init__("job handler", gate)
         self._authorizer = authorizer
-        self._permissions: dict[str, str | None] = {}
+        self._permissions: dict[tuple[str, ContributionGeneration | None], str | None] = {}
 
     def add(
         self,
@@ -126,7 +126,7 @@ class JobHandlerRegistry(OwnedRegistry[JobHandler]):
         permission: str | None = None,
     ) -> None:
         self.register(job_type, owner, handler, generation=generation)
-        self._permissions[job_type] = permission
+        self._permissions[(job_type, generation)] = permission
 
     async def invoke(
         self,
@@ -135,20 +135,21 @@ class JobHandlerRegistry(OwnedRegistry[JobHandler]):
         dependencies: RequestDependencyScope,
     ) -> None:
         with dispatch_span("job", job.job_type):
-            permission = self._permissions.get(job.job_type)
-            if permission is not None:
-                if self._authorizer is None:
-                    raise RuntimeError("Authorized job dispatch requires an authorizer")
-                await self._authorizer.require(context, permission)
-            async with self.admitted(job.job_type) as handler:
+            registered = self.resolve(job.job_type)
+            async with self.admit_entry(registered) as handler:
+                permission = self._permissions.get((registered.name, registered.generation))
+                if permission is not None:
+                    if self._authorizer is None:
+                        raise RuntimeError("Authorized job dispatch requires an authorizer")
+                    await self._authorizer.require(context, permission)
                 await handler(job, context, dependencies)
 
     def remove_owner_generation(self, generation: ContributionGeneration) -> None:
         removed = {
-            entry.name
+            (entry.name, entry.generation)
             for entry in self.entries(include_inactive=True)
             if entry.generation == generation
         }
         super().remove_owner_generation(generation)
-        for job_type in removed:
-            self._permissions.pop(job_type, None)
+        for key in removed:
+            self._permissions.pop(key, None)

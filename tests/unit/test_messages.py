@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Mapping
 from types import TracebackType
 from typing import ClassVar, Self, cast
@@ -5,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from businessos.activation import ContributionGate
 from businessos.context import RequestContext, TenantContext
 from businessos.di import Container
 from businessos.errors import BusinessOSError
@@ -14,6 +16,7 @@ from businessos.messages import (
     EventBus,
     EventHandlingContext,
     HandlingContext,
+    Message,
     MessageDispatcher,
     Query,
 )
@@ -260,3 +263,73 @@ async def test_query_and_event_permissions_are_enforced() -> None:
     assert event_error.value.code == "forbidden"
     assert factory.created == []
     assert timeline == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dispatch_kind", ["command", "query"])
+async def test_authorization_and_invocation_hold_one_generation(
+    dispatch_kind: str,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    authorized: list[str] = []
+    invoked: list[str] = []
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    class BlockingPolicy:
+        async def is_allowed(
+            self,
+            principal_id: UUID,
+            context: TenantContext,
+            permission: str,
+        ) -> bool:
+            authorized.append(permission)
+            entered.set()
+            await release.wait()
+            return permission == "old.permission"
+
+    gate = ContributionGate()
+    generation = gate.reserve("example")
+    factory = FakeUnitOfWorkFactory([])
+    dispatcher = MessageDispatcher(
+        factory,
+        EventBus(),
+        gate,
+        Authorizer(BlockingPolicy()),
+    )
+
+    async def old_handler(_: Message, __: HandlingContext) -> object:
+        invoked.append("old")
+        return "old"
+
+    registry = dispatcher.commands if dispatch_kind == "command" else dispatcher.queries
+    message: Command | Query = ChangeName(name="old") if dispatch_kind == "command" else ReadName()
+    registry.register(
+        type(message),
+        "example",
+        old_handler,
+        generation=generation,
+        permission="old.permission",
+    )
+    gate.publish(generation)
+    context = RequestContext(tenant=tenant)
+    container = Container()
+    async with container.request_scope() as dependencies:
+        if dispatch_kind == "command":
+            task = asyncio.create_task(
+                dispatcher.command(cast(Command, message), context, dependencies)
+            )
+        else:
+            task = asyncio.create_task(
+                dispatcher.query(cast(Query, message), context, dependencies)
+            )
+        await entered.wait()
+        drain = asyncio.create_task(gate.close_and_drain(generation, timeout_seconds=1))
+        await asyncio.sleep(0)
+        assert not drain.done()
+        release.set()
+        assert await task == "old"
+        await drain
+
+    assert authorized == ["old.permission"]
+    assert invoked == ["old"]

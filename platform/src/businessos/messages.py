@@ -1,6 +1,7 @@
 """Framework-owned command, query and event contracts and dispatch."""
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import ClassVar, cast
@@ -125,29 +126,41 @@ class HandlerRegistry:
         )
 
     def get(self, message: Message) -> Handler:
+        return self.resolve(message).handler
+
+    def resolve(self, message: Message) -> _OwnedHandler:
+        """Capture one active registration for authorization and invocation."""
         registered = self._handlers.get(type(message))
         if registered is None:
             raise NotFoundError(f"No {self.kind} handler for {type(message).__name__}")
         if self._gate is not None and not self._gate.is_active(registered.generation):
             raise NotFoundError(f"No {self.kind} handler for {type(message).__name__}")
-        return registered.handler
+        return registered
+
+    @asynccontextmanager
+    async def admitted(self, registered: _OwnedHandler) -> AsyncGenerator[None]:
+        """Hold admission for the exact captured generation across dispatch."""
+        if self._gate is None:
+            yield
+            return
+        async with self._gate.admit(registered.generation):
+            yield
+
+    async def invoke_registered(
+        self,
+        registered: _OwnedHandler,
+        message: Message,
+        context: HandlingContext,
+    ) -> object:
+        return await registered.handler(message, context)
 
     async def invoke(self, message: Message, context: HandlingContext) -> object:
-        registered = self._handlers.get(type(message))
-        if registered is None:
-            raise NotFoundError(f"No {self.kind} handler for {type(message).__name__}")
-        if self._gate is None:
-            return await registered.handler(message, context)
-        async with self._gate.admit(registered.generation):
-            return await registered.handler(message, context)
+        registered = self.resolve(message)
+        async with self.admitted(registered):
+            return await self.invoke_registered(registered, message, context)
 
     def permission(self, message: Message) -> str | None:
-        registered = self._handlers.get(type(message))
-        if registered is None:
-            raise NotFoundError(f"No {self.kind} handler for {type(message).__name__}")
-        if self._gate is not None and not self._gate.is_active(registered.generation):
-            raise NotFoundError(f"No {self.kind} handler for {type(message).__name__}")
-        return registered.permission
+        return self.resolve(message).permission
 
     def remove_owner_generation(self, generation: ContributionGeneration) -> None:
         self._handlers = {
@@ -210,17 +223,30 @@ class EventBus:
     async def authorize(self, context: RequestContext, permission: str | None) -> None:
         await self._authorize(context, permission)
 
+    @asynccontextmanager
+    async def admitted(self, registered: _OwnedEventHandler) -> AsyncGenerator[None]:
+        if self._gate is None:
+            yield
+            return
+        async with self._gate.admit(registered.generation):
+            yield
+
     async def invoke(
         self,
         registered: _OwnedEventHandler,
         event: DomainEvent,
         context: EventHandlingContext,
     ) -> None:
-        if self._gate is None:
+        async with self.admitted(registered):
             await registered.handler(event, context)
-            return
-        async with self._gate.admit(registered.generation):
-            await registered.handler(event, context)
+
+    async def invoke_registered(
+        self,
+        registered: _OwnedEventHandler,
+        event: DomainEvent,
+        context: EventHandlingContext,
+    ) -> None:
+        await registered.handler(event, context)
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:
         if permission is None:
@@ -264,13 +290,15 @@ class MessageDispatcher:
         dependencies: RequestDependencyScope,
     ) -> object:
         with dispatch_span("command", type(message).__name__):
-            await self._authorize(context, self.commands.permission(message))
-            unit_of_work = self._unit_of_work(context)
-            async with unit_of_work:
-                handling = HandlingContext(context, dependencies, unit_of_work)
-                result = await self.commands.invoke(message, handling)
-                await unit_of_work.commit()
-            return result
+            registered = self.commands.resolve(message)
+            async with self.commands.admitted(registered):
+                await self._authorize(context, registered.permission)
+                unit_of_work = self._unit_of_work(context)
+                async with unit_of_work:
+                    handling = HandlingContext(context, dependencies, unit_of_work)
+                    result = await self.commands.invoke_registered(registered, message, handling)
+                    await unit_of_work.commit()
+                return result
 
     async def query(
         self,
@@ -279,11 +307,13 @@ class MessageDispatcher:
         dependencies: RequestDependencyScope,
     ) -> object:
         with dispatch_span("query", type(message).__name__):
-            await self._authorize(context, self.queries.permission(message))
-            unit_of_work = self._unit_of_work(context)
-            async with unit_of_work:
-                handling = HandlingContext(context, dependencies, unit_of_work)
-                return await self.queries.invoke(message, handling)
+            registered = self.queries.resolve(message)
+            async with self.queries.admitted(registered):
+                await self._authorize(context, registered.permission)
+                unit_of_work = self._unit_of_work(context)
+                async with unit_of_work:
+                    handling = HandlingContext(context, dependencies, unit_of_work)
+                    return await self.queries.invoke_registered(registered, message, handling)
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:
         if permission is None:

@@ -171,6 +171,7 @@ class LifecycleManager:
             registration = self._registration_factory(module_id)
             start_attempted = False
             try:
+                self._validate_active_dependencies(registered.module.manifest)
                 self._validate_capabilities(registered.module.manifest)
                 await registered.module.register(registration)
                 start_attempted = True
@@ -201,6 +202,15 @@ class LifecycleManager:
             registered.registration = registration
             registered.error = None
             registered.state = ModuleState.ENABLED
+
+    def _validate_active_dependencies(self, manifest: ModuleManifest) -> None:
+        for dependency in manifest.dependencies:
+            target = self._registry.get(dependency.module_id)
+            if target.state is not ModuleState.ENABLED:
+                raise ConfigurationError(
+                    f"Module '{manifest.module_id}' requires enabled module "
+                    f"'{dependency.module_id}', found {target.state.value}"
+                )
 
     def _validate_capabilities(self, manifest: ModuleManifest) -> None:
         if not manifest.capabilities:

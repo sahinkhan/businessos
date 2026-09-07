@@ -45,10 +45,14 @@ class OwnedRegistry[T]:
         )
 
     def get(self, name: str) -> T:
+        return self.resolve(name).value
+
+    def resolve(self, name: str) -> OwnedValue[T]:
+        """Capture one active immutable registration for admission and use."""
         entry = self._values.get(name)
         if entry is None or not self._is_active(entry):
             raise NotFoundError(f"Unknown {self.kind}: {name}")
-        return entry.value
+        return entry
 
     def entries(self, *, include_inactive: bool = False) -> tuple[OwnedValue[T], ...]:
         return tuple(
@@ -59,9 +63,13 @@ class OwnedRegistry[T]:
 
     @asynccontextmanager
     async def admitted(self, name: str) -> AsyncGenerator[T]:
-        entry = self._values.get(name)
-        if entry is None or not self._is_active(entry):
-            raise NotFoundError(f"Unknown {self.kind}: {name}")
+        entry = self.resolve(name)
+        async with self.admit_entry(entry) as value:
+            yield value
+
+    @asynccontextmanager
+    async def admit_entry(self, entry: OwnedValue[T]) -> AsyncGenerator[T]:
+        """Admit the exact registration previously resolved by the caller."""
         if self._gate is None:
             yield entry.value
             return

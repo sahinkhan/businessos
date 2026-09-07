@@ -125,21 +125,22 @@ class DurableEventConsumer:
             traced_context = replace(context, trace_id=trace_id)
             processed = 0
             for subscriber in self._events.subscribers(event):
-                await self._events.authorize(traced_context, subscriber.permission)
-                unit_of_work = self._unit_of_work_factory.for_tenant(tenant)
-                async with unit_of_work:
-                    claimed = await unit_of_work.claim_inbox(
-                        consumer=subscriber.subscriber,
-                        event_id=event.event_id,
-                        tenant_id=tenant.tenant_id,
-                    )
-                    if not claimed:
-                        continue
-                    await self._events.invoke(
-                        subscriber,
-                        event,
-                        EventHandlingContext(traced_context, dependencies, unit_of_work),
-                    )
-                    await unit_of_work.commit()
-                    processed += 1
+                async with self._events.admitted(subscriber):
+                    await self._events.authorize(traced_context, subscriber.permission)
+                    unit_of_work = self._unit_of_work_factory.for_tenant(tenant)
+                    async with unit_of_work:
+                        claimed = await unit_of_work.claim_inbox(
+                            consumer=subscriber.subscriber,
+                            event_id=event.event_id,
+                            tenant_id=tenant.tenant_id,
+                        )
+                        if not claimed:
+                            continue
+                        await self._events.invoke_registered(
+                            subscriber,
+                            event,
+                            EventHandlingContext(traced_context, dependencies, unit_of_work),
+                        )
+                        await unit_of_work.commit()
+                        processed += 1
             return processed

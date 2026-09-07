@@ -2,11 +2,13 @@
 
 Status: Proposed — blocks Phase 1 Release Hardening Batch A
 
-Revision 2 audited base: `ef8ccc8bac25147200d2f8a69d9cf638a0b128f0` on frozen
-`codex/adr-009-security-review`; revision branch: `codex/adr-009-revision-2`.
-This revision is documentation-only. Prior proposal review base was
-`4ab2434c90b9155518cf212ab4dadda700c6ea2c`. It authorizes no runtime or migration
-implementation, acceptance, merge, release certification or Phase 2 work.
+Revision 3 base: `6ec71db0ba30760245bfaae4ca0797fd73ba4a67` on frozen
+`codex/adr-009-revision-2`; revision branch: `codex/adr-009-revision-3`.
+The earlier audited base `ef8ccc8bac25147200d2f8a69d9cf638a0b128f0` remains
+frozen on `codex/adr-009-security-review`. This revision is documentation-only.
+The prior proposal review base was `4ab2434c90b9155518cf212ab4dadda700c6ea2c`.
+It authorizes no runtime or migration implementation, acceptance, merge, release
+certification or Phase 2 work.
 
 ## Accepted rules and observed limitation
 
@@ -536,15 +538,19 @@ use that option and INSERT output with certified tenant login, but must be label
 partial exports, not disaster-recovery backups. See
 [pg_dump RLS behavior](https://www.postgresql.org/docs/17/app-pgdump.html).
 
-Logical completeness proof inventories all schemas/tables/partitions, sequences,
-routines, ACLs, non-tenant metadata and every tenant's counts/checksums under the
-same exported snapshot; separately capture reviewed role/topology reconstruction
-and secret references. Physical profile requires verified base-backup manifest,
-continuous WAL coverage/timeline through target recovery point, all tablespaces
-and isolated recovery drill. Both restore profiles compare recovered inventory,
-per-tenant counts/checksums at the stated recovery point, constraints, RLS, bindings,
-ACLs and outbox/inbox obligations. Account for external object-store backup and
-reconciliation separately. Record RPO/RTO; exit code alone proves no completeness.
+Logical completeness proof inventories all schemas/tables/partitions, routines,
+ACLs, non-tenant metadata and every tenant's table counts/checksums under the same
+exported MVCC table snapshot. PostgreSQL sequence state is not part of that MVCC
+snapshot; R3-4 requires a write fence and separate sequence-frontier capture and
+verification. Separately capture reviewed role/topology reconstruction and secret
+references. Physical profile requires verified base-backup manifest, continuous
+WAL coverage/timeline through target recovery point, all tablespaces and isolated
+recovery drill. Both restore profiles compare recovered inventory, per-tenant
+counts/checksums at the stated recovery point, sequence frontiers, constraints,
+RLS, bindings, ACLs and outbox/inbox obligations. Account for external object-store
+backup and reconciliation separately. Certified runtime databases contain no
+PostgreSQL large objects under R3-1. Record RPO/RTO; exit code alone proves no
+completeness.
 
 **AT-R2-4:** Each profile's positive operation and forbidden privilege paths; runtime
 cannot obtain/assume any profile. Under FORCE RLS prove selected multi-tenant DML
@@ -552,7 +558,8 @@ and denial outside activation set, expiry/session termination, interrupted chunk
 resume, expected counts and untouched tenants. Exercise startup/readiness fences,
 publisher separation and revocation. Show ordinary non-bypass pg_dump fails on
 RLS-filtered data; full logical and physical restore contain every expected tenant,
-metadata and obligation; partial export cannot satisfy full-backup certification.
+metadata and obligation; apply R3-1 large-object rejection and R3-4 sequence-frontier
+rules; partial export cannot satisfy full-backup certification.
 
 ### R2-5 — No prepared transactions (P1)
 
@@ -566,11 +573,11 @@ isolated administrator review resolves each transaction with recorded business
 outcome; never automatically commit or discard it. See PostgreSQL
 [prepared-transaction configuration](https://www.postgresql.org/docs/17/runtime-config-resource.html#GUC-MAX-PREPARED-TRANSACTIONS).
 
-**AT-R2-5:** Tenant PREPARE TRANSACTION fails with the expected disabled-feature
-SQLSTATE and leaves no prepared transaction, durable state or outbox residue after
-rollback. Prove empty catalog before/after cancellation and retirement. In isolated
-future misconfiguration fixtures, nonzero setting or preexisting prepared state
-blocks activation/restore; terminating the origin session is not accepted as cleanup.
+**AT-R2-5:** Tenant PREPARE TRANSACTION fails with PostgreSQL 17 SQLSTATE `55000`
+and leaves no prepared transaction, durable state or outbox residue after rollback.
+Prove empty catalog before/after cancellation and retirement. In isolated future
+misconfiguration fixtures, nonzero setting or preexisting prepared state blocks
+activation/restore; terminating the origin session is not accepted as cleanup.
 
 ### R2-6 — Global routine privilege defaults (P1)
 
@@ -598,10 +605,12 @@ is NOLOGIN/NOBYPASSRLS with no elevated attributes or memberships: USAGE on
 bos_security, **no CREATE**, SELECT only on the binding table and only ordinary
 catalog access required for qualified OID/name checks. It owns exactly the resolver
 and full-binding attestor functions, with no other data ownership. Ownership entails
-ability to replace those functions, so no runtime membership can reach it. Runtime
-logins/DML get schema USAGE and EXECUTE only on those exact no-argument signatures,
-never SELECT on mapping. Required EXECUTE on a separately reviewed operations
-helper is granted only to its operational callers under R2-4, not runtime.
+security-sensitive ALTER authority, so no runtime membership can reach it. Its lack
+of schema CREATE prevents direct CREATE OR REPLACE; R3-3 defines the only fenced,
+audited upgrade path. Runtime logins/DML get schema USAGE and EXECUTE only on those
+exact no-argument signatures, never SELECT on mapping. Required EXECUTE on a
+separately reviewed operations helper is granted only to its operational callers
+under R2-4, not runtime.
 
 **AT-R2-7:** Positive resolver and attestor calls under SET ROLE, RESET ROLE and
 SECURITY DEFINER; catalog assertions for distinct schema/table/function owners,
@@ -614,30 +623,32 @@ missing USAGE as a provisioning failure before traffic rather than masking it.
 The arbitrary-SQL tenant isolation guarantee is limited to certified RLS-managed
 tenant relations and audited relation access paths. It does not promise database
 metadata secrecy, freedom from timing/constraint side channels or denial of service.
-RLS does not isolate LISTEN/NOTIFY channels or PostgreSQL large objects. In shared
-schema deployments never put sensitive data, authorization or trusted work on
-LISTEN/NOTIFY; tenants sharing a database can communicate there and channel names
-are not ACLs. SDK grammar rejects LISTEN/NOTIFY and arbitrary function calls, but
-this is not a PostgreSQL per-role privilege that blocks arbitrary injected SQL.
-A requirement to prevent that channel itself demands separate database/process
-isolation and separate certification, not an invented GRANT/REVOKE control.
+RLS does not isolate LISTEN/NOTIFY channels. Process isolation alone also does not
+isolate sessions that remain inside the same database: channel names have no
+per-tenant or per-role PostgreSQL ACL. Certified tenant runtime and the public SDK
+forbid LISTEN/NOTIFY, and no sensitive data, authorization or trusted work may use
+it. That supported-surface prohibition does not suppress the raw SQL channel from
+arbitrary injected SQL. Any approved notification use requires a separate database
+and role boundary plus separate certification; process separation by itself is
+insufficient. R3-7 makes this limit and its probes explicit.
 
-Forbid tenant large-object storage; use scoped object storage through committed
-workflows. Audit/revoke runtime/PUBLIC access to large-object creation and access
-routines where configurable, validate existing large-object ACLs and absence of
-sensitive legacy objects. Such ACLs are not RLS. Inventory all reachable built-in
-and extension routines, views, triggers, foreign tables, unsafe SECURITY DEFINER
-paths and other non-RLS storage/communication surfaces; deny unsafe grants or reject
-the profile when it cannot keep tenant content inside secured paths. Certification
-must document residual catalog/notification channels rather than claiming their
-absence. Hostile Python in a trusted process remains excluded under ADR-004.
+PostgreSQL large objects are not RLS-managed and are prohibited entirely in every
+certified BusinessOS runtime database under R3-1; binary/object data uses the
+tenant-bound S3 provider through committed workflows. Inventory all reachable
+built-in and extension routines, views, triggers, foreign tables, unsafe SECURITY
+DEFINER paths and other non-RLS storage/communication surfaces; deny unsafe grants
+or reject the profile when it cannot keep tenant content inside secured paths.
+Certification must document residual catalog/raw-notification channels rather than
+claiming their absence. Hostile Python in a trusted process remains excluded under
+ADR-004.
 
 **AT-R2-8:** SDK channel/large-object/expression injection rejection; raw runtime-SQL
 notification probe documents the residual communication limit without pretending
 denial. Prove no sensitive platform payload or authoritative work uses that channel;
-exercise large-object ACL/creation paths, unsafe views/routines/extensions and
-legacy-object inventory. Fail certification for sensitive non-RLS exposure; require
-a separately isolated profile when the threat model requires channel suppression.
+exercise R3-1 large-object absence, unsafe views/routines/extensions and legacy
+inventory. Fail certification for sensitive non-RLS exposure; require a separate
+database/role profile when the threat model requires notification-channel
+suppression.
 
 See PostgreSQL [NOTIFY](https://www.postgresql.org/docs/17/sql-notify.html) and
 [large-object permissions](https://www.postgresql.org/docs/17/lo-implementation.html).
@@ -685,6 +696,232 @@ Overload must reject within 2 seconds without cross-tenant fallback or memory
 unboundedness. Publish measured values including failures; no scale claim until
 these gates pass. Repeat failover, lease loss, cancellation and retirement under load.
 
+## Revision 3 mandatory clauses and implementation acceptance tests
+
+These clauses retain and supplement R2-1 through R2-9; they do not authorize
+implementation. Each `AT-R3-*` is a required future acceptance-test family, not
+an executed Revision 3 check. The audits of frozen Revision 2 at
+`6ec71db0ba30760245bfaae4ca0797fd73ba4a67` produced a combined **REVISE ADR**
+disposition: Astra Extra High returned **APPROVE ADR** with no remaining P0/P1/P2,
+while GPT-5.6 Sol Ultra returned **REVISE ADR** with two P1 findings, three P2
+findings and two nonblocking precision corrections. Astra approval does not
+override Sol's stricter requirements. Both auditors considered the `session_user`
+architecture viable and the recorded PostgreSQL 17.11 deliberately red regression
+valid; neither independently reran tests. Revision 3 does not change that binding
+architecture or claim new runtime evidence.
+
+### R3-1 — Certified databases contain no PostgreSQL large objects (P1)
+
+Every certified BusinessOS runtime database prohibits PostgreSQL large objects,
+regardless of content, owner, ACL, tenant attribution or apparent sensitivity.
+Binary and object data belongs in the tenant-bound S3 provider and follows the
+committed workflow, authorization, namespace, retention and backup contracts of
+the replacement SDK. Large-object ACLs are not a substitute for tenant isolation.
+
+The protected security attestor inventories `pg_largeobject_metadata` across all
+owners before provisioning completion, activation, backup certification and
+restore certification. Any row fails preflight, keeps readiness quarantined and
+prevents traffic or a backup from being certified. A physical restore is inspected
+while isolated before activation; finding a copied large object fails even when
+the source preflight was recorded as clean. Remediation is an explicit offline,
+audited data-conversion operation to the tenant-bound S3 provider followed by a
+fresh backup and restore drill, never silent deletion during certification.
+
+The attestor needs only narrowly scoped catalog metadata authority to prove
+absence. Neither logical nor physical backup gains temporary superuser, owner-role
+membership, large-object-content SELECT, broad routine EXECUTE or extra BYPASSRLS
+to inspect or export large objects. The existing R2-4 backup profiles remain exact;
+large objects are a preflight error, not an additional backup privilege case.
+
+**AT-R3-1:** Prove an empty catalog at provisioning, activation, logical/physical
+backup preflight and isolated restore. Create an adversarial large object under a
+separately authenticated role, transfer it to another role, restrict its ACL and
+verify every applicable preflight still rejects and readiness stays quarantined.
+Assert no temporary broad grant, membership or content read occurs. Convert test
+binary data through the tenant-bound S3 provider, take a new clean checkpoint and
+prove only the newly certified restore may activate.
+
+### R3-2 — `lo_compat_privileges` must remain off (P1)
+
+Every certified server, failover target, database, role generation and live runtime
+session requires effective `lo_compat_privileges = off`. The protected deployment
+authority validates the system baseline and role/database settings during
+provisioning; a fresh authenticated connection validates the effective setting
+before activation. The full-binding attestation checks it at physical connect and
+every checkout before exposing a capability. Readiness and the maximum 30-second
+R2-2 drift cycle check it continuously, and backup/restore certification checks it
+again on the isolated target and each promoted endpoint.
+
+An effective `on` value, an unsafe role/database default or an inconsistent source
+fails closed: reject checkout, quarantine the affected generation, make readiness
+false, fence and terminate its sessions, and require isolated repair plus a fresh
+credential generation and recertification. `RESET ALL` is not proof that persistent
+defaults were repaired. The public SDK and reviewed runtime adapters expose no
+large-object or configuration-setting operation; R3-1's absolute absence remains
+mandatory even when this setting is off.
+
+**AT-R3-2:** Inject `on` at system, database, role, role-in-database and session
+scope, including a restored and a failover fixture. Assert failure at provisioning,
+activation, connect/checkout, readiness, bounded drift detection and restore
+certification as applicable; an enabled fixture must never be advertised ready.
+Prove session termination, quarantined pools, privileged repair, clean-generation
+reconnect and continued R3-1 catalog absence.
+
+### R3-3 — Fenced forward-only resolver upgrades (P2)
+
+In steady state the NOLOGIN resolver owner keeps schema USAGE and no CREATE, owns
+only the resolver/attestor functions and remains unreachable from runtime. Resolver
+changes use a separately deployed, externally authenticated security-deployer path
+with a short-lived activation, exclusive security-change lease, independent secret
+ACL and complete audit record. It may assume only the security and resolver owner
+roles required for this operation; no web, worker, module, backup or ordinary
+migrator identity can obtain that path. Traffic is fenced, affected sessions are
+drained or terminated and readiness remains false until postconditions pass.
+
+Prefer a new forward-only versioned no-argument resolver/attestor pair over replacing
+an existing signature. In one PostgreSQL transaction the deployer creates the pair
+with static schema-qualified SQL and fixed
+`search_path = pg_catalog, bos_security, pg_temp`, sets SECURITY DEFINER/STABLE and
+the exact signatures, revokes PUBLIC, grants runtime EXECUTE only where required,
+transfers ownership to the resolver owner, atomically cuts every applicable RLS
+policy to the new version, and validates definition hashes, volatility, security
+mode, search path, owner OIDs, ACLs, dependencies and complete policy coverage.
+Any validation error aborts the whole transaction. The prior version is retained
+without runtime/policy references until the compatibility and recovery window
+permits forward cleanup; policy rollback to an insecure definition is forbidden.
+
+Direct `CREATE OR REPLACE FUNCTION` attempts by a tenant/runtime principal and by
+the resolver owner without the fenced deployer both must fail with SQLSTATE `42501`.
+The owner is NOLOGIN and has no ordinary membership path; the test-only owner probe
+does not create a production authentication route. After upgrade, checkout and
+readiness rerun full binding attestation before traffic resumes.
+
+**AT-R3-3:** Attempt direct runtime and resolver-owner replacement and assert exact
+SQLSTATE `42501`. Exercise successful version creation and atomic multi-policy
+cutover, injected failure at each transactional step, concurrent traffic fencing,
+old-version retention and forbidden reverse cutover. After commit, catalog-check
+the exact definitions, fixed search path, owners, grants, dependency graph and all
+RLS policy expressions; prove no PUBLIC/unapproved EXECUTE, partial cutover or
+runtime/deployer authority remains.
+
+### R3-4 — Sequence-consistent backup and collision-free restore (P2)
+
+PostgreSQL sequence allocation is nontransactional and sequence state is not part
+of an MVCC table snapshot. Online recoverable backup therefore uses a verified
+physical base backup plus continuous WAL through the selected recovery point; an
+online logical dump alone is not certified for this purpose.
+
+A full logical backup is certifiable only under an exclusive write fence. Disable
+ingress and scheduled/event work, drain requests and operations, terminate any
+remaining sequence-using sessions, and prove no identity capable of `nextval` or
+`setval` can connect or remain active for the entire dump. The fence blocks both
+operations themselves, not merely application write handlers. Capture table data
+at the exported snapshot, but separately record every owned sequence's identity,
+definition, increment direction, cache size, `last_value`, `is_called` and allocated
+frontier in a signed sequence manifest. Recheck those values before releasing the
+fence; any movement or unaccounted sequence fails the backup.
+
+Restore remains isolated and blocks all allocators. After data load, set each
+sequence to a direction-aware safe frontier beyond both the captured allocation
+frontier (including values reserved by sequence caches) and every restored value
+that uses it. Verify uniqueness and the next allocated values before granting
+runtime sequence USAGE. Harmless gaps are acceptable; reuse or collision is not.
+No logical restore may infer safe state solely from `max(column)` or a dump-time
+MVCC snapshot.
+
+**AT-R3-4:** Race a logical backup with concurrent `nextval`, authorized `setval`
+and non-unit cached sequences and prove certification cannot proceed until the
+fence drains and blocks them. Cover values reserved but unused in backend caches,
+ascending and descending increments, interrupted dumps, physical base-backup/WAL
+recovery and logical restore. Assert restored allocation never collides with any
+restored or previously reserved frontier, while permitted gaps do not fail. Prove
+request drain and allocator denial persist until post-restore verification passes.
+
+### R3-5 — Quantitative mandatory load gate (P2)
+
+The initial mandatory profile `TB-LOAD-P1` below is a set of **proposed numeric
+requirements, not measured results**. Certification may publish a stricter or more
+demanding version, but may not weaken it silently or extrapolate it to untested
+hardware/topology. The R2-9 connection envelope remains binding.
+
+| Profile dimension | Proposed `TB-LOAD-P1` requirement |
+| --- | --- |
+| Runtime and operations topology | PostgreSQL `max_connections=200`; 160 total runtime connections across five hard 32-connection process slots (four web, one worker/consumer), including checkout attestation and readiness; exactly eight simultaneous operational connections (four publisher, two security attestation/drift and two rotation-overlap controllers) inside the reserved 20; safety reserve 20 remains unused. |
+| Dataset and tenant distribution | 1,000 registered tenants; 200 concurrently offered tenants; ten hot tenants receive 50% of requests and the other 190 share 50%; publish data cardinality, indexes, hardware, PostgreSQL/pooler versions and generator seed. |
+| Work and control traffic | API mix is 70% indexed point reads and 30% single-row writes with atomic outbox; workers are offered 20 committed jobs/s; full binding attestation runs on every connect/checkout; every process runs readiness at five-second intervals; rotation overlap is active. |
+| Under-capacity phase | After five minutes warm-up, offer 100 API requests/s from 320 paced concurrent clients for 30 minutes while the worker/control traffic continues. |
+| Overload phase | After five minutes warm-up, offer 400 API requests/s from 640 paced concurrent clients for 30 minutes with the same tenant skew and worker/control traffic. |
+
+Under capacity, at least 99.0% of offered API requests must be admitted, at least
+99.0% must complete successfully, useful API throughput must be at least 99
+successes/s and useful worker throughput at least 19.8 completed jobs/s. Non-overload
+errors must be at most 0.1% of offers. End-to-end successful-request latency must be
+p95 <= 500 ms and p99 <= 1 s. All scheduled binding/readiness probes must complete
+within two seconds with correct identity and status, and no connection, pool or
+queue maximum may be exceeded.
+
+During overload, useful API throughput must remain at least 90 successes/s and at
+least 20% of offered requests must complete successfully; useful worker throughput
+must remain at least 18 completed jobs/s. Retryable overload responses and all
+admission decisions must complete within two seconds at p99, non-overload errors
+must be at most 1%, and no acquisition waits longer than two seconds. Across the
+200 offered tenants, the Jain fairness index of per-tenant successful/offered ratios
+must be at least 0.95; no continuously backlogged tenant may receive zero successful
+completions for more than ten seconds. A run that rejects nearly all requests fails
+explicitly: either a successful share below 20% or useful throughput below 90/s is
+disqualifying even when rejection latency and memory remain bounded.
+
+Record offered/admitted/completed/rejected counts and rates, latency histograms,
+per-tenant fairness and maximum starvation/wait, worker results, attestation and
+readiness results, operational connection use, resource/memory maxima and every
+error. Preserve the exact numeric profile, environment, artifact/commit identity
+and raw results as release evidence. Requirements and actual measured results must
+be separate labeled records; missing, skipped, synthesized or invented results fail
+certification.
+
+**AT-R3-5:** Execute both phases with the exact profile, then independently make
+each admission, completion, throughput, latency, worker, fairness, starvation,
+wait, attestation/readiness and connection-budget threshold fail and prove the
+mandatory job rejects the run. Include the explicit nearly-all-rejected case and
+show it cannot pass on fast rejections alone. Repeat R2-9 failover, lease loss,
+cancellation and retirement stimuli while preserving numeric evidence.
+
+### R3-6 — PostgreSQL 17 disabled prepared-transaction SQLSTATE (precision)
+
+For `max_prepared_transactions = 0`, PostgreSQL 17 reports SQLSTATE `55000` when
+`PREPARE TRANSACTION` is attempted. Certification and documentation must assert
+that exact code rather than naming a different feature-state class. This correction
+does not change R2-5's prohibition or authorize prepared transactions.
+
+**AT-R3-6:** On every certified PostgreSQL 17 minor version, assert SQLSTATE
+`55000`, transaction rollback and empty `pg_prepared_xacts`; an error swallowed,
+reclassified or matched only by message text fails.
+
+### R3-7 — LISTEN/NOTIFY boundary and prohibition (precision)
+
+Process or container isolation does not isolate LISTEN/NOTIFY when the processes
+connect to the same PostgreSQL database. PostgreSQL provides no per-role or
+per-tenant ACL on notification channel names. Certified tenant runtime therefore
+forbids LISTEN, UNLISTEN, NOTIFY and `pg_notify` through the public SDK, generated
+SQL, internal runtime adapters, migrations-as-runtime behavior and platform
+workflows. Code/configuration inventory and supported-surface negative tests
+enforce that prohibition.
+
+This is not a claim that PostgreSQL can suppress the raw SQL channel per tenant in
+a shared database. An injected arbitrary-SQL principal with database access may
+still communicate over LISTEN/NOTIFY; the threat model records that residual channel.
+Any approved notification use must be placed behind a separate database **and**
+separate role boundary, use no tenant runtime credentials or sensitive platform
+payload, and receive its own architecture/security certification. A separate
+process using the same database is insufficient.
+
+**AT-R3-7:** Reject every supported SDK/query/adapter spelling, including `pg_notify`,
+and prove no platform payload, authorization decision or trusted work depends on
+notifications. With two raw tenant SQL sessions in the same test database, record
+successful cross-role notification as an expected threat-model observation, not a
+denial. Prove the certification report never claims a nonexistent ACL; separately
+test any approved isolated notification service's database and role boundary.
+
 ## Consequences and alternatives
 
 This adds tenant-role provisioning, credential rotation, bounded routing/pooling
@@ -702,7 +939,7 @@ UUID-taking privileged setters or an all-tenant credential with SET ROLE.
 No runtime fix or migration is implemented here. ADR-009 remains Proposed and the
 unchanged runtime's failing regression remains a release blocker.
 
-## Historical validation at ef8ccc8 (2026-09-07; not Revision 2 checks)
+## Historical validation at ef8ccc8 (2026-09-07; not Revision 2 or Revision 3 checks)
 
 In that prior revision, only this ADR and the regression test changed from its review base. Checks ran in
 `bos-review-118:development` with this checkout mounted read-only at `/app` and

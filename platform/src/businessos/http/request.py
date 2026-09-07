@@ -29,7 +29,7 @@ class Request:
         self.path = scope["path"]
         self.root_path = scope.get("root_path", "")
         self.scheme = scope.get("scheme", "http")
-        self.context = context
+        self._context = context
         self.path_params = dict(path_params or {})
         self.headers = {
             key.decode("latin-1").lower(): value.decode("latin-1")
@@ -40,6 +40,10 @@ class Request:
             key: tuple(values)
             for key, values in parse_qs(raw_query, keep_blank_values=True).items()
         }
+
+    @property
+    def context(self) -> RequestContext:
+        return self._context
 
     async def body(self) -> bytes:
         if self._body is not None:

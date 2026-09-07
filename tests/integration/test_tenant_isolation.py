@@ -14,6 +14,7 @@ from businessos.persistence import (
     PendingOutboxMessage,
     SQLAlchemyUnitOfWorkFactory,
 )
+from tests.conftest import TenantSessions
 
 
 def _settings(database_url: str) -> Settings:
@@ -39,6 +40,7 @@ def _message(tenant: TenantContext, value: str) -> PendingOutboxMessage:
 @pytest.mark.asyncio
 async def test_runtime_role_is_non_owner_non_bypass_and_rls_is_forced(
     migrated_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
     async with database.sessions() as session:
@@ -88,9 +90,12 @@ async def test_runtime_role_is_non_owner_non_bypass_and_rls_is_forced(
 @pytest.mark.asyncio
 async def test_eventing_tables_are_isolated_and_missing_context_fails_closed(
     migrated_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
-    factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    factory = SQLAlchemyUnitOfWorkFactory(
+        database.sessions, tenant_sessions=tenant_sessions(database)
+    )
     tenant_a = _tenant()
     tenant_b = _tenant()
     message_a = _message(tenant_a, "a")
@@ -153,10 +158,13 @@ async def test_eventing_tables_are_isolated_and_missing_context_fails_closed(
 async def test_runtime_cannot_disable_rls_and_operations_access_is_explicit(
     migrated_database_url: str,
     postgres_operations_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     runtime = Database(_settings(migrated_database_url))
     operations = Database(_settings(postgres_operations_database_url))
-    factory = SQLAlchemyUnitOfWorkFactory(runtime.sessions)
+    factory = SQLAlchemyUnitOfWorkFactory(
+        runtime.sessions, tenant_sessions=tenant_sessions(runtime)
+    )
     tenant_a = _tenant()
     tenant_b = _tenant()
 

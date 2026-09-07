@@ -30,9 +30,10 @@ from businessos.migrations import MigrationCoordinator
 from businessos.modules import (
     BusinessOSModule,
     LifecycleManager,
-    ModuleRegistration,
     ModuleRegistry,
+    RegistrationController,
     UpgradeCoordinator,
+    discover_modules,
 )
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
@@ -61,7 +62,9 @@ def create_application(
     middleware = MiddlewareRegistry(contributions)
     container = Container()
     database = Database(resolved_settings)
-    unit_of_work_factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    unit_of_work_factory = SQLAlchemyUnitOfWorkFactory(
+        database.sessions, tenant_sessions=database.sessions_for_tenant
+    )
     resolved_authorizer = authorizer or Authorizer(DenyAllPolicyEvaluator())
     event_bus = EventBus(contributions, resolved_authorizer)
     message_dispatcher = MessageDispatcher(
@@ -110,13 +113,13 @@ def create_application(
             )
     features = FeatureFlagRegistry(contributions)
     jobs = JobHandlerRegistry(contributions, resolved_authorizer)
-    module_registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    module_registry = ModuleRegistry(platform_version="0.2.0", sdk_version="0.2.0")
     for module in modules:
         module_registry.add(module)
 
     runtime_placeholder: dict[str, FrameworkRuntime] = {}
 
-    def registration(owner: str) -> ModuleRegistration:
+    def registration(owner: str) -> RegistrationController:
         return runtime_placeholder["runtime"].registration(owner)
 
     lifecycle = LifecycleManager(
@@ -124,6 +127,7 @@ def create_application(
         registration,
         providers=providers,
         drain_timeout_seconds=resolved_settings.shutdown_timeout_seconds,
+        disabled_modules=frozenset(resolved_settings.disabled_modules),
     )
     upgrades = UpgradeCoordinator(module_registry)
     migrations = MigrationCoordinator(module_registry)
@@ -188,4 +192,56 @@ def create_application(
     application.add_lifecycle("modules", start_modules, lifecycle.disable_all)
     application.on_shutdown(database.close)
     diagnostics.add_readiness_check("application", application.readiness)
+    return application
+
+
+def create_installed_application() -> BusinessOSApplication:
+    """Production composition: discover installed packages and operator-owned adapters."""
+    from importlib import import_module
+
+    from businessos.errors import ConfigurationError
+    from businessos.providers import RedisCacheProvider, S3ObjectStorageProvider
+    from businessos.security import PolicyEvaluator
+
+    failed = False
+    try:
+        settings = get_settings()
+        providers: dict[str, object] = {}
+        if settings.redis_url:
+            providers["cache"] = RedisCacheProvider(settings.redis_url)
+        if settings.s3_bucket:
+            providers["object-storage"] = S3ObjectStorageProvider(
+                bucket=settings.s3_bucket,
+                endpoint_url=settings.s3_endpoint_url,
+                access_key=settings.s3_access_key,
+                secret_key=settings.s3_secret_key,
+                provision_bucket=settings.s3_provision_bucket,
+            )
+
+        def adapter(path: str) -> object:
+            module_name, factory_name = path.split(":", 1)
+            factory = getattr(import_module(module_name), factory_name)
+            return cast(object, factory())
+
+        resolver = (
+            cast(TrustedContextResolver, adapter(settings.context_resolver_factory))
+            if settings.context_resolver_factory
+            else None
+        )
+        authorizer = (
+            Authorizer(cast(PolicyEvaluator, adapter(settings.policy_evaluator_factory)))
+            if settings.policy_evaluator_factory
+            else None
+        )
+        application = create_application(
+            settings,
+            modules=discover_modules(),
+            context_resolver=resolver,
+            authorizer=authorizer,
+            infrastructure_providers=providers,
+        )
+    except Exception:
+        failed = True
+    if failed:
+        raise ConfigurationError("Installed runtime configuration or module composition failed")
     return application

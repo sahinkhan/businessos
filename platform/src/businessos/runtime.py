@@ -15,8 +15,8 @@ from businessos.metadata import MetadataRegistry
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import (
     LifecycleManager,
-    ModuleRegistration,
     ModuleRegistry,
+    RegistrationController,
     UpgradeCoordinator,
 )
 from businessos.permissions import PermissionRegistry
@@ -43,9 +43,9 @@ class FrameworkRuntime:
     upgrades: UpgradeCoordinator
     migrations: MigrationCoordinator
 
-    def registration(self, owner: str) -> ModuleRegistration:
+    def registration(self, owner: str) -> RegistrationController:
         generation = self.contributions.reserve(owner)
-        return ModuleRegistration(
+        return RegistrationController(
             owner,
             router=self.router,
             container=self.container,

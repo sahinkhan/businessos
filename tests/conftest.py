@@ -1,13 +1,19 @@
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
 from psycopg import sql
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from businessos.context import TenantContext
+from businessos.persistence import Database
+
+TenantSessions = Callable[[Database], Callable[[TenantContext], async_sessionmaker[AsyncSession]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,3 +107,54 @@ def migrated_database_url(postgres_database: PostgreSQLTestDatabase) -> Iterator
         yield postgres_database.runtime_url
     finally:
         command.downgrade(config, "base")
+
+
+@pytest.fixture
+def tenant_sessions(postgres_database: PostgreSQLTestDatabase) -> TenantSessions:
+    """Explicit test provisioning authority, separate from runtime factory behavior."""
+    from sqlalchemy.engine import make_url
+
+    from businessos.context import TenantContext
+    from businessos.database_admin import provision_tenant_login
+    from businessos.persistence import Database
+
+    def bind(database: Database) -> Callable[[TenantContext], async_sessionmaker[AsyncSession]]:
+        def sessions(context: TenantContext) -> async_sessionmaker[AsyncSession]:
+            settings = database._settings
+            if context.tenant_id not in settings.tenant_database_urls:
+                with psycopg.connect(postgres_database.administrator_url) as connection:
+                    role = provision_tenant_login(
+                        connection, tenant_id=context.tenant_id, password="test-only"
+                    )
+                settings.tenant_database_urls[context.tenant_id] = (
+                    make_url(settings.database_url)
+                    .set(username=role, password="test-only")
+                    .render_as_string(hide_password=False)
+                )
+            return database.sessions_for_tenant(context)
+
+        return sessions
+
+    return bind
+
+
+@pytest.fixture
+def tenant_urls(
+    postgres_database: PostgreSQLTestDatabase,
+) -> Callable[[TenantContext], dict[UUID, str]]:
+    from sqlalchemy.engine import make_url
+
+    from businessos.database_admin import provision_tenant_login
+
+    def provision(context: TenantContext) -> dict[UUID, str]:
+        with psycopg.connect(postgres_database.administrator_url) as connection:
+            role = provision_tenant_login(
+                connection, tenant_id=context.tenant_id, password="test-only"
+            )
+        return {
+            context.tenant_id: make_url(postgres_database.runtime_url)
+            .set(username=role, password="test-only")
+            .render_as_string(hide_password=False)
+        }
+
+    return provision

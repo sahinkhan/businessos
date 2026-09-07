@@ -11,7 +11,7 @@ from packaging.version import Version
 
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
 from businessos.modules.manifest import ModuleManifest
-from businessos.modules.sdk import BusinessOSModule, ModuleRegistration
+from businessos.modules.sdk import BusinessOSModule, RegistrationController
 from businessos.providers import ProviderRegistry
 
 
@@ -33,7 +33,7 @@ class RegisteredModule:
     module: BusinessOSModule
     state: ModuleState = ModuleState.AVAILABLE
     error: str | None = None
-    registration: ModuleRegistration | None = None
+    registration: RegistrationController | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     started: bool = False
 
@@ -55,6 +55,8 @@ class ModuleRegistry:
 
     def add(self, module: BusinessOSModule) -> None:
         module_id = module.manifest.module_id
+        if self.sdk_version >= Version("0.2") and module.manifest.sdk_api_version != 2:
+            raise ConfigurationError("Module requires migration to SDK API version 2")
         if module_id in self._modules:
             raise ConflictError(f"Module already registered: {module_id}")
         if not module.manifest.supports(
@@ -111,23 +113,29 @@ class LifecycleManager:
     def __init__(
         self,
         registry: ModuleRegistry,
-        registration_factory: Callable[[str], ModuleRegistration],
+        registration_factory: Callable[[str], RegistrationController],
         *,
         providers: ProviderRegistry | None = None,
         drain_timeout_seconds: float = 10.0,
+        disabled_modules: frozenset[str] = frozenset(),
     ) -> None:
         self._registry = registry
         self._registration_factory = registration_factory
         self._providers = providers
         self._drain_timeout_seconds = drain_timeout_seconds
         self._lifecycle_lock = asyncio.Lock()
+        self._disabled_modules = disabled_modules
 
     async def install_all(self) -> None:
         for registered in self._registry.ordered():
             if registered.state is not ModuleState.AVAILABLE:
                 continue
             registered.state = ModuleState.INSTALLING
-            registered.state = ModuleState.INSTALLED
+            registered.state = (
+                ModuleState.DISABLED
+                if registered.module.manifest.module_id in self._disabled_modules
+                else ModuleState.INSTALLED
+            )
 
     async def enable_all(self) -> None:
         async with self._lifecycle_lock:
@@ -137,6 +145,8 @@ class LifecycleManager:
         enabled: list[str] = []
         try:
             for registered in self._registry.ordered():
+                if registered.module.manifest.module_id in self._disabled_modules:
+                    continue
                 was_enabled = registered.state is ModuleState.ENABLED
                 await self._enable(registered.module.manifest.module_id)
                 if not was_enabled and registered.state is ModuleState.ENABLED:
@@ -169,11 +179,13 @@ class LifecycleManager:
             if registered.state not in {ModuleState.INSTALLED, ModuleState.DISABLED}:
                 return
             registration = self._registration_factory(module_id)
+            registered.registration = registration
             start_attempted = False
             try:
                 self._validate_active_dependencies(registered.module.manifest)
                 self._validate_capabilities(registered.module.manifest)
-                await registered.module.register(registration)
+                await registered.module.register(registration.public())
+                registration.seal()
                 start_attempted = True
                 await registered.module.start()
                 registered.started = True
@@ -189,6 +201,7 @@ class LifecycleManager:
                         rollback_errors.append(rollback_error)
                 try:
                     await registration.rollback()
+                    registered.registration = None
                 except BaseException as rollback_error:
                     rollback_errors.append(rollback_error)
                 registered.state = ModuleState.FAILED
@@ -319,7 +332,9 @@ class LifecycleManager:
                 registered.registration = None
             registered.state = ModuleState.UNINSTALLING
             registration = self._registration_factory(module_id)
+            registered.registration = registration
             await registration.rollback()
+            registered.registration = None
             registration.retire_owner()
             registered.state = ModuleState.RETIRED
             registered.error = None

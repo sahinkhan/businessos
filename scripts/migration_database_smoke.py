@@ -15,7 +15,7 @@ import psycopg
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-EXPECTED_HEADS = {"0005_durable_event_subscribers", "proof_0003"}
+EXPECTED_HEADS = {"proof_0004"}
 
 
 def _required(name: str) -> str:
@@ -90,7 +90,7 @@ def _verify(database_url: str) -> None:
         raise RuntimeError("proof migration inventory was not persisted")
     revision_ids = inventory[0][2]
     manifest = inventory[0][3]
-    if revision_ids != ["proof_0001", "proof_0002", "proof_0003"]:
+    if revision_ids != ["proof_0001", "proof_0002", "proof_0003", "proof_0004"]:
         raise RuntimeError("proof revision IDs are incomplete")
     if [item["revision"] for item in manifest] != revision_ids:
         raise RuntimeError("proof immutable revision manifest is incomplete")

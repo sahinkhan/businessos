@@ -50,7 +50,7 @@ def test_event_worker_configuration_redacts_role_credentials() -> None:
 def test_event_worker_requires_separate_runtime_and_operations_roles() -> None:
     runtime_url = "postgresql+psycopg://same:runtime-secret@db/app"
     operations_url = "postgresql+psycopg://same:operations-secret@db/app?application_name=ops"
-    with pytest.raises(ValidationError, match="roles must be separate"):
+    with pytest.raises(ValidationError, match="Invalid runtime configuration"):
         EventWorkerSettings(
             runtime_database_url=runtime_url,
             operations_database_url=operations_url,

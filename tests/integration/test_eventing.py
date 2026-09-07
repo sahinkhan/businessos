@@ -1,10 +1,10 @@
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import ClassVar
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import column, select, table
 
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
@@ -18,6 +18,9 @@ from businessos.persistence import (
     PendingOutboxMessage,
     SQLAlchemyUnitOfWorkFactory,
 )
+from tests.conftest import TenantSessions
+
+EFFECTS = table("effects", column("id"), schema="mod_test_projection")
 
 
 class RecordingPublisher:
@@ -50,11 +53,13 @@ def _settings(database_url: str) -> Settings:
 async def test_outbox_survives_publish_failure_and_retries(
     migrated_database_url: str,
     postgres_operations_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
     operations_database = Database(_settings(postgres_operations_database_url))
     factory = SQLAlchemyUnitOfWorkFactory(
         database.sessions,
+        tenant_sessions=tenant_sessions(database),
         system_sessions=operations_database.sessions,
     )
     tenant = TenantContext(uuid4(), uuid4(), uuid4())
@@ -109,9 +114,14 @@ async def test_outbox_survives_publish_failure_and_retries(
 @pytest.mark.integration
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_inbox_claim_is_durable_and_idempotent(migrated_database_url: str) -> None:
+async def test_inbox_claim_is_durable_and_idempotent(
+    migrated_database_url: str,
+    tenant_sessions: TenantSessions,
+) -> None:
     database = Database(_settings(migrated_database_url))
-    factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    factory = SQLAlchemyUnitOfWorkFactory(
+        database.sessions, tenant_sessions=tenant_sessions(database)
+    )
     tenant = TenantContext(uuid4(), uuid4(), uuid4())
     event_id = uuid4()
     inbox = Inbox()
@@ -146,13 +156,16 @@ async def test_inbox_claim_is_durable_and_idempotent(migrated_database_url: str)
 @pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_durable_consumer_serializes_concurrent_redelivery(
+    subscriber_effects: None,
     migrated_database_url: str,
     postgres_operations_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
     operations_database = Database(_settings(postgres_operations_database_url))
     factory = SQLAlchemyUnitOfWorkFactory(
         database.sessions,
+        tenant_sessions=tenant_sessions(database),
         system_sessions=operations_database.sessions,
     )
     events = EventBus()
@@ -169,19 +182,10 @@ async def test_durable_consumer_serializes_concurrent_redelivery(
     async def handle(_: ProbeEvent, handling: EventHandlingContext) -> None:
         nonlocal handler_calls
         handler_calls += 1
-        handling.unit_of_work.add_outbox(
-            PendingOutboxMessage(
-                event_id=side_effect_id,
-                tenant_id=tenant.tenant_id,
-                event_type="test.probe.projected",
-                schema_version=1,
-                correlation_id=event.correlation_id,
-                payload={"projected": True},
-            )
-        )
+        await handling.persistence.insert("effects", {"id": side_effect_id})
         await asyncio.sleep(0.05)
 
-    events.subscribe(ProbeEvent, "test.projection", handle)
+    events.subscribe(ProbeEvent, "test.projection", handle, owner="test.projection")
     container = Container()
 
     async def deliver() -> int:
@@ -200,7 +204,7 @@ async def test_durable_consumer_serializes_concurrent_redelivery(
         assert unit_of_work.session is not None
         receipt_count = len((await unit_of_work.session.scalars(select(InboxReceipt))).all())
         side_effect = await unit_of_work.session.scalar(
-            select(OutboxMessage).where(OutboxMessage.id == side_effect_id)
+            select(EFFECTS.c.id).where(EFFECTS.c.id == side_effect_id)
         )
     assert receipt_count == 1
     assert side_effect is not None
@@ -213,10 +217,14 @@ async def test_durable_consumer_serializes_concurrent_redelivery(
 @pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_durable_consumer_rolls_back_receipt_and_side_effect_then_retries(
+    subscriber_effects: None,
     migrated_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
-    factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    factory = SQLAlchemyUnitOfWorkFactory(
+        database.sessions, tenant_sessions=tenant_sessions(database)
+    )
     events = EventBus()
     consumer = DurableEventConsumer(factory, events)
     tenant = TenantContext(uuid4(), uuid4(), uuid4())
@@ -229,20 +237,11 @@ async def test_durable_consumer_rolls_back_receipt_and_side_effect_then_retries(
     should_fail = True
 
     async def handle(_: ProbeEvent, handling: EventHandlingContext) -> None:
-        handling.unit_of_work.add_outbox(
-            PendingOutboxMessage(
-                event_id=side_effect_id,
-                tenant_id=tenant.tenant_id,
-                event_type="test.probe.projected",
-                schema_version=1,
-                correlation_id=event.correlation_id,
-                payload={"projected": True},
-            )
-        )
+        await handling.persistence.insert("effects", {"id": side_effect_id})
         if should_fail:
             raise RuntimeError("projection failed")
 
-    events.subscribe(ProbeEvent, "test.retryable-projection", handle)
+    events.subscribe(ProbeEvent, "test.retryable-projection", handle, owner="test.projection")
     container = Container()
 
     async def deliver() -> int:
@@ -260,7 +259,7 @@ async def test_durable_consumer_rolls_back_receipt_and_side_effect_then_retries(
         assert (await unit_of_work.session.scalars(select(InboxReceipt))).all() == []
         assert (
             await unit_of_work.session.scalar(
-                select(OutboxMessage).where(OutboxMessage.id == side_effect_id)
+                select(EFFECTS.c.id).where(EFFECTS.c.id == side_effect_id)
             )
             is None
         )
@@ -273,7 +272,7 @@ async def test_durable_consumer_rolls_back_receipt_and_side_effect_then_retries(
         assert len((await unit_of_work.session.scalars(select(InboxReceipt))).all()) == 1
         assert (
             await unit_of_work.session.scalar(
-                select(OutboxMessage).where(OutboxMessage.id == side_effect_id)
+                select(EFFECTS.c.id).where(EFFECTS.c.id == side_effect_id)
             )
             is not None
         )
@@ -285,10 +284,14 @@ async def test_durable_consumer_rolls_back_receipt_and_side_effect_then_retries(
 @pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_durable_consumer_cancellation_rolls_back_and_remains_retryable(
+    subscriber_effects: None,
     migrated_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
-    factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    factory = SQLAlchemyUnitOfWorkFactory(
+        database.sessions, tenant_sessions=tenant_sessions(database)
+    )
     events = EventBus()
     consumer = DurableEventConsumer(factory, events)
     tenant = TenantContext(uuid4(), uuid4(), uuid4())
@@ -302,20 +305,11 @@ async def test_durable_consumer_cancellation_rolls_back_and_remains_retryable(
     release = asyncio.Event()
 
     async def handle(_: ProbeEvent, handling: EventHandlingContext) -> None:
-        handling.unit_of_work.add_outbox(
-            PendingOutboxMessage(
-                event_id=side_effect_id,
-                tenant_id=tenant.tenant_id,
-                event_type="test.probe.projected",
-                schema_version=1,
-                correlation_id=event.correlation_id,
-                payload={"projected": True},
-            )
-        )
+        await handling.persistence.insert("effects", {"id": side_effect_id})
         entered.set()
         await release.wait()
 
-    events.subscribe(ProbeEvent, "test.cancelled-projection", handle)
+    events.subscribe(ProbeEvent, "test.cancelled-projection", handle, owner="test.projection")
     container = Container()
 
     async def deliver() -> int:
@@ -336,7 +330,7 @@ async def test_durable_consumer_cancellation_rolls_back_and_remains_retryable(
         assert (await unit_of_work.session.scalars(select(InboxReceipt))).all() == []
         assert (
             await unit_of_work.session.scalar(
-                select(OutboxMessage).where(OutboxMessage.id == side_effect_id)
+                select(EFFECTS.c.id).where(EFFECTS.c.id == side_effect_id)
             )
             is None
         )
@@ -345,3 +339,33 @@ async def test_durable_consumer_cancellation_rolls_back_and_remains_retryable(
     assert await deliver() == 1
     await container.close()
     await database.close()
+
+
+@pytest.fixture
+def subscriber_effects(
+    migrated_database_url: str, postgres_migration_database_url: str
+) -> Iterator[None]:
+    import psycopg
+
+    with psycopg.connect(
+        postgres_migration_database_url.replace("postgresql+psycopg", "postgresql")
+    ) as connection:
+        connection.execute("CREATE SCHEMA mod_test_projection")
+        connection.execute(
+            "CREATE TABLE mod_test_projection.effects "
+            "(id UUID PRIMARY KEY, tenant_id UUID NOT NULL)"
+        )
+        connection.execute("ALTER TABLE mod_test_projection.effects ENABLE ROW LEVEL SECURITY")
+        connection.execute("ALTER TABLE mod_test_projection.effects FORCE ROW LEVEL SECURITY")
+        connection.execute(
+            "CREATE POLICY tenant_isolation ON mod_test_projection.effects TO businessos_app "
+            "USING (tenant_id = platform_security.current_tenant_id()) "
+            "WITH CHECK (tenant_id = platform_security.current_tenant_id())"
+        )
+        connection.execute("GRANT USAGE ON SCHEMA mod_test_projection TO businessos_app")
+        connection.execute("GRANT SELECT, INSERT ON mod_test_projection.effects TO businessos_app")
+    yield
+    with psycopg.connect(
+        postgres_migration_database_url.replace("postgresql+psycopg", "postgresql")
+    ) as connection:
+        connection.execute("DROP SCHEMA mod_test_projection CASCADE")

@@ -1,5 +1,5 @@
 """Uvicorn import target."""
 
-from businessos.bootstrap import create_application
+from businessos.bootstrap import create_installed_application
 
-application = create_application()
+application = create_installed_application()

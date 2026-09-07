@@ -202,6 +202,7 @@ class BusinessOSApplication:
                 await self._requests_drained.wait()
         except BaseException as exc:
             errors.append(exc)
+            await self._requests_drained.wait()
         errors.extend(
             await self._run_cleanup_hooks(
                 [component.shutdown for component in reversed(self._started_components)],
@@ -295,8 +296,9 @@ class BusinessOSApplication:
             task.cancel()
             await asyncio.sleep(0)
         if not task.done():
-            task.add_done_callback(BusinessOSApplication._consume_task_result)
-            raise RuntimeError("Application lifecycle hook resisted cancellation")
+            # Never report terminal shutdown while framework-owned work survives.
+            # The ASGI process supervisor owns any hard process deadline.
+            await BusinessOSApplication._await_cleanup(task)
         try:
             task.result()
         except asyncio.CancelledError:
@@ -357,97 +359,101 @@ class BusinessOSApplication:
         trace_id: str,
     ) -> None:
         admitted = False
-        generated_context = RequestContext(trace_id=trace_id)
-        response_context = generated_context
         try:
-            if not self._is_operational_path(scope["path"]):
-                if self.state is not ApplicationState.RUNNING:
-                    raise BusinessOSError(
-                        "service_unavailable",
-                        "Application is not accepting requests",
-                        status_code=503,
-                        public=True,
-                    )
-                self._active_requests += 1
-                self._requests_drained.clear()
-                admitted = True
-            identity = RequestIdentity(
-                method=scope["method"],
-                path=scope["path"],
-                headers=headers,
-                correlation_id=headers.get("x-correlation-id", generated_context.correlation_id),
-                trace_id=trace_id,
-            )
-            context = await self._context_resolver.resolve(identity)
-            response_context = context
-            match = self.router.match(scope["method"], scope["path"])
-            request = Request(
-                scope,
-                receive,
-                context,
-                path_params=match.path_params,
-                body_limit_bytes=self.settings.request_body_limit_bytes,
-            )
-            await request.body()
-            dependency_scope = (
-                RequestDependencyScope(self.container)
-                if self._is_operational_path(scope["path"])
-                and self.state in {ApplicationState.STOPPED, ApplicationState.FAILED}
-                else self.container.request_scope()
-            )
-            async with dependency_scope as dependencies:
-                endpoint = self._endpoint(
-                    match.route.handler,
-                    dependencies,
-                    permission=match.route.permission,
+            generated_context = RequestContext(trace_id=trace_id)
+            response_context = generated_context
+            try:
+                if not self._is_operational_path(scope["path"]):
+                    if self.state is not ApplicationState.RUNNING:
+                        raise BusinessOSError(
+                            "service_unavailable",
+                            "Application is not accepting requests",
+                            status_code=503,
+                            public=True,
+                        )
+                    self._active_requests += 1
+                    self._requests_drained.clear()
+                    admitted = True
+                identity = RequestIdentity(
+                    method=scope["method"],
+                    path=scope["path"],
+                    headers=headers,
+                    correlation_id=headers.get(
+                        "x-correlation-id", generated_context.correlation_id
+                    ),
+                    trace_id=trace_id,
                 )
-                module_middleware = self.runtime.middleware.active() if self.runtime else ()
-                response = await self._run_request_until_disconnect(
-                    compose_middleware((*self._middleware, *module_middleware), endpoint),
-                    request,
+                context = await self._context_resolver.resolve(identity)
+                response_context = context
+                match = self.router.match(scope["method"], scope["path"])
+                request = Request(
+                    scope,
                     receive,
+                    context,
+                    path_params=match.path_params,
+                    body_limit_bytes=self.settings.request_body_limit_bytes,
                 )
-        except ClientDisconnectedError:
-            return
-        except BusinessOSError as exc:
-            if not exc.public:
+                await request.body()
+                dependency_scope = (
+                    RequestDependencyScope(self.container)
+                    if self._is_operational_path(scope["path"])
+                    and self.state in {ApplicationState.STOPPED, ApplicationState.FAILED}
+                    else self.container.request_scope()
+                )
+                async with dependency_scope as dependencies:
+                    endpoint = self._endpoint(
+                        match.route.handler,
+                        dependencies,
+                        permission=match.route.permission,
+                    )
+                    module_middleware = self.runtime.middleware.active() if self.runtime else ()
+                    response = await self._run_request_until_disconnect(
+                        compose_middleware((*self._middleware, *module_middleware), endpoint),
+                        request,
+                        receive,
+                    )
+            except ClientDisconnectedError:
+                return
+            except BusinessOSError as exc:
+                if not exc.public:
+                    response = Response.json(
+                        {"code": "internal_error", "message": "Internal server error"},
+                        status_code=500,
+                    )
+                else:
+                    response = Response.json(
+                        exc.payload(),
+                        status_code=exc.status_code,
+                        headers=exc.headers,
+                    )
+            except ValidationError as exc:
+                response = Response.json(
+                    {
+                        "code": "validation_error",
+                        "message": "Request validation failed",
+                        "details": {"errors": _public_validation_errors(exc)},
+                    },
+                    status_code=422,
+                )
+            except Exception as exc:
+                self._logger.error(
+                    "Unhandled request failure",
+                    extra={"error_type": type(exc).__name__},
+                )
                 response = Response.json(
                     {"code": "internal_error", "message": "Internal server error"},
                     status_code=500,
                 )
-            else:
-                response = Response.json(
-                    exc.payload(),
-                    status_code=exc.status_code,
-                    headers=exc.headers,
-                )
-        except ValidationError as exc:
-            response = Response.json(
-                {
-                    "code": "validation_error",
-                    "message": "Request validation failed",
-                    "details": {"errors": _public_validation_errors(exc)},
-                },
-                status_code=422,
-            )
-        except Exception as exc:
-            self._logger.error(
-                "Unhandled request failure",
-                extra={"error_type": type(exc).__name__},
-            )
-            response = Response.json(
-                {"code": "internal_error", "message": "Internal server error"},
-                status_code=500,
-            )
+            response.headers.setdefault("x-correlation-id", response_context.correlation_id)
+            if scope["method"] == "HEAD":
+                response.body = b""
+            await response.send(send)
+
         finally:
             if admitted:
                 self._active_requests -= 1
                 if self._active_requests == 0:
                     self._requests_drained.set()
-        response.headers.setdefault("x-correlation-id", response_context.correlation_id)
-        if scope["method"] == "HEAD":
-            response.body = b""
-        await response.send(send)
 
     async def _run_request_until_disconnect(
         self,

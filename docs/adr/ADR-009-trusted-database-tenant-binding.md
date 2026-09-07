@@ -1,6 +1,6 @@
 # ADR-009: Trusted database tenant binding and module persistence authority
 
-Status: Proposed — blocks Phase 1 Release Hardening Batch A
+Status: Accepted — user approval in hardening task on 2026-09-07
 
 ## Current accepted rules
 
@@ -42,14 +42,14 @@ also makes hiding Python commit/rollback methods insufficient for blocker B.
 PostgreSQL documents [custom two-part settings](https://www.postgresql.org/docs/17/runtime-config-custom.html)
 and [SET/set_config equivalence](https://www.postgresql.org/docs/17/sql-set.html).
 
-## Proposed decision requiring approval
+## Accepted decision
 
 Replace unrestricted module SQL authority with a versioned, request-bound
 persistence capability, and establish tenant identity independently of
 module-controlled SQL. Retain PostgreSQL, SQLAlchemy, psycopg, Alembic, modular
 monolith deployment and framework-owned transactions.
 
-Preferred design for further security review:
+Approved implementation direction:
 
 - Authenticate each runtime database connection as a tenant-scoped login role.
   RLS resolves immutable `session_user` through an administrator-owned tenant-role
@@ -120,5 +120,5 @@ missing context, pooled-connection reuse, cross-tenant writes, inbox/outbox
 atomicity and SDK object-graph authority. No passing baseline suite substitutes
 for the currently failing tenant-binding gate.
 
-No runtime fix or migration is implemented by this proposal. Batch A, Phase 1
-release certification, and blockers A–F remain incomplete.
+Implementation and certification are tracked on the hardening branch. Acceptance
+of this ADR does not certify Batch A or Phase 1. All release gates remain required.

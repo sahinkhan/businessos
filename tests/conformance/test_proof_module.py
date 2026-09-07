@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -118,6 +119,7 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
 @pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_external_module_conforms_without_protected_core_edits(
+    tenant_urls: Callable[[TenantContext], dict[UUID, str]],
     postgres_database_url: str,
     postgres_migration_database_url: str,
 ) -> None:
@@ -135,6 +137,7 @@ async def test_external_module_conforms_without_protected_core_edits(
     )
     assert app.runtime is not None
     await app.runtime.migrations.upgrade_async(postgres_migration_database_url)
+    app.settings.tenant_database_urls.update(tenant_urls(tenant))
     await app.startup()
     assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.ENABLED
     transport = httpx.ASGITransport(app=cast(Any, app))

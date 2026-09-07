@@ -17,7 +17,7 @@ from businessos.errors import ConfigurationError, ConflictError
 T = TypeVar("T")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class DependencyKey[T]:
     """Typed identifier that keeps dependencies explicit across module boundaries."""
 
@@ -61,6 +61,7 @@ class Container:
         self._singleton_flights: dict[DependencyKey[Any], Task[object]] = {}
         self._singleton_waits: dict[DependencyKey[Any], set[DependencyKey[Any]]] = {}
         self._closed = False
+        self._close_task: Task[None] | None = None
 
     def register(
         self,
@@ -93,6 +94,12 @@ class Container:
         return RequestDependencyScope(self)
 
     async def close(self) -> None:
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close(), name="businessos-container-close")
+        await _finish_owned(self._close_task)
+
+    async def _close(self) -> None:
         self._closed = True
         flights = tuple(self._singleton_flights.values())
         for flight in flights:
@@ -208,7 +215,8 @@ class Container:
         stack = AsyncExitStack()
         await stack.__aenter__()
         try:
-            value = await self._provide(key, registration, resolver, stack)
+            singleton_resolver = _SingletonResolver(self, stack)
+            value = await self._provide(key, registration, singleton_resolver, stack)
             self._singletons[key] = value
             self._singleton_stacks[key] = stack
             self._singleton_order.append(key)
@@ -315,8 +323,11 @@ class RequestDependencyScope(
         self._cache: dict[DependencyKey[Any], object] = {}
         self._exit_stack = AsyncExitStack()
         self._entered = False
+        self._close_task: Task[None] | None = None
 
     async def __aenter__(self) -> "RequestDependencyScope":
+        if self._entered or self._close_task is not None:
+            raise ConfigurationError("Dependency scopes cannot be reused")
         await self._exit_stack.__aenter__()
         self._entered = True
         return self
@@ -328,10 +339,47 @@ class RequestDependencyScope(
         traceback: TracebackType | None,
     ) -> None:
         self._entered = False
-        await self._exit_stack.__aexit__(exc_type, exc_value, traceback)
-        self._cache.clear()
+        if self._close_task is None:
+
+            async def close() -> None:
+                try:
+                    await self._exit_stack.__aexit__(exc_type, exc_value, traceback)
+                finally:
+                    self._cache.clear()
+
+            self._close_task = asyncio.create_task(close(), name="businessos-request-scope-close")
+        await _finish_owned(self._close_task)
 
     async def resolve(self, key: DependencyKey[T]) -> T:
         if not self._entered:
             raise ConfigurationError("Dependency scope must be entered before resolution")
         return await self._container.resolve_for_scope(key, self._cache, self._exit_stack, self)
+
+
+async def _finish_owned(task: Task[None]) -> None:
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+class _SingletonResolver:
+    def __init__(self, container: Container, stack: AsyncExitStack) -> None:
+        self._container = container
+        self._stack = stack
+
+    async def resolve[T](self, key: DependencyKey[T]) -> T:
+        registration = self._container._registrations.get(key)
+        if registration is not None and registration.scope is DependencyScope.REQUEST:
+            raise ConfigurationError(
+                "Singleton dependencies cannot capture request-scoped resources"
+            )
+        return await self._container.resolve_for_scope(key, {}, self._stack, self)

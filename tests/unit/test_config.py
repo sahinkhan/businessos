@@ -5,7 +5,7 @@ from businessos.config import Settings
 
 
 def test_settings_require_psycopg_sqlalchemy_dialect() -> None:
-    with pytest.raises(ValidationError, match=r"postgresql\+psycopg"):
+    with pytest.raises(ValidationError, match="Invalid runtime configuration"):
         Settings(database_url="sqlite+aiosqlite://")
 
 

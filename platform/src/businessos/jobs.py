@@ -115,6 +115,7 @@ class JobHandlerRegistry(OwnedRegistry[JobHandler]):
     ) -> None:
         super().__init__("job handler", gate)
         self._authorizer = authorizer
+        self._versions: dict[str, int] = {}
         self._permissions: dict[tuple[str, ContributionGeneration | None], str | None] = {}
 
     def add(
@@ -125,9 +126,41 @@ class JobHandlerRegistry(OwnedRegistry[JobHandler]):
         *,
         generation: ContributionGeneration | None = None,
         permission: str | None = None,
+        version: int = 1,
     ) -> None:
-        self.register(job_type, owner, handler, generation=generation)
+        if version < 1:
+            raise ValueError("Job version must be positive")
+        self._versions[job_type] = version
+
+        async def guarded(
+            job: Job, context: RequestContext, dependencies: RequestDependencyScope
+        ) -> None:
+            if job.version != version:
+                raise BusinessOSError(
+                    "unsupported_version", "Unsupported job version", status_code=409
+                )
+            await handler(job, context, dependencies)
+
+        self.register(job_type, owner, guarded, generation=generation)
         self._permissions[(job_type, generation)] = permission
+
+    def get(self, name: str) -> JobHandler:
+        entry = self.resolve(name)
+
+        async def invoke_retained(
+            job: Job, context: RequestContext, dependencies: RequestDependencyScope
+        ) -> None:
+            async with self.admit_entry(entry) as handler:
+                if context.tenant is None or context.tenant.tenant_id != job.tenant_id:
+                    raise BusinessOSError("forbidden", "Job tenant mismatch", status_code=403)
+                permission = self._permissions.get((entry.name, entry.generation))
+                if permission is not None:
+                    if self._authorizer is None:
+                        raise RuntimeError("Authorized job dispatch requires an authorizer")
+                    await self._authorizer.require(context, permission)
+                await handler(job, context, dependencies)
+
+        return invoke_retained
 
     async def invoke(
         self,

@@ -2,16 +2,28 @@
   "module_id": "example.phase1-proof",
   "name": "Phase 1 Architecture Proof",
   "publisher": "BusinessOS Examples",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "platform": ">=0.1,<1",
-  "sdk": ">=0.1,<1",
+  "sdk": ">=0.2,<0.3",
   "python": ">=3.13",
   "execution_type": "in_process",
   "entry_point": "businessos_proof:ProofModule",
   "dependencies": [],
-  "capabilities": ["object-storage"],
-  "permissions": ["example.phase1-proof.read", "example.phase1-proof.write"],
-  "migrations": ["python://businessos_proof/migrations/versions"],
+  "capabilities": [
+    "object-storage"
+  ],
+  "permissions": [
+    "example.phase1-proof.read",
+    "example.phase1-proof.write"
+  ],
+  "migrations": [
+    "python://businessos_proof/migrations/versions"
+  ],
   "migration_namespace": "module_example_phase1_proof",
-  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+  "supported_tenancy_modes": [
+    "dedicated",
+    "database_per_tenant",
+    "shared_schema"
+  ],
+  "sdk_api_version": 2
 }

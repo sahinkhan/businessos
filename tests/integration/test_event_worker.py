@@ -1,8 +1,9 @@
 import asyncio
 import json
 import os
+from collections.abc import Callable
 from typing import ClassVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import boto3
 import psycopg
@@ -25,7 +26,7 @@ from businessos.persistence import (
     SQLAlchemyUnitOfWorkFactory,
 )
 from businessos.providers import NatsJetStreamPublisher, S3ObjectStorageProvider
-from tests.conftest import PostgreSQLTestDatabase
+from tests.conftest import PostgreSQLTestDatabase, TenantSessions
 
 
 def _required_env(name: str) -> str:
@@ -61,7 +62,8 @@ class _SubscriberModule:
             publisher="businessos-tests",
             version="1.0.0",
             platform=">=0.1,<1",
-            sdk=">=0.1,<1",
+            sdk=">=0.2,<0.3",
+            sdk_api_version=2,
             entry_point="tests.integration.test_event_worker:_SubscriberModule",
         )
         self._calls = calls
@@ -93,10 +95,12 @@ class _SubscriberModule:
 async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_idempotency(
     postgres_database: PostgreSQLTestDatabase,
     request: pytest.FixtureRequest,
+    tenant_sessions: TenantSessions,
+    tenant_urls: Callable[[TenantContext], dict[UUID, str]],
 ) -> None:
     runtime_url = postgres_database.runtime_url
     operations_url = postgres_database.operations_url
-    migration_modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    migration_modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
     migration_modules.add(ProofModule())
     migrations = MigrationCoordinator(migration_modules)
     await migrations.upgrade_async(postgres_database.migration_url)
@@ -128,6 +132,7 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
         nats_url=_required_env("BOS_TEST_NATS_URL"),
         installation_id=tenant.installation_id,
         principal_id=tenant.principal_id,
+        tenant_database_urls=tenant_urls(tenant),
         permissions="example.phase1-proof.write,example.phase1-proof.read",
         durable_name=durable_name,
         publish_interval_seconds=0.02,
@@ -168,7 +173,9 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     inspection_database = Database(
         first_worker.application.settings.model_copy(update={"database_url": runtime_url})
     )
-    inspection_factory = SQLAlchemyUnitOfWorkFactory(inspection_database.sessions)
+    inspection_factory = SQLAlchemyUnitOfWorkFactory(
+        inspection_database.sessions, tenant_sessions=tenant_sessions(inspection_database)
+    )
     async with inspection_factory.for_tenant(tenant) as unit_of_work:
         assert unit_of_work.session is not None
         outbox = (
@@ -274,8 +281,10 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
 @pytest.mark.asyncio
 async def test_subscriber_obligations_survive_worker_recreation(
     postgres_database: PostgreSQLTestDatabase,
+    tenant_sessions: TenantSessions,
+    tenant_urls: Callable[[TenantContext], dict[UUID, str]],
 ) -> None:
-    migrations = MigrationCoordinator(ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0"))
+    migrations = MigrationCoordinator(ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0"))
     await migrations.upgrade_async(postgres_database.migration_url)
     tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="test")
     durable_name = f"businessos-obligations-{uuid4().hex}"
@@ -285,6 +294,7 @@ async def test_subscriber_obligations_survive_worker_recreation(
         nats_url=_required_env("BOS_TEST_NATS_URL"),
         installation_id=tenant.installation_id,
         principal_id=tenant.principal_id,
+        tenant_database_urls=tenant_urls(tenant),
         durable_name=durable_name,
         publish_interval_seconds=0.02,
     )
@@ -363,7 +373,9 @@ async def test_subscriber_obligations_survive_worker_recreation(
         ("example.obligation-b.projection", "example.obligation-b"),
     }
     runtime_inspection = Database(Settings(database_url=postgres_database.runtime_url))
-    runtime_factory = SQLAlchemyUnitOfWorkFactory(runtime_inspection.sessions)
+    runtime_factory = SQLAlchemyUnitOfWorkFactory(
+        runtime_inspection.sessions, tenant_sessions=tenant_sessions(runtime_inspection)
+    )
     async with runtime_factory.for_tenant(tenant) as unit_of_work:
         assert unit_of_work.session is not None
         receipts = (
@@ -384,6 +396,8 @@ async def test_subscriber_obligations_survive_worker_recreation(
 async def test_worker_stop_retains_real_uow_cleanup_until_backend_closes(
     postgres_database: PostgreSQLTestDatabase,
     monkeypatch: pytest.MonkeyPatch,
+    tenant_sessions: TenantSessions,
+    tenant_urls: Callable[[TenantContext], dict[UUID, str]],
 ) -> None:
     settings = EventWorkerSettings(
         runtime_database_url=postgres_database.runtime_url,

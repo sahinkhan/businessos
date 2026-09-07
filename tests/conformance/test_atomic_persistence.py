@@ -13,10 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
 from businessos.di import Container, RequestDependencyScope
+from businessos.errors import ConfigurationError
 from businessos.messages import Command, DomainEvent, EventBus, HandlingContext, MessageDispatcher
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
+from tests.conftest import TenantSessions
 
 
 class AtomicProbe(Command):
@@ -53,7 +55,7 @@ async def _migrated_proof_database(
 ) -> AsyncGenerator[Database]:
     from businessos_proof import ProofModule
 
-    modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
     modules.add(ProofModule())
     migrations = MigrationCoordinator(modules)
     await migrations.upgrade_async(migration_url)
@@ -90,13 +92,14 @@ def _handler(
 ) -> Callable[[AtomicProbe, HandlingContext], Awaitable[object]]:
     async def handle(command: AtomicProbe, context: HandlingContext) -> object:
         assert context.request.tenant is not None
-        await context.unit_of_work.persistence.execute(
-            insert(PROOF_RECORDS).values(
-                id=command.record_id,
-                tenant_id=state_tenant or context.request.tenant.tenant_id,
-                command_id=uuid4(),
-                value=command.value,
-            )
+        await context.persistence.insert(
+            "proof_records",
+            {
+                "id": command.record_id,
+                "tenant_id": state_tenant or context.request.tenant.tenant_id,
+                "command_id": uuid4(),
+                "value": command.value,
+            },
         )
         context.emit(
             AtomicProbeStored(
@@ -133,11 +136,14 @@ async def _dispatch(
 async def test_handler_exception_and_cancellation_roll_back_state_and_outbox(
     postgres_database_url: str,
     postgres_migration_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     async with _migrated_proof_database(
         postgres_database_url, postgres_migration_database_url
     ) as database:
-        factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+        factory = SQLAlchemyUnitOfWorkFactory(
+            database.sessions, tenant_sessions=tenant_sessions(database)
+        )
         dispatcher = MessageDispatcher(factory, EventBus())
         tenant = _tenant()
         container = Container()
@@ -147,7 +153,7 @@ async def test_handler_exception_and_cancellation_roll_back_state_and_outbox(
 
         dispatcher.commands.register(
             AtomicProbe,
-            "test.handler_failure",
+            "example.phase1-proof",
             _handler(after_write=fail_after_write),
         )
         failed = AtomicProbe(record_id=uuid4(), event_id=uuid4(), value="handler-failure")
@@ -171,7 +177,7 @@ async def test_handler_exception_and_cancellation_roll_back_state_and_outbox(
         cancellation_dispatcher = MessageDispatcher(factory, EventBus())
         cancellation_dispatcher.commands.register(
             AtomicProbe,
-            "test.cancellation",
+            "example.phase1-proof",
             _handler(after_write=wait_for_cancellation),
         )
         cancelled = AtomicProbe(record_id=uuid4(), event_id=uuid4(), value="cancelled")
@@ -197,19 +203,22 @@ async def test_handler_exception_and_cancellation_roll_back_state_and_outbox(
 async def test_state_outbox_and_commit_failures_are_atomic(
     postgres_database_url: str,
     postgres_migration_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     async with _migrated_proof_database(
         postgres_database_url, postgres_migration_database_url
     ) as database:
         tenant = _tenant()
         container = Container()
-        factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+        factory = SQLAlchemyUnitOfWorkFactory(
+            database.sessions, tenant_sessions=tenant_sessions(database)
+        )
 
         outbox_failure = AtomicProbe(record_id=uuid4(), event_id=uuid4(), value="outbox-failure")
         dispatcher = MessageDispatcher(factory, EventBus())
         dispatcher.commands.register(
             AtomicProbe,
-            "test.outbox_failure",
+            "example.phase1-proof",
             _handler(correlation_id="x" * 101),
         )
         async with container.request_scope() as dependencies:
@@ -226,11 +235,11 @@ async def test_state_outbox_and_commit_failures_are_atomic(
         state_dispatcher = MessageDispatcher(factory, EventBus())
         state_dispatcher.commands.register(
             AtomicProbe,
-            "test.state_failure",
+            "example.phase1-proof",
             _handler(state_tenant=uuid4()),
         )
         async with container.request_scope() as dependencies:
-            with pytest.raises(DBAPIError):
+            with pytest.raises(ConfigurationError):
                 await _dispatch(state_dispatcher, state_failure, tenant, dependencies)
         assert await asyncio.to_thread(
             _stored_counts,
@@ -240,7 +249,7 @@ async def test_state_outbox_and_commit_failures_are_atomic(
         ) == (0, 0)
 
         failing_sessions = async_sessionmaker(
-            bind=database.engine,
+            bind=tenant_sessions(database)(tenant).kw["bind"],
             class_=FailingCommitSession,
             autoflush=False,
             expire_on_commit=False,
@@ -250,7 +259,7 @@ async def test_state_outbox_and_commit_failures_are_atomic(
         )
         commit_dispatcher.commands.register(
             AtomicProbe,
-            "test.commit_failure",
+            "example.phase1-proof",
             _handler(),
         )
         commit_failure = AtomicProbe(record_id=uuid4(), event_id=uuid4(), value="commit-failure")
@@ -271,11 +280,14 @@ async def test_state_outbox_and_commit_failures_are_atomic(
 async def test_runtime_rls_blocks_cross_tenant_proof_mutations(
     postgres_database_url: str,
     postgres_migration_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     async with _migrated_proof_database(
         postgres_database_url, postgres_migration_database_url
     ) as database:
-        factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+        factory = SQLAlchemyUnitOfWorkFactory(
+            database.sessions, tenant_sessions=tenant_sessions(database)
+        )
         tenant_a = _tenant()
         tenant_b = _tenant()
         record_a = uuid4()

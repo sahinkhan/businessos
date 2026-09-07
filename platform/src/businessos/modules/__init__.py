@@ -8,7 +8,7 @@ from businessos.modules.registry import (
     ModuleState,
     UpgradeCoordinator,
 )
-from businessos.modules.sdk import BusinessOSModule, ModuleRegistration
+from businessos.modules.sdk import BusinessOSModule, ModuleRegistration, RegistrationController
 
 __all__ = [
     "BusinessOSModule",
@@ -19,6 +19,7 @@ __all__ = [
     "ModuleRegistration",
     "ModuleRegistry",
     "ModuleState",
+    "RegistrationController",
     "UpgradeCoordinator",
     "discover_modules",
 ]

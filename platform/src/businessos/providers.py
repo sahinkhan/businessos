@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import UUID
 
-from businessos.activation import ContributionGate
+from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.registry import OwnedRegistry
 
 
@@ -223,7 +223,7 @@ class NatsJetStreamPublisher:
             stream=self._stream_name,
             cb=deliver,
             manual_ack=True,
-            deliver_policy=DeliverPolicy.NEW,
+            deliver_policy=DeliverPolicy.ALL,
         )
         subscription = _NatsSubscription(
             raw_subscription,
@@ -338,3 +338,32 @@ class S3ObjectStorageProvider:
 
     async def readiness(self) -> None:
         await asyncio.to_thread(self._client.head_bucket, Bucket=self._bucket)
+
+
+class RevocableProvider:
+    """Guard every retained module-provider method against its activation generation."""
+
+    __slots__ = ("__gate", "__generation", "__value")
+
+    def __init__(
+        self, value: object, gate: ContributionGate, generation: "ContributionGeneration"
+    ) -> None:
+        self.__value = value
+        self.__gate = gate
+        self.__generation = generation
+
+    def __getattr__(self, name: str) -> object:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        method = getattr(self.__value, name)
+        if not callable(method):
+            raise AttributeError("Module providers expose callable operations only")
+
+        async def invoke(*args: object, **kwargs: object) -> object:
+            async with self.__gate.admit(self.__generation):
+                result = method(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+
+        return invoke

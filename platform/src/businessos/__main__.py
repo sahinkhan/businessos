@@ -26,7 +26,7 @@ from businessos.version import runtime_version
 
 
 def _migration_coordinator() -> MigrationCoordinator:
-    registry = ModuleRegistry(platform_version=runtime_version(), sdk_version="0.1.0")
+    registry = ModuleRegistry(platform_version=runtime_version(), sdk_version="0.2.0")
     for module in discover_modules():
         registry.add(module)
     return MigrationCoordinator(registry)

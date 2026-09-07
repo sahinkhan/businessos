@@ -6,9 +6,8 @@ from typing import ClassVar
 from uuid import UUID, uuid4
 
 from pydantic import Field
-from sqlalchemy import Column, DateTime, MetaData, Table, Text, func, select
+from sqlalchemy import Column, DateTime, MetaData, Table, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.dialects.postgresql import insert
 
 from businessos.sdk import (
     MESSAGE_DISPATCHER,
@@ -137,19 +136,12 @@ class ProofModule:
     async def _store(self, command: StoreProof, context: HandlingContext) -> object:
         tenant = self._tenant(context.request)
         record_id = uuid4()
-        statement = (
-            insert(PROOF_RECORDS)
-            .values(
-                id=record_id,
-                tenant_id=tenant.tenant_id,
-                command_id=command.command_id,
-                value=command.value,
-            )
-            .on_conflict_do_nothing(index_elements=["tenant_id", "command_id"])
-            .returning(PROOF_RECORDS.c.id)
+        stored = await context.persistence.insert(
+            "proof_records",
+            {"id": record_id, "command_id": command.command_id, "value": command.value},
+            conflict=("tenant_id", "command_id"),
         )
-        result = await context.unit_of_work.persistence.execute(statement)
-        if result.scalar_one_or_none() is None:
+        if not stored:
             return {"stored": False}
         context.emit(
             ProofStored(
@@ -163,14 +155,14 @@ class ProofModule:
         return {"stored": True}
 
     async def _read(self, _: ReadProof, context: HandlingContext) -> object:
-        tenant = self._tenant(context.request)
-        result = await context.unit_of_work.persistence.execute(
-            select(PROOF_RECORDS.c.value)
-            .where(PROOF_RECORDS.c.tenant_id == tenant.tenant_id)
-            .order_by(PROOF_RECORDS.c.created_at.desc(), PROOF_RECORDS.c.id.desc())
-            .limit(1)
+        rows = await context.persistence.select(
+            "proof_records",
+            ("value",),
+            order_by=("created_at", "id"),
+            descending=True,
+            limit=1,
         )
-        value = result.scalar_one_or_none()
+        value = rows[0]["value"] if rows else None
         if value is None:
             raise BusinessOSError("not_found", "Proof value not found", status_code=404)
         return {"value": value}
@@ -180,14 +172,13 @@ class ProofModule:
         event: ProofStored,
         context: EventHandlingContext,
     ) -> None:
-        await context.unit_of_work.persistence.execute(
-            PROOF_RECORDS.update()
-            .where(PROOF_RECORDS.c.id == event.record_id)
-            .values(description="object-storage-projection")
+        await context.persistence.update(
+            "proof_records",
+            {"description": "object-storage-projection"},
+            where={"id": event.record_id},
         )
         storage = await context.dependencies.resolve(OBJECT_STORAGE)
         await storage.put(
-            event.tenant_id,
             "phase1-proof/value.txt",
             event.value.encode("utf-8"),
         )
@@ -198,12 +189,12 @@ class ProofModule:
     ) -> Response:
         command = StoreProof.model_validate(await request.json())
         dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
-        result = await dispatcher.command(command, request.context, dependencies)
+        result = await dispatcher.command(command)
         return Response.json(result, status_code=202)
 
     async def _read_route(self, request: Request, dependencies: RequestDependencyScope) -> Response:
         dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
-        result = await dispatcher.query(ReadProof(), request.context, dependencies)
+        result = await dispatcher.query(ReadProof())
         return Response.json(result)
 
     @staticmethod

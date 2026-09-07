@@ -18,8 +18,11 @@ from businessos.persistence import (
     InboxReceipt,
     OutboxMessage,
     SQLAlchemyUnitOfWorkFactory,
+    TransactionalPersistence,
+    UnitOfWork,
     UnitOfWorkFactory,
 )
+from businessos.persistence.repository import TenantRepository
 from businessos.providers import EventPublisher
 from businessos.telemetry import consumer_span
 
@@ -138,11 +141,32 @@ class DurableEventConsumer:
                         )
                         if not claimed:
                             continue
-                        await self._events.invoke_registered(
-                            subscriber,
-                            event,
-                            EventHandlingContext(traced_context, dependencies, unit_of_work),
-                        )
+                        from businessos.module_access import module_dependencies
+
+                        public_dependencies = module_dependencies(dependencies, traced_context)
+
+                        def persistence(
+                            current: UnitOfWork = unit_of_work,
+                        ) -> TransactionalPersistence:
+                            return current.persistence
+
+                        try:
+                            await self._events.invoke_registered(
+                                subscriber,
+                                event,
+                                EventHandlingContext(
+                                    traced_context,
+                                    public_dependencies,
+                                    TenantRepository(
+                                        persistence,
+                                        subscriber.owner,
+                                        tenant.tenant_id,
+                                        public_dependencies.check,
+                                    ),
+                                ),
+                            )
+                        finally:
+                            public_dependencies.close()
                         await unit_of_work.commit()
                         processed += 1
             return processed

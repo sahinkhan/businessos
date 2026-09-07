@@ -14,6 +14,7 @@ from businessos.persistence import (
     SQLAlchemyUnitOfWork,
     SQLAlchemyUnitOfWorkFactory,
 )
+from tests.conftest import TenantSessions
 
 
 def _settings(database_url: str) -> Settings:
@@ -30,9 +31,12 @@ def _settings(database_url: str) -> Settings:
 @pytest.mark.asyncio
 async def test_unit_of_work_commits_outbox_with_trusted_tenant_context(
     migrated_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
-    factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    factory = SQLAlchemyUnitOfWorkFactory(
+        database.sessions, tenant_sessions=tenant_sessions(database)
+    )
     tenant = TenantContext(
         installation_id=uuid4(),
         tenant_id=uuid4(),
@@ -51,9 +55,9 @@ async def test_unit_of_work_commits_outbox_with_trusted_tenant_context(
     async with factory.for_tenant(tenant) as unit_of_work:
         assert unit_of_work.session is not None
         configured_tenant = await unit_of_work.session.scalar(
-            text("SELECT current_setting('app.tenant_id', true)")
+            text("SELECT platform_security.current_tenant_id()")
         )
-        assert configured_tenant == str(tenant.tenant_id)
+        assert configured_tenant == tenant.tenant_id
         unit_of_work.add_outbox(message)
         await unit_of_work.commit()
 
@@ -70,9 +74,12 @@ async def test_unit_of_work_commits_outbox_with_trusted_tenant_context(
 @pytest.mark.asyncio
 async def test_unit_of_work_rolls_back_without_explicit_commit(
     migrated_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
-    factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    factory = SQLAlchemyUnitOfWorkFactory(
+        database.sessions, tenant_sessions=tenant_sessions(database)
+    )
     tenant = TenantContext(
         installation_id=uuid4(),
         tenant_id=uuid4(),
@@ -106,15 +113,16 @@ async def test_unit_of_work_rolls_back_without_explicit_commit(
 @pytest.mark.asyncio
 async def test_unit_of_work_entry_cancellation_closes_real_pooled_session(
     migrated_database_url: str,
+    tenant_sessions: TenantSessions,
 ) -> None:
     database = Database(_settings(migrated_database_url))
     tenant = TenantContext(uuid4(), uuid4(), uuid4())
-    session = database.sessions()
+    session = tenant_sessions(database)(tenant)()
     execute_entered = asyncio.Event()
     hold_tenant_setup = asyncio.Event()
     cleanup_entered = asyncio.Event()
     release_cleanup = asyncio.Event()
-    real_execute = session.execute
+    real_execute = session.scalar
     real_rollback = session.rollback
 
     async def held_execute(*args: object, **kwargs: object) -> object:
@@ -128,7 +136,7 @@ async def test_unit_of_work_entry_cancellation_closes_real_pooled_session(
         await release_cleanup.wait()
         await real_rollback()
 
-    cast(Any, session).execute = held_execute
+    cast(Any, session).scalar = held_execute
     cast(Any, session).rollback = held_rollback
     unit_of_work = SQLAlchemyUnitOfWork(lambda: session, tenant)
     task = asyncio.create_task(unit_of_work.__aenter__())

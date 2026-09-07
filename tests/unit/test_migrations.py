@@ -1,10 +1,41 @@
+import io
+import logging
+import runpy
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from alembic import context
+from alembic.config import Config
 
 from businessos.errors import ConfigurationError, ConflictError
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleDependency, ModuleManifest, ModuleRegistry, ModuleState
+
+
+def test_migration_environment_keeps_existing_application_logger_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    logger = logging.getLogger("businessos.application")
+    monkeypatch.setattr(logger, "disabled", False)
+    monkeypatch.setattr(context, "config", Config(str(root / "alembic.ini")), raising=False)
+    monkeypatch.setattr(context, "is_offline_mode", lambda: True)
+    monkeypatch.setattr(context, "configure", MagicMock())
+    monkeypatch.setattr(context, "begin_transaction", MagicMock())
+    monkeypatch.setattr(context, "run_migrations", MagicMock())
+
+    runpy.run_path(str(root / "platform/src/businessos/migration_assets/env.py"))
+
+    assert not logger.disabled
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    logger.addHandler(handler)
+    try:
+        logger.error("Application logging remains available after migration")
+        assert "Application logging remains available after migration" in stream.getvalue()
+    finally:
+        logger.removeHandler(handler)
 
 
 class MigrationModule:
@@ -22,7 +53,8 @@ class MigrationModule:
             publisher="tests",
             version="1.0.0",
             platform=">=0.1,<1",
-            sdk=">=0.1,<1",
+            sdk=">=0.2,<0.3",
+            sdk_api_version=2,
             entry_point="tests:module",
             dependencies=dependencies,
             migrations=(str(location),),
@@ -66,7 +98,7 @@ def _revision(
 
 
 def _registry(*modules: MigrationModule) -> ModuleRegistry:
-    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
     for module in modules:
         registry.add(module)
     return registry
@@ -87,7 +119,7 @@ def test_plan_supports_core_and_two_independent_module_heads(tmp_path: Path) -> 
     plan = coordinator.plan()
 
     assert plan.heads == (
-        "0005_durable_event_subscribers",
+        "0006_trusted_tenant_binding",
         "alpha_0001",
         "beta_0001",
     )
@@ -129,7 +161,7 @@ def test_plan_supports_a_valid_cross_module_merge_revision(tmp_path: Path) -> No
         )
     ).plan()
 
-    assert plan.heads == ("0005_durable_event_subscribers", "merge_0001")
+    assert plan.heads == ("0006_trusted_tenant_binding", "merge_0001")
 
 
 def test_plan_rejects_duplicate_revision_and_branch_label(tmp_path: Path) -> None:

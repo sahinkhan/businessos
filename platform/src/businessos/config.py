@@ -2,12 +2,15 @@
 
 from functools import lru_cache
 from typing import Literal, Self
+from uuid import UUID
 
 from pydantic import Field, field_serializer, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+
+from businessos.secure_settings import SafeSettings
 
 
-class Settings(BaseSettings):
+class Settings(SafeSettings):
     """Environment-backed settings loaded once by the composition root."""
 
     model_config = SettingsConfigDict(
@@ -29,6 +32,18 @@ class Settings(BaseSettings):
         repr=False,
         exclude=True,
     )
+    tenant_database_urls: dict[UUID, str] = Field(default_factory=dict, repr=False, exclude=True)
+    maximum_tenant_pools: int = Field(default=100, ge=1, le=10000)
+    disabled_modules: tuple[str, ...] = ()
+    context_resolver_factory: str | None = None
+    policy_evaluator_factory: str | None = None
+    redis_url: str | None = Field(default=None, repr=False, exclude=True)
+    s3_bucket: str | None = None
+    s3_endpoint_url: str | None = Field(default=None, repr=False, exclude=True)
+    s3_access_key: str | None = Field(default=None, repr=False, exclude=True)
+    s3_secret_key: str | None = Field(default=None, repr=False, exclude=True)
+    s3_provision_bucket: bool = False
+
     database_pool_size: int = Field(default=5, ge=1, le=100)
     database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
     database_readiness_enabled: bool = True

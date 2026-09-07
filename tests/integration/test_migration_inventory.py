@@ -38,7 +38,8 @@ class HistoryModule:
             publisher="tests",
             version=version,
             platform=">=0.1,<1",
-            sdk=">=0.1,<1",
+            sdk=">=0.2,<0.3",
+            sdk_api_version=2,
             entry_point="tests:history",
             migrations=(str(location),),
             migration_namespace=namespace,
@@ -61,7 +62,7 @@ def _coordinator(
     namespace: str = "module_history",
     version: str = "1.0.0",
 ) -> MigrationCoordinator:
-    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
     registry.add(
         HistoryModule(
             location,
@@ -564,7 +565,7 @@ def test_inventory_is_append_only_and_tamper_detecting(
     assert _inventory(postgres_migration_database_url) == appended_inventory
     with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
-    assert heads == {"0005_durable_event_subscribers", "history_0003"}
+    assert heads == {"0006_trusted_tenant_binding", "history_0003"}
 
 
 @pytest.mark.integration
@@ -592,7 +593,7 @@ def test_concurrent_migrations_serialize_graph_and_inventory(
     assert [item["revision"] for item in inventory[-1]] == ["concurrent_history_0001"]
     with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
-    assert heads == {"0005_durable_event_subscribers", "concurrent_history_0001"}
+    assert heads == {"0006_trusted_tenant_binding", "concurrent_history_0001"}
 
 
 @pytest.mark.integration
@@ -643,7 +644,7 @@ async def test_real_task_cancellation_rolls_back_each_uncommitted_phase(
 
     await coordinator.upgrade_async(database_url)
     heads, inventory, table_exists = _database_snapshot(database_url, table)
-    assert set(heads) == {"0005_durable_event_subscribers", f"cancel_{phase}_0001"}
+    assert set(heads) == {"0006_trusted_tenant_binding", f"cancel_{phase}_0001"}
     assert inventory is not None
     assert table_exists
 
@@ -785,7 +786,7 @@ async def test_cancellation_after_commit_authorization_returns_durable_success(
     assert _migration_processes() == baseline_processes
     assert _migration_sessions(database_url, application_name) == 0
     heads, inventory, table_exists = _database_snapshot(database_url, table)
-    assert set(heads) == {"0005_durable_event_subscribers", "cancel_after_commit_0001"}
+    assert set(heads) == {"0006_trusted_tenant_binding", "cancel_after_commit_0001"}
     assert inventory is not None
     assert table_exists
     _assert_advisory_lock_available(database_url)
@@ -937,7 +938,7 @@ async def test_cleanup_diagnostic_does_not_replace_committed_outcome(
 
     assert _migration_sessions(database_url, application_name) == 0
     heads, inventory, table_exists = _database_snapshot(database_url, table)
-    assert set(heads) == {"0005_durable_event_subscribers", "cleanup_diagnostic_0001"}
+    assert set(heads) == {"0006_trusted_tenant_binding", "cleanup_diagnostic_0001"}
     assert inventory is not None
     assert table_exists
     _assert_advisory_lock_available(database_url)

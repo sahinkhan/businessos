@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.context import RequestContext
@@ -27,11 +27,16 @@ from businessos.messages import (
     Query,
 )
 from businessos.metadata import MetadataDeclaration, MetadataRegistry
+from businessos.module_access import (
+    ModuleDependencies,
+    module_dependencies,
+    restricted_dependencies,
+)
 from businessos.modules.manifest import ModuleManifest
 from businessos.permissions import PermissionDeclaration, PermissionRegistry
-from businessos.providers import ProviderRegistry
+from businessos.providers import ProviderRegistry, RevocableProvider
 
-RouteHandler = Callable[[Request, RequestDependencyScope], Awaitable[Response]]
+RouteHandler = Callable[[Request, ModuleDependencies], Awaitable[Response]]
 
 
 @runtime_checkable
@@ -46,7 +51,7 @@ class BusinessOSModule(Protocol):
     async def stop(self) -> None: ...
 
 
-class ModuleRegistration:
+class RegistrationController:
     """Owner-scoped SDK surface; modules cannot access mutable registries directly."""
 
     def __init__(
@@ -80,9 +85,21 @@ class ModuleRegistration:
         self._jobs = jobs
         self._gate = gate
         self._finished = False
+        self._sealed = False
+
+    def seal(self) -> None:
+        self._ensure_open()
+        self._sealed = True
+
+    def public(self) -> "ModuleRegistration":
+        return cast(
+            ModuleRegistration,
+            _RegistrationFacade({name: getattr(self, name) for name in _PUBLIC_METHODS}),
+        )
 
     def publish(self) -> None:
-        self._ensure_open()
+        if self._finished or not self._sealed:
+            raise RuntimeError("Only a sealed registration can be published")
         self._gate.publish(self.generation)
 
     async def deactivate(self, *, timeout_seconds: float) -> None:
@@ -149,7 +166,11 @@ class ModuleRegistration:
 
         async def admitted(request: Request, dependencies: RequestDependencyScope) -> Response:
             async with self._gate.admit(self.generation):
-                return await handler(request, dependencies)
+                public = module_dependencies(dependencies, request.context)
+                try:
+                    return await handler(request, public)
+                finally:
+                    public.close()
 
         self._router.add_route(
             method,
@@ -188,7 +209,7 @@ class ModuleRegistration:
         self._ensure_open()
         self._container.register(
             key,
-            provider,
+            lambda resolver: provider(restricted_dependencies(resolver)),
             scope=scope,
             owner=self.owner,
             generation=self.generation,
@@ -212,7 +233,7 @@ class ModuleRegistration:
         self._providers.register(
             capability,
             self.owner,
-            provider,
+            RevocableProvider(provider, self._gate, self.generation),
             generation=self.generation,
         )
 
@@ -276,18 +297,30 @@ class ModuleRegistration:
     def job(
         self,
         job_type: str,
-        handler: Callable[[Job, RequestContext, RequestDependencyScope], Awaitable[None]],
+        handler: Callable[[Job, RequestContext, ModuleDependencies], Awaitable[None]],
         *,
         permission: str | None = None,
+        version: int = 1,
     ) -> None:
         self._ensure_open()
         self._validate_permission(permission)
+
+        async def invoke(
+            job: Job, context: RequestContext, dependencies: RequestDependencyScope
+        ) -> None:
+            public = module_dependencies(dependencies, context)
+            try:
+                await handler(job, context, public)
+            finally:
+                public.close()
+
         self._jobs.add(
             job_type,
             self.owner,
-            handler,
+            invoke,
             generation=self.generation,
             permission=permission,
+            version=version,
         )
 
     def _validate_permission(self, permission: str | None) -> None:
@@ -303,5 +336,104 @@ class ModuleRegistration:
         self._permissions.get(permission)
 
     def _ensure_open(self) -> None:
-        if self._finished:
+        if self._finished or self._sealed:
             raise RuntimeError(f"Module registration is closed: {self.owner}")
+
+
+class ModuleRegistration(Protocol):
+    """Contribution declarations only; lifecycle authority stays in the framework."""
+
+    def route(
+        self,
+        method: str,
+        path: str,
+        handler: RouteHandler,
+        *,
+        name: str,
+        permission: str | None = None,
+    ) -> None: ...
+
+    def middleware(self, name: str, middleware: Middleware) -> None: ...
+
+    def dependency[T](
+        self,
+        key: DependencyKey[T],
+        provider: Callable[
+            [DependencyResolver],
+            T | Awaitable[T] | AbstractAsyncContextManager[T],
+        ],
+        *,
+        scope: DependencyScope = DependencyScope.TRANSIENT,
+    ) -> None: ...
+
+    def contract(self, name: str, contract: PublicContract) -> None: ...
+
+    def metadata(self, declaration: MetadataDeclaration) -> None: ...
+
+    def permission(self, declaration: PermissionDeclaration) -> None: ...
+
+    def provider(self, capability: str, provider: object) -> None: ...
+
+    def feature(self, flag: FeatureFlag) -> None: ...
+
+    def command[C: Command](
+        self,
+        command_type: type[C],
+        handler: Callable[[C, HandlingContext], Awaitable[object]],
+        *,
+        permission: str | None = None,
+    ) -> None: ...
+
+    def query[Q: Query](
+        self,
+        query_type: type[Q],
+        handler: Callable[[Q, HandlingContext], Awaitable[object]],
+        *,
+        permission: str | None = None,
+    ) -> None: ...
+
+    def event[E: DomainEvent](
+        self,
+        event_type: type[E],
+        subscriber: str,
+        handler: Callable[[E, EventHandlingContext], Awaitable[None]],
+        *,
+        permission: str | None = None,
+    ) -> None: ...
+
+    def job(
+        self,
+        job_type: str,
+        handler: Callable[[Job, RequestContext, ModuleDependencies], Awaitable[None]],
+        *,
+        permission: str | None = None,
+        version: int = 1,
+    ) -> None: ...
+
+
+_PUBLIC_METHODS = (
+    "route",
+    "middleware",
+    "dependency",
+    "contract",
+    "metadata",
+    "permission",
+    "provider",
+    "feature",
+    "command",
+    "query",
+    "event",
+    "job",
+)
+
+
+class _RegistrationFacade:
+    __slots__ = ("__methods",)
+
+    def __init__(self, methods: dict[str, Any]) -> None:
+        self.__methods = methods
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in _PUBLIC_METHODS:
+            raise AttributeError(name)
+        return self.__methods[name]

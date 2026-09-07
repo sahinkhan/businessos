@@ -9,7 +9,11 @@ from businessos_proof import ProofModule
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-from businessos.database_admin import DatabaseRolePasswords, transition_database_roles
+from businessos.database_admin import (
+    DatabaseRolePasswords,
+    provision_tenant_login,
+    transition_database_roles,
+)
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleRegistry
 
@@ -243,7 +247,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
             )
         assert repeated_runs == (None, None)
 
-        registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+        registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
         registry.add(ProofModule())
         MigrationCoordinator(registry).upgrade(migration_database_url)
 
@@ -292,7 +296,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
                 "SELECT oid FROM pg_database WHERE datname = current_database()"
             ).fetchone()
         assert retained == ("retained-value", "retained-description")
-        assert revisions == {("0005_durable_event_subscribers",), ("proof_0003",)}
+        assert revisions == {("proof_0004",)}
         assert roles == [
             ("businessos_app", False, False, False),
             ("businessos_migrator", False, False, False),
@@ -303,7 +307,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
         assert all(enabled and forced for _, _, enabled, forced in rls)
         assert inventory is not None
         assert inventory[0] == 2
-        assert inventory[1] == ["proof_0001", "proof_0002", "proof_0003"]
+        assert inventory[1] == ["proof_0001", "proof_0002", "proof_0003", "proof_0004"]
         assert [item["revision"] for item in inventory[2]] == inventory[1]
         assert transitioned_database_oid == (database_oid,)
 
@@ -317,7 +321,22 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
                 (record_id,),
             ).fetchone()
         assert missing_context_count == (0,)
-        assert own_record == ("retained-value",)
+        assert own_record is None
+        admin_database_url = (
+            make_url(admin_base).set(database=database_name).render_as_string(hide_password=False)
+        )
+        with psycopg.connect(admin_database_url) as connection:
+            role = provision_tenant_login(connection, tenant_id=tenant_id, password="test-only")
+        tenant_url = (
+            make_url(runtime_database_url)
+            .set(username=role, password="test-only")
+            .render_as_string(hide_password=False)
+        )
+        with psycopg.connect(tenant_url) as connection:
+            assert connection.execute(
+                "SELECT value FROM mod_example_phase1_proof.proof_records WHERE id = %s",
+                (record_id,),
+            ).fetchone() == ("retained-value",)
 
         security_before_repeat = _post_transition_security_snapshot(admin_database_url)
         transition_database_roles(admin_database_url, passwords)

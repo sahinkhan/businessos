@@ -68,10 +68,19 @@ class SQLAlchemyUnitOfWork:
         try:
             await self.session.begin()
             if self.tenant_context is not None:
-                await self.session.execute(
-                    text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-                    {"tenant_id": str(self.tenant_context.tenant_id)},
+                database_tenant = await self.session.scalar(
+                    text("SELECT platform_security.current_tenant_id()")
                 )
+                unsafe_role = await self.session.scalar(
+                    text(
+                        "SELECT rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb "
+                        "FROM pg_roles WHERE rolname = session_user"
+                    )
+                )
+                if unsafe_role is not False:
+                    raise ConfigurationError("Tenant database login has privileged role attributes")
+                if database_tenant != self.tenant_context.tenant_id:
+                    raise ConfigurationError("Database login does not match trusted tenant")
         except BaseException as entry_error:
             cleanup_errors, _ = await self._finish_session(rollback=True)
             if cleanup_errors:
@@ -207,12 +216,16 @@ class SQLAlchemyUnitOfWorkFactory:
         sessions: SessionFactory,
         *,
         system_sessions: SessionFactory | None = None,
+        tenant_sessions: Callable[[TenantContext], SessionFactory] | None = None,
     ) -> None:
         self._sessions = sessions
         self._system_sessions = system_sessions
+        self._tenant_sessions = tenant_sessions
 
     def for_tenant(self, context: TenantContext) -> SQLAlchemyUnitOfWork:
-        return SQLAlchemyUnitOfWork(self._sessions, context)
+        return SQLAlchemyUnitOfWork(
+            self._tenant_sessions(context) if self._tenant_sessions else self._sessions, context
+        )
 
     def system(self) -> SQLAlchemyUnitOfWork:
         if self._system_sessions is None:

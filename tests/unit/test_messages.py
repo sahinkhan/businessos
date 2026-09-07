@@ -21,7 +21,9 @@ from businessos.messages import (
     MessageDispatcher,
     Query,
 )
+from businessos.module_access import module_dependencies
 from businessos.persistence import PendingOutboxMessage, TransactionalPersistence, UnitOfWork
+from businessos.persistence.repository import Repository
 from businessos.security import Authorizer
 from businessos.telemetry import configure_telemetry, server_span
 
@@ -158,7 +160,7 @@ async def test_query_uses_read_transaction_without_commit() -> None:
     timeline: list[str] = []
     factory = FakeUnitOfWorkFactory(timeline)
     dispatcher = MessageDispatcher(factory, EventBus())
-    context = RequestContext()
+    context = RequestContext(tenant=TenantContext(uuid4(), uuid4(), uuid4()))
 
     async def handle(_: ReadName, __: HandlingContext) -> object:
         timeline.append("query")
@@ -257,7 +259,9 @@ async def test_query_and_event_permissions_are_enforced() -> None:
             await events.invoke(
                 subscriber,
                 event,
-                EventHandlingContext(context, dependencies, FakeUnitOfWork(timeline)),
+                EventHandlingContext(
+                    context, module_dependencies(dependencies, context), cast(Repository, object())
+                ),
             )
 
     assert query_error.value.code == "forbidden"

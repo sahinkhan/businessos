@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 import psycopg
 from psycopg import sql
@@ -106,8 +107,13 @@ def _set_tenant_policy(
     connection.execute(
         sql.SQL("DROP POLICY IF EXISTS {} ON {}").format(migration_policy, qualified)
     )
+    binding = connection.execute(
+        "SELECT to_regprocedure('platform_security.current_tenant_id()')"
+    ).fetchone()
     tenant_expression = sql.SQL(
-        "tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid"
+        "tenant_id = platform_security.current_tenant_id()"
+        if binding is not None and binding[0] is not None
+        else "tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid"
     )
     connection.execute(
         sql.SQL("CREATE POLICY {} ON {} TO {} USING ({}) WITH CHECK ({})").format(
@@ -312,3 +318,36 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
         raise
     except Exception:
         raise DatabaseTransitionError("database role transition failed") from None
+
+
+def provision_tenant_login(
+    connection: psycopg.Connection[tuple[object, ...]],
+    *,
+    tenant_id: UUID,
+    password: str,
+) -> str:
+    """Explicit administrator-only provisioning; never called by runtime startup.
+
+    The caller owns the administrative transaction. Existing mappings cannot be
+    reassigned; rotation updates only the password for this same tenant login.
+    PostgreSQL 17 membership options grant table privileges without SET ROLE.
+    """
+    role = "bos_tenant_" + tenant_id.hex
+    _ensure_role(connection, role, password, bypass_rls=False)
+    connection.execute(
+        sql.SQL("GRANT businessos_app TO {} WITH INHERIT TRUE, SET FALSE").format(
+            sql.Identifier(role)
+        )
+    )
+    row = connection.execute(
+        "SELECT tenant_id FROM platform_security.tenant_database_roles WHERE role_name = %s",
+        (role,),
+    ).fetchone()
+    if row is not None and row != (tenant_id,):
+        raise DatabaseTransitionError("Tenant login mapping cannot be reassigned")
+    connection.execute(
+        "INSERT INTO platform_security.tenant_database_roles (role_name, tenant_id) "
+        "VALUES (%s, %s) ON CONFLICT (role_name) DO NOTHING",
+        (role, tenant_id),
+    )
+    return role

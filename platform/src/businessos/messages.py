@@ -1,10 +1,15 @@
 """Framework-owned command, query and event contracts and dispatch."""
 
+from __future__ import annotations
+
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
+
+if TYPE_CHECKING:
+    from businessos.module_access import ModuleDependencies
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,6 +19,7 @@ from businessos.context import RequestContext
 from businessos.di import RequestDependencyScope
 from businessos.errors import ConflictError, DeliveryUnavailableError, NotFoundError
 from businessos.persistence import PendingOutboxMessage, UnitOfWork, UnitOfWorkFactory
+from businessos.persistence.repository import Repository, TenantRepository
 from businessos.security import Authorizer
 from businessos.telemetry import dispatch_span
 
@@ -61,11 +67,13 @@ EventHandler = Callable[[DomainEvent, "EventHandlingContext"], Awaitable[None]]
 @dataclass(slots=True)
 class HandlingContext:
     request: RequestContext
-    dependencies: RequestDependencyScope
-    unit_of_work: UnitOfWork
+    dependencies: ModuleDependencies
+    persistence: Repository
+    _enqueue: Callable[[PendingOutboxMessage], None]
     _events: list[DomainEvent] = field(default_factory=list[DomainEvent])
 
     def emit(self, event: DomainEvent) -> None:
+        self.dependencies.check()
         if self.request.tenant is None or event.tenant_id != self.request.tenant.tenant_id:
             raise ValueError("Event tenant must match the trusted request tenant")
         from businessos.telemetry import inject_trace_context
@@ -73,7 +81,7 @@ class HandlingContext:
         emitted = event
         if not event.trace_context:
             emitted = event.model_copy(update={"trace_context": inject_trace_context()})
-        self.unit_of_work.add_outbox(emitted.to_outbox())
+        self._enqueue(emitted.to_outbox())
         self._events.append(emitted)
 
     @property
@@ -86,8 +94,8 @@ class EventHandlingContext:
     """Public, transaction-bound context for one durable event delivery."""
 
     request: RequestContext
-    dependencies: RequestDependencyScope
-    unit_of_work: UnitOfWork
+    dependencies: ModuleDependencies
+    persistence: Repository
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,8 +413,26 @@ class MessageDispatcher:
                 await self._authorize(context, registered.permission)
                 unit_of_work = self._unit_of_work(context)
                 async with unit_of_work:
-                    handling = HandlingContext(context, dependencies, unit_of_work)
-                    result = await self.commands.invoke_registered(registered, message, handling)
+                    from businessos.module_access import module_dependencies
+
+                    public_dependencies = module_dependencies(dependencies, context)
+                    handling = HandlingContext(
+                        context,
+                        public_dependencies,
+                        TenantRepository(
+                            lambda: unit_of_work.persistence,
+                            registered.owner,
+                            self._tenant_id(context),
+                            public_dependencies.check,
+                        ),
+                        unit_of_work.add_outbox,
+                    )
+                    try:
+                        result = await self.commands.invoke_registered(
+                            registered, message, handling
+                        )
+                    finally:
+                        public_dependencies.close()
                     await unit_of_work.commit()
                 return result
 
@@ -422,8 +448,24 @@ class MessageDispatcher:
                 await self._authorize(context, registered.permission)
                 unit_of_work = self._unit_of_work(context)
                 async with unit_of_work:
-                    handling = HandlingContext(context, dependencies, unit_of_work)
-                    return await self.queries.invoke_registered(registered, message, handling)
+                    from businessos.module_access import module_dependencies
+
+                    public_dependencies = module_dependencies(dependencies, context)
+                    handling = HandlingContext(
+                        context,
+                        public_dependencies,
+                        TenantRepository(
+                            lambda: unit_of_work.persistence,
+                            registered.owner,
+                            self._tenant_id(context),
+                            public_dependencies.check,
+                        ),
+                        unit_of_work.add_outbox,
+                    )
+                    try:
+                        return await self.queries.invoke_registered(registered, message, handling)
+                    finally:
+                        public_dependencies.close()
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:
         if permission is None:
@@ -431,6 +473,12 @@ class MessageDispatcher:
         if self._authorizer is None:
             raise RuntimeError("Authorized message dispatch requires an authorizer")
         await self._authorizer.require(context, permission)
+
+    @staticmethod
+    def _tenant_id(context: RequestContext) -> UUID:
+        if context.tenant is None:
+            raise RuntimeError("Module persistence requires trusted tenant context")
+        return context.tenant.tenant_id
 
     def _unit_of_work(self, context: RequestContext) -> UnitOfWork:
         if context.tenant is None:

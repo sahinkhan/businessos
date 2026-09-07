@@ -17,15 +17,17 @@ from businessos.http.middleware import CallNext
 from businessos.jobs import Job
 from businessos.messages import Command, DomainEvent, EventHandlingContext, HandlingContext, Query
 from businessos.metadata import MetadataDeclaration
+from businessos.module_access import module_dependencies
 from businessos.modules import (
     ModuleDependency,
     ModuleManifest,
     ModuleRegistration,
     ModuleRegistry,
     ModuleState,
+    RegistrationController,
 )
 from businessos.permissions import PermissionDeclaration
-from businessos.persistence import UnitOfWork
+from businessos.persistence.repository import Repository
 from businessos.security import Authorizer, RequestIdentity
 
 
@@ -83,7 +85,8 @@ class ProofModule:
             publisher="example",
             version=version,
             platform=">=0.1,<1",
-            sdk=">=0.1,<1",
+            sdk=">=0.2,<0.3",
+            sdk_api_version=2,
             python=">=3.13",
             entry_point="proof:module",
             dependencies=dependencies,
@@ -189,7 +192,7 @@ async def test_module_lifecycle_registries_permissions_and_upgrade_plan() -> Non
 
 
 def test_module_registry_rejects_missing_and_circular_dependencies() -> None:
-    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
     registry.add(
         ProofModule(
             "example.a",
@@ -199,7 +202,7 @@ def test_module_registry_rejects_missing_and_circular_dependencies() -> None:
     with pytest.raises(ConfigurationError, match="missing module"):
         registry.ordered()
 
-    circular = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    circular = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
     circular.add(
         ProofModule(
             "example.a",
@@ -217,7 +220,7 @@ def test_module_registry_rejects_missing_and_circular_dependencies() -> None:
 
 
 def test_module_registry_rejects_duplicate_and_incompatible_modules() -> None:
-    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
     module = ProofModule()
     registry.add(module)
     with pytest.raises(ConflictError, match="already registered"):
@@ -225,7 +228,7 @@ def test_module_registry_rejects_duplicate_and_incompatible_modules() -> None:
 
     incompatible = ProofModule()
     incompatible.manifest = incompatible.manifest.model_copy(update={"python": ">=99"})
-    other = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    other = ModuleRegistry(platform_version="0.1.0", sdk_version="0.2.0")
     with pytest.raises(ConfigurationError, match="incompatible"):
         other.add(incompatible)
 
@@ -273,8 +276,9 @@ async def test_disable_unpublishes_contributions_and_reenable_uses_new_generatio
 
     await app.runtime.lifecycle.enable(module.manifest.module_id)
     second_registration = module.registrations[-1]
-    assert second_registration.generation.number > first_registration.generation.number
-    await first_registration.rollback()
+    assert second_registration is not first_registration
+    assert not hasattr(first_registration, "generation")
+    assert not hasattr(first_registration, "rollback")
     assert app.runtime.permissions.get("example.proof.read").description == "Read proof"
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         enabled = await client.get("/proof")
@@ -287,7 +291,7 @@ async def test_disable_unpublishes_contributions_and_reenable_uses_new_generatio
         app.router.match("GET", "/proof")
     with pytest.raises(NotFoundError):
         app.runtime.permissions.get("example.proof.read")
-    await second_registration.remove()
+    assert not hasattr(second_registration, "remove")
     with pytest.raises(ConfigurationError, match="Retired module"):
         await app.runtime.lifecycle.enable(module.manifest.module_id)
 
@@ -389,7 +393,12 @@ async def test_disable_stops_admission_then_drains_in_flight_route() -> None:
         disabling = asyncio.create_task(app.runtime.lifecycle.disable(module.manifest.module_id))
         await asyncio.sleep(0)
         assert (
-            app.runtime.contributions.state(module.registrations[-1].generation)
+            app.runtime.contributions.state(
+                cast(
+                    RegistrationController,
+                    app.runtime.modules.get(module.manifest.module_id).registration,
+                ).generation
+            )
             is ContributionState.DRAINING
         )
         refused = await client.get("/blocking")
@@ -542,7 +551,12 @@ async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> 
     startup = asyncio.create_task(app.startup())
     await start_entered.wait()
     assert (
-        app.runtime.contributions.state(module.registrations[-1].generation)
+        app.runtime.contributions.state(
+            cast(
+                RegistrationController,
+                app.runtime.modules.get(module.manifest.module_id).registration,
+            ).generation
+        )
         is ContributionState.STAGED
     )
 
@@ -572,7 +586,12 @@ async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> 
     release_start.set()
     await startup
     assert (
-        app.runtime.contributions.state(module.registrations[-1].generation)
+        app.runtime.contributions.state(
+            cast(
+                RegistrationController,
+                app.runtime.modules.get(module.manifest.module_id).registration,
+            ).generation
+        )
         is ContributionState.ACTIVE
     )
     assert app.runtime.contracts.get("example.surface.contract").version == "1"
@@ -585,7 +604,7 @@ async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> 
     job_handler = app.runtime.jobs.get("example.surface.job")
     assert command_handler.__name__ == "command"
     assert query_handler.__name__ == "query"
-    assert job_handler.__name__ == "job"
+    assert callable(job_handler)
     assert len(app.runtime.middleware.active()) == 1
     async with app.container.request_scope() as dependencies:
         assert await dependencies.resolve(SURFACE_DEPENDENCY) == "dependency"
@@ -599,8 +618,8 @@ async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> 
             surface_event,
             EventHandlingContext(
                 RequestContext(tenant=tenant),
-                dependencies,
-                cast(UnitOfWork, object()),
+                module_dependencies(dependencies, RequestContext(tenant=tenant)),
+                cast(Repository, object()),
             ),
         )
     assert events_seen == 1
@@ -649,7 +668,7 @@ async def test_enable_sequence_rolls_back_modules_started_before_later_failure()
     assert app.runtime is not None
 
     assert first.lifecycle == ["register", "start", "stop"]
-    assert first.registrations[0].generation.number == 1
+    assert not hasattr(first.registrations[0], "generation")
     assert app.runtime.modules.get("example.first").state is ModuleState.DISABLED
     with pytest.raises(NotFoundError):
         app.runtime.permissions.get("example.first.read")

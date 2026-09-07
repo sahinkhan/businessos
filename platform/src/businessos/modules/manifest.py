@@ -38,6 +38,7 @@ class ModuleManifest(BaseModel):
     version: str
     platform: str
     sdk: str
+    sdk_api_version: int = 1
     python: str = ">=3.13"
     execution_type: ModuleExecutionType = ModuleExecutionType.IN_PROCESS
     entry_point: str | None = None

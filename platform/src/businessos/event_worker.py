@@ -8,7 +8,7 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import make_url
@@ -34,10 +34,11 @@ from businessos.providers import (
     PermanentDeliveryError,
     S3ObjectStorageProvider,
 )
+from businessos.secure_settings import SafeSettings
 from businessos.security import Authorizer
 
 
-class EventWorkerSettings(BaseSettings):
+class EventWorkerSettings(SafeSettings):
     """Credentials and identity loaded only by the standalone event worker."""
 
     model_config = SettingsConfigDict(
@@ -47,9 +48,10 @@ class EventWorkerSettings(BaseSettings):
         extra="ignore",
     )
 
+    tenant_database_urls: dict[UUID, str] = Field(default_factory=dict, repr=False, exclude=True)
     runtime_database_url: str = Field(repr=False, exclude=True)
     operations_database_url: str = Field(repr=False, exclude=True)
-    nats_url: str = "nats://localhost:4222"
+    nats_url: str = Field(default="nats://localhost:4222", repr=False, exclude=True)
     installation_id: UUID
     principal_id: UUID
     permissions: str = ""
@@ -59,7 +61,7 @@ class EventWorkerSettings(BaseSettings):
     shutdown_timeout_seconds: float = Field(default=10.0, gt=0)
     process_shutdown_timeout_seconds: float = Field(default=60.0, gt=0)
     s3_bucket: str | None = None
-    s3_endpoint_url: str | None = None
+    s3_endpoint_url: str | None = Field(default=None, repr=False, exclude=True)
     s3_region_name: str | None = None
     s3_access_key: str | None = Field(default=None, repr=False, exclude=True)
     s3_secret_key: str | None = Field(default=None, repr=False, exclude=True)
@@ -469,6 +471,7 @@ def create_event_worker(
     application = create_application(
         Settings(
             database_url=settings.runtime_database_url,
+            tenant_database_urls=settings.tenant_database_urls,
             shutdown_timeout_seconds=settings.shutdown_timeout_seconds,
         ),
         modules=tuple(discover_modules()) if modules is None else modules,

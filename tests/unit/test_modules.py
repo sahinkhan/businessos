@@ -1,4 +1,5 @@
-from typing import Any, cast
+import asyncio
+from typing import Any, ClassVar, cast
 from uuid import uuid4
 
 import httpx
@@ -7,9 +8,13 @@ import pytest
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
-from businessos.errors import ConfigurationError, ConflictError
+from businessos.di import DependencyKey, DependencyScope
+from businessos.errors import ConfigurationError, ConflictError, NotFoundError
 from businessos.features import FeatureFlag
 from businessos.http import Request, Response
+from businessos.http.middleware import CallNext
+from businessos.jobs import Job
+from businessos.messages import Command, DomainEvent, HandlingContext, Query
 from businessos.metadata import MetadataDeclaration
 from businessos.modules import (
     ModuleDependency,
@@ -41,6 +46,25 @@ class FixedContextResolver:
         )
 
 
+class SurfaceCommand(Command):
+    pass
+
+
+class SurfaceQuery(Query):
+    pass
+
+
+class SurfaceEvent(DomainEvent):
+    event_type: ClassVar[str] = "example.surface.event"
+
+
+class SurfaceContract:
+    version = "1"
+
+
+SURFACE_DEPENDENCY = DependencyKey[str]("example.surface.dependency")
+
+
 class ProofModule:
     def __init__(
         self,
@@ -65,9 +89,11 @@ class ProofModule:
             migration_namespace=migration_namespace if migrations else None,
         )
         self.lifecycle: list[str] = []
+        self.registrations: list[ModuleRegistration] = []
 
     async def register(self, registration: ModuleRegistration) -> None:
         self.lifecycle.append("register")
+        self.registrations.append(registration)
         registration.permission(
             PermissionDeclaration(key=f"{self.manifest.module_id}.read", description="Read proof")
         )
@@ -214,3 +240,417 @@ async def test_protected_route_denies_anonymous_request() -> None:
 
     assert response.status_code == 401
     assert response.json()["code"] == "unauthenticated"
+
+
+@pytest.mark.asyncio
+async def test_disable_unpublishes_contributions_and_reenable_uses_new_generation() -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="test")
+    module = ProofModule()
+    app = create_application(
+        _settings(),
+        modules=(module,),
+        context_resolver=FixedContextResolver(tenant),
+        authorizer=Authorizer(AllowAllPolicy()),
+    )
+    await app.startup()
+    assert app.runtime is not None
+    first_registration = module.registrations[-1]
+
+    await app.runtime.lifecycle.disable(module.manifest.module_id)
+    with pytest.raises(NotFoundError):
+        app.runtime.permissions.get("example.proof.read")
+    with pytest.raises(NotFoundError):
+        app.runtime.metadata.get("example.proof.view")
+    with pytest.raises(NotFoundError):
+        app.runtime.features.is_enabled("example.proof.enabled")
+
+    transport = httpx.ASGITransport(app=cast(Any, app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        disabled = await client.get("/proof")
+    assert disabled.status_code == 404
+
+    await app.runtime.lifecycle.enable(module.manifest.module_id)
+    second_registration = module.registrations[-1]
+    assert second_registration.generation.number > first_registration.generation.number
+    await first_registration.rollback()
+    assert app.runtime.permissions.get("example.proof.read").description == "Read proof"
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        enabled = await client.get("/proof")
+    assert enabled.status_code == 200
+
+    await app.shutdown()
+    await app.runtime.lifecycle.retire(module.manifest.module_id)
+    assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.RETIRED
+    with pytest.raises(ConfigurationError, match="Retired module"):
+        await app.runtime.lifecycle.enable(module.manifest.module_id)
+
+
+@pytest.mark.asyncio
+async def test_failed_registration_rolls_back_all_staged_contributions() -> None:
+    class ConflictingModule(ProofModule):
+        async def register(self, registration: ModuleRegistration) -> None:
+            registration.permission(
+                PermissionDeclaration(key="example.conflict.read", description="Temporary")
+            )
+
+            async def endpoint(_: Request, __: object) -> Response:
+                return Response.text("never")
+
+            registration.route("GET", "/livez", endpoint, name="conflict")
+
+    module = ConflictingModule("example.conflict", migrations=())
+    app = create_application(_settings(), modules=(module,))
+    with pytest.raises(ConflictError):
+        await app.startup()
+    assert app.runtime is not None
+    assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.FAILED
+    with pytest.raises(NotFoundError):
+        app.runtime.permissions.get("example.conflict.read")
+    assert [route.path for route in app.router.routes].count("/livez") == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_start_rolls_back_staged_contributions_and_calls_stop() -> None:
+    class FailingStartModule(ProofModule):
+        async def start(self) -> None:
+            self.lifecycle.append("start")
+            raise RuntimeError("start failed")
+
+    module = FailingStartModule("example.failing", migrations=())
+    app = create_application(_settings(), modules=(module,))
+    with pytest.raises(RuntimeError, match="start failed"):
+        await app.startup()
+    assert app.runtime is not None
+    assert module.lifecycle == ["register", "start", "stop"]
+    assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.FAILED
+    with pytest.raises(NotFoundError):
+        app.runtime.permissions.get("example.failing.read")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_module_start_publishes_nothing() -> None:
+    start_entered = asyncio.Event()
+
+    class CancelledStartModule(ProofModule):
+        async def start(self) -> None:
+            self.lifecycle.append("start")
+            start_entered.set()
+            await asyncio.Event().wait()
+
+    module = CancelledStartModule("example.cancelled", migrations=())
+    app = create_application(_settings(), modules=(module,))
+    startup = asyncio.create_task(app.startup())
+    await start_entered.wait()
+    startup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await startup
+    assert app.runtime is not None
+
+    assert module.lifecycle == ["register", "start", "stop"]
+    assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.FAILED
+    with pytest.raises(NotFoundError):
+        app.runtime.permissions.get("example.cancelled.read")
+    with pytest.raises(NotFoundError):
+        app.router.match("GET", "/proof")
+
+
+@pytest.mark.asyncio
+async def test_disable_stops_admission_then_drains_in_flight_route() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingModule(ProofModule):
+        async def register(self, registration: ModuleRegistration) -> None:
+            self.lifecycle.append("register")
+            self.registrations.append(registration)
+
+            async def endpoint(_: Request, __: object) -> Response:
+                entered.set()
+                await release.wait()
+                return Response.text("done")
+
+            registration.route("GET", "/blocking", endpoint, name="blocking")
+
+    module = BlockingModule("example.blocking", migrations=())
+    app = create_application(_settings(), modules=(module,))
+    await app.startup()
+    assert app.runtime is not None
+    transport = httpx.ASGITransport(app=cast(Any, app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        in_flight = asyncio.create_task(client.get("/blocking"))
+        await entered.wait()
+        disabling = asyncio.create_task(app.runtime.lifecycle.disable(module.manifest.module_id))
+        await asyncio.sleep(0)
+        refused = await client.get("/blocking")
+        assert refused.status_code == 404
+        assert not disabling.done()
+        release.set()
+        assert (await in_flight).status_code == 200
+        await disabling
+    assert module.lifecycle == ["register", "start", "stop"]
+    await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_disable_timeout_fails_safe_and_can_finish_cleanup_on_retry() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingModule(ProofModule):
+        async def register(self, registration: ModuleRegistration) -> None:
+            self.registrations.append(registration)
+
+            async def endpoint(_: Request, __: object) -> Response:
+                entered.set()
+                await release.wait()
+                return Response.text("done")
+
+            registration.route("GET", "/timeout", endpoint, name="timeout")
+
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+psycopg://test:test@db/test",
+        database_readiness_enabled=False,
+        shutdown_timeout_seconds=0.01,
+    )
+    module = BlockingModule("example.timeout", migrations=())
+    app = create_application(settings, modules=(module,))
+    await app.startup()
+    assert app.runtime is not None
+    transport = httpx.ASGITransport(app=cast(Any, app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        request = asyncio.create_task(client.get("/timeout"))
+        await entered.wait()
+        with pytest.raises(TimeoutError):
+            await app.runtime.lifecycle.disable(module.manifest.module_id)
+        assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.FAILED
+        assert (await client.get("/timeout")).status_code == 404
+        release.set()
+        assert (await request).status_code == 200
+        await app.runtime.lifecycle.disable(module.manifest.module_id)
+
+    assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.DISABLED
+    await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_enable_disable_is_idempotent() -> None:
+    module = ProofModule("example.concurrent", migrations=())
+    app = create_application(_settings(), modules=(module,))
+    await app.startup()
+    assert app.runtime is not None
+    await asyncio.gather(
+        *(app.runtime.lifecycle.disable(module.manifest.module_id) for _ in range(20))
+    )
+    await asyncio.gather(
+        *(app.runtime.lifecycle.enable(module.manifest.module_id) for _ in range(20))
+    )
+    assert module.lifecycle == ["register", "start", "stop", "register", "start"]
+    await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> None:
+    start_entered = asyncio.Event()
+    release_start = asyncio.Event()
+    events_seen = 0
+
+    class SurfaceMiddleware:
+        async def __call__(self, request: Request, call_next: CallNext) -> Response:
+            response = await call_next(request)
+            response.headers["x-surface-middleware"] = "active"
+            return response
+
+    class SurfaceModule(ProofModule):
+        async def register(self, registration: ModuleRegistration) -> None:
+            self.registrations.append(registration)
+            registration.permission(
+                PermissionDeclaration(key="example.surface.read", description="Read surface")
+            )
+            registration.metadata(
+                MetadataDeclaration(
+                    key="example.surface.view",
+                    kind="view",
+                    value={"title": "Surface"},
+                )
+            )
+            registration.feature(
+                FeatureFlag(
+                    key="example.surface.enabled",
+                    description="Surface enabled",
+                    default=True,
+                )
+            )
+            registration.contract("example.surface.contract", SurfaceContract())
+            registration.provider("example.surface.provider", object())
+            registration.dependency(
+                SURFACE_DEPENDENCY,
+                lambda _: "dependency",
+                scope=DependencyScope.SINGLETON,
+            )
+
+            async def command(_: SurfaceCommand, __: HandlingContext) -> object:
+                return "command"
+
+            async def query(_: SurfaceQuery, __: HandlingContext) -> object:
+                return "query"
+
+            async def event(
+                _: SurfaceEvent,
+                __: RequestContext,
+                ___: object,
+            ) -> None:
+                nonlocal events_seen
+                events_seen += 1
+
+            async def job(_: Job, __: RequestContext, ___: object) -> None:
+                return None
+
+            async def endpoint(_: Request, __: object) -> Response:
+                return Response.text("surface")
+
+            registration.command(SurfaceCommand, command)
+            registration.query(SurfaceQuery, query)
+            registration.event(SurfaceEvent, "subscriber", event)
+            registration.job("example.surface.job", job)
+            registration.middleware("headers", SurfaceMiddleware())
+            registration.route("GET", "/surface", endpoint, name="surface")
+
+        async def start(self) -> None:
+            start_entered.set()
+            await release_start.wait()
+
+    tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="test")
+    module = SurfaceModule("example.surface", migrations=())
+    app = create_application(
+        _settings(),
+        modules=(module,),
+        context_resolver=FixedContextResolver(tenant),
+        authorizer=Authorizer(AllowAllPolicy()),
+    )
+    assert app.runtime is not None
+    startup = asyncio.create_task(app.startup())
+    await start_entered.wait()
+
+    with pytest.raises(NotFoundError):
+        app.router.match("GET", "/surface")
+    with pytest.raises(NotFoundError):
+        app.runtime.contracts.get("example.surface.contract")
+    with pytest.raises(NotFoundError):
+        app.runtime.metadata.get("example.surface.view")
+    with pytest.raises(NotFoundError):
+        app.runtime.permissions.get("example.surface.read")
+    with pytest.raises(NotFoundError):
+        app.runtime.providers.get("example.surface.provider")
+    with pytest.raises(NotFoundError):
+        app.runtime.features.is_enabled("example.surface.enabled")
+    with pytest.raises(NotFoundError):
+        app.runtime.messages.commands.get(SurfaceCommand())
+    with pytest.raises(NotFoundError):
+        app.runtime.messages.queries.get(SurfaceQuery())
+    with pytest.raises(NotFoundError):
+        app.runtime.jobs.get("example.surface.job")
+    assert app.runtime.middleware.active() == ()
+    async with app.container.request_scope() as dependencies:
+        with pytest.raises(ConfigurationError, match="not active"):
+            await dependencies.resolve(SURFACE_DEPENDENCY)
+
+    release_start.set()
+    await startup
+    assert app.runtime.contracts.get("example.surface.contract").version == "1"
+    assert app.runtime.metadata.get("example.surface.view").kind == "view"
+    assert app.runtime.permissions.get("example.surface.read").description
+    assert app.runtime.providers.get("example.surface.provider") is not None
+    assert app.runtime.features.is_enabled("example.surface.enabled")
+    command_handler = app.runtime.messages.commands.get(SurfaceCommand())
+    query_handler = app.runtime.messages.queries.get(SurfaceQuery())
+    job_handler = app.runtime.jobs.get("example.surface.job")
+    assert command_handler.__name__ == "command"
+    assert query_handler.__name__ == "query"
+    assert job_handler.__name__ == "job"
+    assert len(app.runtime.middleware.active()) == 1
+    async with app.container.request_scope() as dependencies:
+        assert await dependencies.resolve(SURFACE_DEPENDENCY) == "dependency"
+        await app.runtime.events.publish(
+            SurfaceEvent(
+                tenant_id=tenant.tenant_id,
+                correlation_id="surface",
+            ),
+            RequestContext(tenant=tenant),
+            dependencies,
+        )
+    assert events_seen == 1
+
+    transport = httpx.ASGITransport(app=cast(Any, app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/surface")
+    assert response.status_code == 200
+    assert response.headers["x-surface-middleware"] == "active"
+
+    await app.runtime.lifecycle.disable(module.manifest.module_id)
+    with pytest.raises(NotFoundError):
+        app.router.match("GET", "/surface")
+    with pytest.raises(NotFoundError):
+        app.runtime.contracts.get("example.surface.contract")
+    with pytest.raises(NotFoundError):
+        app.runtime.jobs.get("example.surface.job")
+    assert app.runtime.middleware.active() == ()
+    await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_enable_sequence_rolls_back_modules_started_before_later_failure() -> None:
+    class MinimalModule(ProofModule):
+        async def register(self, registration: ModuleRegistration) -> None:
+            self.lifecycle.append("register")
+            self.registrations.append(registration)
+            registration.permission(
+                PermissionDeclaration(
+                    key=f"{self.manifest.module_id}.read",
+                    description="Read minimal module",
+                )
+            )
+
+    first = MinimalModule("example.first", migrations=())
+
+    class FailingModule(MinimalModule):
+        async def start(self) -> None:
+            self.lifecycle.append("start")
+            raise RuntimeError("later module failed")
+
+    second = FailingModule("example.second", migrations=())
+    app = create_application(_settings(), modules=(first, second))
+    with pytest.raises(RuntimeError, match="later module failed"):
+        await app.startup()
+    assert app.runtime is not None
+
+    assert first.lifecycle == ["register", "start", "stop"]
+    assert first.registrations[0].generation.number == 1
+    assert app.runtime.modules.get("example.first").state is ModuleState.DISABLED
+    with pytest.raises(NotFoundError):
+        app.runtime.permissions.get("example.first.read")
+
+
+@pytest.mark.asyncio
+async def test_retire_rejects_enabled_dependents() -> None:
+    class MinimalModule(ProofModule):
+        async def register(self, registration: ModuleRegistration) -> None:
+            self.lifecycle.append("register")
+            self.registrations.append(registration)
+
+    foundation = MinimalModule("example.foundation", migrations=())
+    dependent = MinimalModule(
+        "example.dependent",
+        dependencies=(ModuleDependency(module_id="example.foundation", version=">=1"),),
+        migrations=(),
+    )
+    app = create_application(_settings(), modules=(foundation, dependent))
+    await app.startup()
+    assert app.runtime is not None
+
+    with pytest.raises(ConfigurationError, match="enabled dependents"):
+        await app.runtime.lifecycle.disable("example.foundation")
+    with pytest.raises(ConfigurationError, match="enabled dependents"):
+        await app.runtime.lifecycle.retire("example.foundation")
+    assert app.runtime.modules.get("example.foundation").state is ModuleState.ENABLED
+    await app.shutdown()

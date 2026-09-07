@@ -5,12 +5,11 @@ import httpx
 import psycopg
 import pytest
 from businessos_proof import ProofModule
+from businessos_proof.module import ProofStored
 
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
-from businessos.dependencies import OBJECT_STORAGE
-from businessos.di import DependencyScope
 from businessos.modules import ModuleState, discover_modules
 from businessos.security import Authorizer, RequestIdentity
 
@@ -132,15 +131,10 @@ async def test_external_module_conforms_without_protected_core_edits(
         modules=(module,),
         context_resolver=FixedContextResolver(tenant),
         authorizer=Authorizer(AllowAllPolicy()),
+        infrastructure_providers={"object-storage": storage},
     )
     assert app.runtime is not None
     await app.runtime.migrations.upgrade_async(postgres_migration_database_url)
-    app.container.register(
-        OBJECT_STORAGE,
-        lambda _: storage,
-        scope=DependencyScope.SINGLETON,
-    )
-
     await app.startup()
     assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.ENABLED
     transport = httpx.ASGITransport(app=cast(Any, app))
@@ -164,28 +158,45 @@ async def test_external_module_conforms_without_protected_core_edits(
     assert loaded.status_code == 200
     assert loaded.json() == {"value": "external-module"}
     assert invalid.status_code == 422
-    assert module.events_consumed == 1
-    assert storage.objects[(tenant.tenant_id, "phase1-proof/value.txt")] == b"external-module"
-    assert app.runtime.metadata.get("example.phase1-proof.form").version == 2
-    assert app.runtime.permissions.get("example.phase1-proof.write").description
 
     connection_url = postgres_migration_database_url.replace(
         "postgresql+psycopg://", "postgresql://", 1
     )
     with psycopg.connect(connection_url) as connection:
+        event_payload = connection.execute(
+            "SELECT payload FROM eventing.outbox_messages WHERE tenant_id = %s",
+            (tenant.tenant_id,),
+        ).fetchone()
+    assert event_payload is not None
+    event = ProofStored.model_validate(event_payload[0])
+    event_context = RequestContext(
+        correlation_id=event.correlation_id,
+        tenant=tenant,
+    )
+    async with app.container.request_scope() as dependencies:
+        assert await app.runtime.event_consumer.consume(event, event_context, dependencies) == 1
+        assert await app.runtime.event_consumer.consume(event, event_context, dependencies) == 0
+
+    assert module.events_consumed == 1
+    assert storage.objects[(tenant.tenant_id, "phase1-proof/value.txt")] == b"external-module"
+    assert app.runtime.metadata.get("example.phase1-proof.form").version == 2
+    assert app.runtime.permissions.get("example.phase1-proof.write").description
+
+    with psycopg.connect(connection_url) as connection:
         counts = connection.execute(
             "SELECT "
             "(SELECT count(*) FROM mod_example_phase1_proof.proof_records WHERE tenant_id = %s), "
-            "(SELECT count(*) FROM eventing.outbox_messages WHERE tenant_id = %s)",
-            (tenant.tenant_id, tenant.tenant_id),
+            "(SELECT count(*) FROM eventing.outbox_messages WHERE tenant_id = %s), "
+            "(SELECT count(*) FROM eventing.inbox_receipts WHERE tenant_id = %s)",
+            (tenant.tenant_id, tenant.tenant_id, tenant.tenant_id),
         ).fetchone()
         stored_value = connection.execute(
-            "SELECT value FROM mod_example_phase1_proof.proof_records "
+            "SELECT value, description FROM mod_example_phase1_proof.proof_records "
             "WHERE tenant_id = %s AND command_id = %s",
             (tenant.tenant_id, command_id),
         ).fetchone()
-    assert counts == (1, 1)
-    assert stored_value == ("external-module",)
+    assert counts == (1, 1, 1)
+    assert stored_value == ("external-module", "object-storage-projection")
 
     plan = app.runtime.upgrades.plan((module.manifest,))
     assert plan.ordered_module_ids == (module.manifest.module_id,)

@@ -1,6 +1,6 @@
 """Framework-owned command, query and event contracts and dispatch."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import ClassVar, cast
@@ -14,6 +14,7 @@ from businessos.di import RequestDependencyScope
 from businessos.errors import ConflictError, NotFoundError
 from businessos.persistence import PendingOutboxMessage, UnitOfWork, UnitOfWorkFactory
 from businessos.security import Authorizer
+from businessos.telemetry import dispatch_span
 
 
 class Message(BaseModel):
@@ -37,6 +38,7 @@ class DomainEvent(Message):
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     correlation_id: str
     causation_id: str | None = None
+    trace_context: Mapping[str, str] = Field(default_factory=dict)
 
     def to_outbox(self) -> PendingOutboxMessage:
         return PendingOutboxMessage(
@@ -52,7 +54,7 @@ class DomainEvent(Message):
 
 
 Handler = Callable[[Message, "HandlingContext"], Awaitable[object]]
-EventHandler = Callable[[DomainEvent, RequestContext, RequestDependencyScope], Awaitable[None]]
+EventHandler = Callable[[DomainEvent, "EventHandlingContext"], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -65,12 +67,26 @@ class HandlingContext:
     def emit(self, event: DomainEvent) -> None:
         if self.request.tenant is None or event.tenant_id != self.request.tenant.tenant_id:
             raise ValueError("Event tenant must match the trusted request tenant")
-        self.unit_of_work.add_outbox(event.to_outbox())
-        self._events.append(event)
+        from businessos.telemetry import inject_trace_context
+
+        emitted = event
+        if not event.trace_context:
+            emitted = event.model_copy(update={"trace_context": inject_trace_context()})
+        self.unit_of_work.add_outbox(emitted.to_outbox())
+        self._events.append(emitted)
 
     @property
     def emitted_events(self) -> tuple[DomainEvent, ...]:
         return tuple(self._events)
+
+
+@dataclass(slots=True)
+class EventHandlingContext:
+    """Public, transaction-bound context for one durable event delivery."""
+
+    request: RequestContext
+    dependencies: RequestDependencyScope
+    unit_of_work: UnitOfWork
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +180,7 @@ class EventBus:
         self,
         event_type: type[E],
         subscriber: str,
-        handler: Callable[[E, RequestContext, RequestDependencyScope], Awaitable[None]],
+        handler: Callable[[E, EventHandlingContext], Awaitable[None]],
         *,
         owner: str | None = None,
         generation: ContributionGeneration | None = None,
@@ -183,21 +199,28 @@ class EventBus:
             permission,
         )
 
-    async def publish(
-        self,
-        event: DomainEvent,
-        context: RequestContext,
-        dependencies: RequestDependencyScope,
-    ) -> None:
+    def subscribers(self, event: DomainEvent) -> tuple[_OwnedEventHandler, ...]:
         handlers = self._handlers.get(type(event), {})
-        for subscriber in sorted(handlers):
-            registered = handlers[subscriber]
-            await self._authorize(context, registered.permission)
-            if self._gate is None:
-                await registered.handler(event, context, dependencies)
-            elif self._gate.is_active(registered.generation):
-                async with self._gate.admit(registered.generation):
-                    await registered.handler(event, context, dependencies)
+        return tuple(
+            handlers[name]
+            for name in sorted(handlers)
+            if self._gate is None or self._gate.is_active(handlers[name].generation)
+        )
+
+    async def authorize(self, context: RequestContext, permission: str | None) -> None:
+        await self._authorize(context, permission)
+
+    async def invoke(
+        self,
+        registered: _OwnedEventHandler,
+        event: DomainEvent,
+        context: EventHandlingContext,
+    ) -> None:
+        if self._gate is None:
+            await registered.handler(event, context)
+            return
+        async with self._gate.admit(registered.generation):
+            await registered.handler(event, context)
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:
         if permission is None:
@@ -240,15 +263,14 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
-        await self._authorize(context, self.commands.permission(message))
-        unit_of_work = self._unit_of_work(context)
-        async with unit_of_work:
-            handling = HandlingContext(context, dependencies, unit_of_work)
-            result = await self.commands.invoke(message, handling)
-            await unit_of_work.commit()
-        for event in handling.emitted_events:
-            await self.events.publish(event, context, dependencies)
-        return result
+        with dispatch_span("command", type(message).__name__):
+            await self._authorize(context, self.commands.permission(message))
+            unit_of_work = self._unit_of_work(context)
+            async with unit_of_work:
+                handling = HandlingContext(context, dependencies, unit_of_work)
+                result = await self.commands.invoke(message, handling)
+                await unit_of_work.commit()
+            return result
 
     async def query(
         self,
@@ -256,11 +278,12 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
-        await self._authorize(context, self.queries.permission(message))
-        unit_of_work = self._unit_of_work(context)
-        async with unit_of_work:
-            handling = HandlingContext(context, dependencies, unit_of_work)
-            return await self.queries.invoke(message, handling)
+        with dispatch_span("query", type(message).__name__):
+            await self._authorize(context, self.queries.permission(message))
+            unit_of_work = self._unit_of_work(context)
+            async with unit_of_work:
+                handling = HandlingContext(context, dependencies, unit_of_work)
+                return await self.queries.invoke(message, handling)
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:
         if permission is None:

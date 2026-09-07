@@ -16,6 +16,7 @@ from businessos.sdk import (
     BusinessOSError,
     Command,
     DomainEvent,
+    EventHandlingContext,
     FeatureFlag,
     HandlingContext,
     MetadataDeclaration,
@@ -177,10 +178,14 @@ class ProofModule:
     async def _project(
         self,
         event: ProofStored,
-        _: RequestContext,
-        dependencies: RequestDependencyScope,
+        context: EventHandlingContext,
     ) -> None:
-        storage = await dependencies.resolve(OBJECT_STORAGE)
+        await context.unit_of_work.persistence.execute(
+            PROOF_RECORDS.update()
+            .where(PROOF_RECORDS.c.id == event.record_id)
+            .values(description="object-storage-projection")
+        )
+        storage = await context.dependencies.resolve(OBJECT_STORAGE)
         await storage.put(
             event.tenant_id,
             "phase1-proof/value.txt",

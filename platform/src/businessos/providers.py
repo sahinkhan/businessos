@@ -4,7 +4,8 @@
 # pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 
 import asyncio
-from collections.abc import Callable, Mapping
+import inspect
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, Protocol, cast
 from uuid import UUID
 
@@ -35,6 +36,56 @@ class ObjectStorageProvider(HealthProvider, Protocol):
 class ProviderRegistry(OwnedRegistry[object]):
     def __init__(self, gate: ContributionGate | None = None) -> None:
         super().__init__("provider", gate)
+        self._started: list[str] = []
+
+    async def start_infrastructure(self) -> None:
+        started: list[str] = []
+        try:
+            for entry in self.entries():
+                started.append(entry.name)
+                start = getattr(entry.value, "start", None)
+                if callable(start):
+                    outcome = start()
+                    if inspect.isawaitable(outcome):
+                        await outcome
+                await self._readiness(entry.value)
+        except BaseException:
+            await self._close_names(reversed(started))
+            raise
+        self._started.extend(started)
+
+    async def close_infrastructure(self) -> None:
+        await self._close_names(reversed(self._started))
+        self._started.clear()
+
+    async def readiness(self, capability: str) -> None:
+        await self._readiness(self.get(capability))
+
+    async def _close_names(self, names: Iterable[str]) -> None:
+        errors: list[BaseException] = []
+        for name in names:
+            provider = self.get(name)
+            close = getattr(provider, "close", None)
+            if not callable(close):
+                continue
+            try:
+                outcome = close()
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise BaseExceptionGroup("Infrastructure provider cleanup failed", errors)
+
+    @staticmethod
+    async def _readiness(provider: object) -> None:
+        readiness = getattr(provider, "readiness", None)
+        if not callable(readiness):
+            raise RuntimeError("Infrastructure provider does not implement readiness")
+        outcome = readiness()
+        if not inspect.isawaitable(outcome):
+            raise RuntimeError("Infrastructure provider readiness must be asynchronous")
+        await outcome
 
 
 class RedisCacheProvider:

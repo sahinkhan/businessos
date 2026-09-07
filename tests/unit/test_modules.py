@@ -15,7 +15,7 @@ from businessos.features import FeatureFlag
 from businessos.http import Request, Response
 from businessos.http.middleware import CallNext
 from businessos.jobs import Job
-from businessos.messages import Command, DomainEvent, HandlingContext, Query
+from businessos.messages import Command, DomainEvent, EventHandlingContext, HandlingContext, Query
 from businessos.metadata import MetadataDeclaration
 from businessos.modules import (
     ModuleDependency,
@@ -25,6 +25,7 @@ from businessos.modules import (
     ModuleState,
 )
 from businessos.permissions import PermissionDeclaration
+from businessos.persistence import UnitOfWork
 from businessos.security import Authorizer, RequestIdentity
 
 
@@ -507,8 +508,7 @@ async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> 
 
             async def event(
                 _: SurfaceEvent,
-                __: RequestContext,
-                ___: object,
+                __: EventHandlingContext,
             ) -> None:
                 nonlocal events_seen
                 events_seen += 1
@@ -589,13 +589,19 @@ async def test_all_module_contribution_surfaces_follow_one_activation_gate() -> 
     assert len(app.runtime.middleware.active()) == 1
     async with app.container.request_scope() as dependencies:
         assert await dependencies.resolve(SURFACE_DEPENDENCY) == "dependency"
-        await app.runtime.events.publish(
-            SurfaceEvent(
-                tenant_id=tenant.tenant_id,
-                correlation_id="surface",
+        surface_event = SurfaceEvent(
+            tenant_id=tenant.tenant_id,
+            correlation_id="surface",
+        )
+        subscriber = app.runtime.events.subscribers(surface_event)[0]
+        await app.runtime.events.invoke(
+            subscriber,
+            surface_event,
+            EventHandlingContext(
+                RequestContext(tenant=tenant),
+                dependencies,
+                cast(UnitOfWork, object()),
             ),
-            RequestContext(tenant=tenant),
-            dependencies,
         )
     assert events_seen == 1
 
@@ -672,3 +678,83 @@ async def test_retire_rejects_enabled_dependents() -> None:
         await app.runtime.lifecycle.retire("example.foundation")
     assert app.runtime.modules.get("example.foundation").state is ModuleState.ENABLED
     await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_required_provider_capability_fails_closed_before_module_registration() -> None:
+    module = ProofModule("example.capability", migrations=())
+    module.manifest = module.manifest.model_copy(update={"capabilities": ("object-storage",)})
+    app = create_application(_settings(), modules=(module,))
+
+    with pytest.raises(ConfigurationError, match="missing capability 'object-storage'"):
+        await app.startup()
+
+    assert module.lifecycle == []
+    assert app.runtime is not None
+    assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_supplied_provider_is_started_ready_injected_and_closed() -> None:
+    timeline: list[str] = []
+
+    class StorageProvider:
+        async def start(self) -> None:
+            timeline.append("provider:start")
+
+        async def readiness(self) -> None:
+            timeline.append("provider:ready")
+
+        async def close(self) -> None:
+            timeline.append("provider:close")
+
+    module = ProofModule("example.capability", migrations=())
+    module.manifest = module.manifest.model_copy(update={"capabilities": ("object-storage",)})
+    provider = StorageProvider()
+    app = create_application(
+        _settings(),
+        modules=(module,),
+        infrastructure_providers={"object-storage": provider},
+    )
+
+    await app.startup()
+    assert module.lifecycle == ["register", "start"]
+    assert app.runtime is not None
+    assert app.runtime.providers.get("object-storage") is provider
+    async with app.container.request_scope() as dependencies:
+        from businessos.dependencies import OBJECT_STORAGE
+
+        assert cast(object, await dependencies.resolve(OBJECT_STORAGE)) is provider
+    await app.shutdown()
+
+    assert timeline == ["provider:start", "provider:ready", "provider:close"]
+
+
+@pytest.mark.asyncio
+async def test_unready_supplied_provider_fails_startup_and_is_closed() -> None:
+    timeline: list[str] = []
+
+    class UnreadyProvider:
+        async def start(self) -> None:
+            timeline.append("provider:start")
+
+        async def readiness(self) -> None:
+            timeline.append("provider:ready")
+            raise RuntimeError("provider unavailable")
+
+        async def close(self) -> None:
+            timeline.append("provider:close")
+
+    module = ProofModule("example.capability", migrations=())
+    module.manifest = module.manifest.model_copy(update={"capabilities": ("object-storage",)})
+    app = create_application(
+        _settings(),
+        modules=(module,),
+        infrastructure_providers={"object-storage": UnreadyProvider()},
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await app.startup()
+
+    assert timeline == ["provider:start", "provider:ready", "provider:close"]
+    assert module.lifecycle == []

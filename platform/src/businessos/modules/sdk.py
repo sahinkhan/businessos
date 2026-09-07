@@ -18,7 +18,14 @@ from businessos.features import FeatureFlag, FeatureFlagRegistry
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import CallNext, Middleware, MiddlewareRegistry
 from businessos.jobs import Job, JobHandlerRegistry
-from businessos.messages import Command, DomainEvent, HandlingContext, MessageDispatcher, Query
+from businessos.messages import (
+    Command,
+    DomainEvent,
+    EventHandlingContext,
+    HandlingContext,
+    MessageDispatcher,
+    Query,
+)
 from businessos.metadata import MetadataDeclaration, MetadataRegistry
 from businessos.modules.manifest import ModuleManifest
 from businessos.permissions import PermissionDeclaration, PermissionRegistry
@@ -251,7 +258,7 @@ class ModuleRegistration:
         self,
         event_type: type[E],
         subscriber: str,
-        handler: Callable[[E, RequestContext, RequestDependencyScope], Awaitable[None]],
+        handler: Callable[[E, EventHandlingContext], Awaitable[None]],
         *,
         permission: str | None = None,
     ) -> None:

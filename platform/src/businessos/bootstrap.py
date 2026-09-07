@@ -1,14 +1,24 @@
 """BusinessOS composition root."""
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
+from typing import cast
 
 from businessos.activation import ContributionGate
 from businessos.application import BusinessOSApplication
 from businessos.config import Settings, get_settings
 from businessos.contracts import ContractRegistry
-from businessos.dependencies import AUTHORIZER, DATABASE, MESSAGE_DISPATCHER, UNIT_OF_WORK_FACTORY
-from businessos.di import Container, DependencyScope
+from businessos.dependencies import (
+    AUTHORIZER,
+    CACHE,
+    DATABASE,
+    EVENT_PUBLISHER,
+    MESSAGE_DISPATCHER,
+    OBJECT_STORAGE,
+    UNIT_OF_WORK_FACTORY,
+)
+from businessos.di import Container, DependencyKey, DependencyResolver, DependencyScope
 from businessos.diagnostics import Diagnostics
+from businessos.eventing import DurableEventConsumer
 from businessos.features import FeatureFlagRegistry
 from businessos.http import Router
 from businessos.http.middleware import MiddlewareRegistry
@@ -39,6 +49,7 @@ def create_application(
     modules: Iterable[BusinessOSModule] = (),
     context_resolver: TrustedContextResolver | None = None,
     authorizer: Authorizer | None = None,
+    infrastructure_providers: Mapping[str, object] | None = None,
 ) -> BusinessOSApplication:
     """Compose the protected runtime without importing business modules."""
     resolved_settings = settings or get_settings()
@@ -59,6 +70,7 @@ def create_application(
         contributions,
         resolved_authorizer,
     )
+    event_consumer = DurableEventConsumer(unit_of_work_factory, event_bus)
     container.register(DATABASE, lambda _: database, scope=DependencyScope.SINGLETON)
     container.register(
         UNIT_OF_WORK_FACTORY,
@@ -75,6 +87,27 @@ def create_application(
     metadata = MetadataRegistry(contributions)
     permissions = PermissionRegistry(contributions)
     providers = ProviderRegistry(contributions)
+    provider_dependencies = {
+        "cache": cast(DependencyKey[object], CACHE),
+        "event-publisher": cast(DependencyKey[object], EVENT_PUBLISHER),
+        "object-storage": cast(DependencyKey[object], OBJECT_STORAGE),
+    }
+
+    def dependency_provider(value: object) -> Callable[[DependencyResolver], object]:
+        def provide(_: DependencyResolver) -> object:
+            return value
+
+        return provide
+
+    for capability, provider in sorted((infrastructure_providers or {}).items()):
+        providers.register(capability, "businessos.infrastructure", provider)
+        dependency = provider_dependencies.get(capability)
+        if dependency is not None:
+            container.register(
+                dependency,
+                dependency_provider(provider),
+                scope=DependencyScope.SINGLETON,
+            )
     features = FeatureFlagRegistry(contributions)
     jobs = JobHandlerRegistry(contributions, resolved_authorizer)
     module_registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
@@ -89,6 +122,7 @@ def create_application(
     lifecycle = LifecycleManager(
         module_registry,
         registration,
+        providers=providers,
         drain_timeout_seconds=resolved_settings.shutdown_timeout_seconds,
     )
     upgrades = UpgradeCoordinator(module_registry)
@@ -104,6 +138,7 @@ def create_application(
         providers=providers,
         features=features,
         events=event_bus,
+        event_consumer=event_consumer,
         messages=message_dispatcher,
         jobs=jobs,
         modules=module_registry,
@@ -126,6 +161,12 @@ def create_application(
     )
     if resolved_settings.database_readiness_enabled:
         diagnostics.add_readiness_check("postgresql", database.readiness)
+    for capability in sorted(infrastructure_providers or {}):
+
+        async def provider_readiness(name: str = capability) -> None:
+            await providers.readiness(name)
+
+        diagnostics.add_readiness_check(f"provider:{capability}", provider_readiness)
     diagnostics.register_routes(router)
     application = BusinessOSApplication(
         resolved_settings,
@@ -139,6 +180,11 @@ def create_application(
         await lifecycle.install_all()
         await lifecycle.enable_all()
 
+    application.add_lifecycle(
+        "providers",
+        providers.start_infrastructure,
+        providers.close_infrastructure,
+    )
     application.add_lifecycle("modules", start_modules, lifecycle.disable_all)
     application.on_shutdown(database.close)
     diagnostics.add_readiness_check("application", application.readiness)

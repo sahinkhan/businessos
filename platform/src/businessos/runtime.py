@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from businessos.activation import ContributionGate
 from businessos.contracts import ContractRegistry
 from businessos.di import Container
+from businessos.eventing import DurableEventConsumer
 from businessos.features import FeatureFlagRegistry
 from businessos.http import Router
 from businessos.http.middleware import MiddlewareRegistry
@@ -34,6 +35,7 @@ class FrameworkRuntime:
     providers: ProviderRegistry
     features: FeatureFlagRegistry
     events: EventBus
+    event_consumer: DurableEventConsumer
     messages: MessageDispatcher
     jobs: JobHandlerRegistry
     modules: ModuleRegistry

@@ -3,6 +3,7 @@
 from collections.abc import Callable, Mapping
 from types import TracebackType
 from typing import Any, Protocol, Self
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.engine import Result
@@ -12,7 +13,7 @@ from sqlalchemy.sql.base import Executable
 from businessos.context import TenantContext
 from businessos.errors import ConfigurationError
 from businessos.persistence.contracts import TransactionalPersistence
-from businessos.persistence.models import OutboxMessage
+from businessos.persistence.models import InboxReceipt, OutboxMessage
 from businessos.persistence.outbox import PendingOutboxMessage
 
 SessionFactory = Callable[[], AsyncSession]
@@ -36,6 +37,8 @@ class UnitOfWork(Protocol):
     async def rollback(self) -> None: ...
 
     def add_outbox(self, message: PendingOutboxMessage) -> None: ...
+
+    async def claim_inbox(self, *, consumer: str, event_id: UUID, tenant_id: UUID) -> bool: ...
 
 
 class UnitOfWorkFactory(Protocol):
@@ -111,6 +114,17 @@ class SQLAlchemyUnitOfWork:
                 payload=message.payload,
             )
         )
+
+    async def claim_inbox(self, *, consumer: str, event_id: UUID, tenant_id: UUID) -> bool:
+        from sqlalchemy.dialects.postgresql import insert
+
+        statement = (
+            insert(InboxReceipt)
+            .values(consumer=consumer, event_id=event_id, tenant_id=tenant_id)
+            .on_conflict_do_nothing(index_elements=["tenant_id", "consumer", "event_id"])
+            .returning(InboxReceipt.event_id)
+        )
+        return await self._require_session().scalar(statement) is not None
 
     def _require_session(self) -> AsyncSession:
         if self.session is None:

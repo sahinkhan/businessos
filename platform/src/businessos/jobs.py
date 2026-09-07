@@ -13,6 +13,7 @@ from businessos.context import RequestContext
 from businessos.di import RequestDependencyScope
 from businessos.registry import OwnedRegistry
 from businessos.security import Authorizer
+from businessos.telemetry import dispatch_span
 
 
 class BackoffStrategy(StrEnum):
@@ -133,13 +134,14 @@ class JobHandlerRegistry(OwnedRegistry[JobHandler]):
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> None:
-        permission = self._permissions.get(job.job_type)
-        if permission is not None:
-            if self._authorizer is None:
-                raise RuntimeError("Authorized job dispatch requires an authorizer")
-            await self._authorizer.require(context, permission)
-        async with self.admitted(job.job_type) as handler:
-            await handler(job, context, dependencies)
+        with dispatch_span("job", job.job_type):
+            permission = self._permissions.get(job.job_type)
+            if permission is not None:
+                if self._authorizer is None:
+                    raise RuntimeError("Authorized job dispatch requires an authorizer")
+                await self._authorizer.require(context, permission)
+            async with self.admitted(job.job_type) as handler:
+                await handler(job, context, dependencies)
 
     def remove_owner_generation(self, generation: ContributionGeneration) -> None:
         removed = {

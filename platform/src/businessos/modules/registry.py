@@ -12,6 +12,7 @@ from packaging.version import Version
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
 from businessos.modules.manifest import ModuleManifest
 from businessos.modules.sdk import BusinessOSModule, ModuleRegistration
+from businessos.providers import ProviderRegistry
 
 
 class ModuleState(StrEnum):
@@ -112,10 +113,12 @@ class LifecycleManager:
         registry: ModuleRegistry,
         registration_factory: Callable[[str], ModuleRegistration],
         *,
+        providers: ProviderRegistry | None = None,
         drain_timeout_seconds: float = 10.0,
     ) -> None:
         self._registry = registry
         self._registration_factory = registration_factory
+        self._providers = providers
         self._drain_timeout_seconds = drain_timeout_seconds
         self._lifecycle_lock = asyncio.Lock()
 
@@ -168,6 +171,7 @@ class LifecycleManager:
             registration = self._registration_factory(module_id)
             start_attempted = False
             try:
+                self._validate_capabilities(registered.module.manifest)
                 await registered.module.register(registration)
                 start_attempted = True
                 await registered.module.start()
@@ -197,6 +201,21 @@ class LifecycleManager:
             registered.registration = registration
             registered.error = None
             registered.state = ModuleState.ENABLED
+
+    def _validate_capabilities(self, manifest: ModuleManifest) -> None:
+        if not manifest.capabilities:
+            return
+        if self._providers is None:
+            raise ConfigurationError(
+                f"Module '{manifest.module_id}' requires infrastructure capabilities"
+            )
+        for capability in manifest.capabilities:
+            try:
+                self._providers.get(capability)
+            except NotFoundError as exc:
+                raise ConfigurationError(
+                    f"Module '{manifest.module_id}' requires missing capability '{capability}'"
+                ) from exc
 
     async def disable_all(self) -> None:
         async with self._lifecycle_lock:

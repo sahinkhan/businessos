@@ -1,5 +1,6 @@
+from collections.abc import Mapping
 from types import TracebackType
-from typing import ClassVar, Self
+from typing import ClassVar, Self, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -11,12 +12,14 @@ from businessos.messages import (
     Command,
     DomainEvent,
     EventBus,
+    EventHandlingContext,
     HandlingContext,
     MessageDispatcher,
     Query,
 )
 from businessos.persistence import PendingOutboxMessage, TransactionalPersistence, UnitOfWork
 from businessos.security import Authorizer
+from businessos.telemetry import configure_telemetry, server_span
 
 
 class ChangeName(Command):
@@ -65,6 +68,9 @@ class FakeUnitOfWork:
         self.messages.append(message)
         self.timeline.append("outbox")
 
+    async def claim_inbox(self, *, consumer: str, event_id: UUID, tenant_id: UUID) -> bool:
+        return True
+
 
 class FakeUnitOfWorkFactory:
     def __init__(self, timeline: list[str]) -> None:
@@ -94,7 +100,7 @@ class DenyPolicy:
 
 
 @pytest.mark.asyncio
-async def test_command_commits_outbox_before_in_process_event_delivery() -> None:
+async def test_command_commits_outbox_without_direct_event_delivery() -> None:
     timeline: list[str] = []
     factory = FakeUnitOfWorkFactory(timeline)
     events = EventBus()
@@ -115,22 +121,32 @@ async def test_command_commits_outbox_before_in_process_event_delivery() -> None
 
     async def consume(
         event: NameChanged,
-        request: RequestContext,
-        dependencies: object,
+        handling: EventHandlingContext,
     ) -> None:
-        assert request == context
+        assert handling.request == context
         timeline.append(f"event:{event.name}")
 
     dispatcher.commands.register(ChangeName, "example", handle)
     events.subscribe(NameChanged, "example.consumer", consume)
 
     container = Container()
-    async with container.request_scope() as dependencies:
-        result = await dispatcher.command(ChangeName(name="new"), context, dependencies)
+    configure_telemetry(service_name="businessos-tests", service_version="0")
+    with server_span(
+        "POST",
+        "/names",
+        {"traceparent": ("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")},
+    ):
+        async with container.request_scope() as dependencies:
+            result = await dispatcher.command(ChangeName(name="new"), context, dependencies)
 
     assert result == "new"
-    assert timeline == ["begin", "handler", "outbox", "commit", "close", "event:new"]
+    assert timeline == ["begin", "handler", "outbox", "commit", "close"]
     assert factory.created[0].messages[0].event_type == "example.name_changed"
+    trace_context = factory.created[0].messages[0].payload["trace_context"]
+    assert isinstance(trace_context, dict)
+    traceparent = cast(Mapping[str, object], trace_context).get("traceparent")
+    assert isinstance(traceparent, str)
+    assert traceparent.startswith("00-0123456789abcdef0123456789abcdef-")
 
 
 @pytest.mark.asyncio
@@ -206,8 +222,7 @@ async def test_query_and_event_permissions_are_enforced() -> None:
 
     async def event_handler(
         _: NameChanged,
-        __: RequestContext,
-        ___: object,
+        __: EventHandlingContext,
     ) -> None:
         timeline.append("event")
 
@@ -228,14 +243,17 @@ async def test_query_and_event_permissions_are_enforced() -> None:
         with pytest.raises(BusinessOSError) as query_error:
             await dispatcher.query(ReadName(), context, dependencies)
         with pytest.raises(BusinessOSError) as event_error:
-            await events.publish(
-                NameChanged(
-                    tenant_id=tenant.tenant_id,
-                    correlation_id=context.correlation_id,
-                    name="blocked",
-                ),
-                context,
-                dependencies,
+            event = NameChanged(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.correlation_id,
+                name="blocked",
+            )
+            subscriber = events.subscribers(event)[0]
+            await events.authorize(context, subscriber.permission)
+            await events.invoke(
+                subscriber,
+                event,
+                EventHandlingContext(context, dependencies, FakeUnitOfWork(timeline)),
             )
 
     assert query_error.value.code == "forbidden"

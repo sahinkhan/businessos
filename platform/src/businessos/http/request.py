@@ -7,7 +7,7 @@ from urllib.parse import parse_qs
 from asgiref.typing import ASGIReceiveCallable, HTTPScope
 
 from businessos.context import RequestContext
-from businessos.errors import BusinessOSError
+from businessos.errors import BusinessOSError, ClientDisconnectedError
 
 
 class Request:
@@ -50,7 +50,7 @@ class Request:
         while more_body:
             message = await self._receive()
             if message["type"] == "http.disconnect":
-                raise BusinessOSError("client_disconnected", "Client disconnected", status_code=499)
+                raise ClientDisconnectedError
             event = message
             if event["type"] != "http.request":
                 continue

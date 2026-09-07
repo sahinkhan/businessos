@@ -47,6 +47,18 @@ Consumers must be idempotent.
 
 Side-effecting consumers must maintain durable deduplication/idempotency state where redelivery could otherwise duplicate business effects.
 
+The framework durable-consumer boundary claims `(tenant_id, consumer, event_id)` in the inbox
+and executes the subscriber's relational side effects through the same tenant-scoped Unit of Work.
+The inbox receipt and those effects commit or roll back together. External effects must additionally
+use a deterministic idempotency key; an inbox receipt is committed only after the handler succeeds.
+Concurrent redelivery therefore admits one transaction and makes every later delivery a no-op.
+
+Tenant-owned events use subjects shaped as
+`businessos.events.tenant.<tenant_uuid>.<event_type>`. The tenant segment comes from the persisted
+outbox row, never from an arbitrary publish call or client header. The envelope also preserves
+correlation/causation data and W3C `traceparent`/`tracestate` fields for producer-to-consumer span
+continuation.
+
 ## Commands vs Events
 
 Command: request that something happen. It may fail.
@@ -85,6 +97,8 @@ The implementation engine may evolve, but business modules depend on the platfor
 The custom BusinessOS framework owns command/query handler registration and dispatch, event contract registration, middleware execution, dependency scopes, trusted context propagation and Unit of Work integration. A command that changes authoritative state and emits durable events executes inside one framework-owned transaction; event publication occurs through the outbox only after commit.
 
 Modules must not create parallel in-process buses or bypass framework event and transaction coordination.
+Command dispatch never calls subscribers directly after commit. Durable event handlers run only
+through the framework inbox consumer after the outbox publisher has delivered the committed event.
 
 ## Compatibility
 

@@ -11,10 +11,12 @@ import pytest
 from businessos.application import ApplicationState, BusinessOSApplication
 from businessos.bootstrap import create_application
 from businessos.config import Settings
+from businessos.context import RequestContext
 from businessos.di import Container
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import CallNext
 from businessos.logging import JsonFormatter
+from businessos.security import RequestIdentity
 
 
 def _settings() -> Settings:
@@ -66,6 +68,94 @@ async def test_diagnostic_endpoints_are_available_through_custom_asgi_app() -> N
     assert modules.status_code == 200
     assert modules.json() == {"modules": []}
     assert liveness.headers["x-correlation-id"]
+
+
+@pytest.mark.asyncio
+async def test_http_extracts_w3c_trace_context_and_preserves_correlation() -> None:
+    parent_trace_id = "0123456789abcdef0123456789abcdef"
+    correlation_id = "correlation-from-client"
+
+    class CapturingResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            assert identity.trace_id == parent_trace_id
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+            )
+
+    app = create_application(_settings(), context_resolver=CapturingResolver())
+
+    async def traced(request: Request, _: object) -> Response:
+        return Response.json({"trace_id": request.context.trace_id})
+
+    app.router.add_route("GET", "/traced", traced)
+    await app.startup()
+    transport = httpx.ASGITransport(app=cast(Any, app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/traced",
+            headers={
+                "traceparent": f"00-{parent_trace_id}-0123456789abcdef-01",
+                "x-correlation-id": correlation_id,
+            },
+        )
+    await app.shutdown()
+
+    assert response.json() == {"trace_id": parent_trace_id}
+    assert response.headers["x-correlation-id"] == correlation_id
+
+
+@pytest.mark.asyncio
+async def test_disconnect_after_body_cancels_handler_and_releases_request() -> None:
+    app = create_application(_settings())
+    handler_started = asyncio.Event()
+    handler_cancelled = asyncio.Event()
+    inbound: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    outbound: list[dict[str, object]] = []
+
+    async def slow(_: Request, __: object) -> Response:
+        handler_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            handler_cancelled.set()
+        return Response.text("unreachable")
+
+    async def receive() -> dict[str, object]:
+        return await inbound.get()
+
+    async def send(message: dict[str, object]) -> None:
+        outbound.append(message)
+
+    app.router.add_route("POST", "/disconnect", slow)
+    await app.startup()
+    await inbound.put({"type": "http.request", "body": b"", "more_body": False})
+    request_task = asyncio.create_task(
+        app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "POST",
+                    "scheme": "http",
+                    "path": "/disconnect",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    )
+    await handler_started.wait()
+    await inbound.put({"type": "http.disconnect"})
+    await request_task
+
+    assert handler_cancelled.is_set()
+    assert outbound == []
+    await app.shutdown()
 
 
 @pytest.mark.asyncio

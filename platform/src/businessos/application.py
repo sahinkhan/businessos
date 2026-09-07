@@ -19,7 +19,7 @@ from businessos.config import Settings
 from businessos.context import RequestContext
 from businessos.dependencies import AUTHORIZER
 from businessos.di import Container, RequestDependencyScope
-from businessos.errors import BusinessOSError
+from businessos.errors import BusinessOSError, ClientDisconnectedError
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import ContextMiddleware, Middleware, compose_middleware
 from businessos.security import (
@@ -27,6 +27,7 @@ from businessos.security import (
     RequestIdentity,
     TrustedContextResolver,
 )
+from businessos.telemetry import server_span
 
 if TYPE_CHECKING:
     from businessos.runtime import FrameworkRuntime
@@ -327,8 +328,20 @@ class BusinessOSApplication:
     async def _handle_http(
         self, scope: HTTPScope, receive: ASGIReceiveCallable, send: ASGISendCallable
     ) -> None:
+        headers = self._headers(scope)
+        with server_span(scope["method"], scope["path"], headers) as trace_id:
+            await self._handle_http_traced(scope, receive, send, headers, trace_id)
+
+    async def _handle_http_traced(
+        self,
+        scope: HTTPScope,
+        receive: ASGIReceiveCallable,
+        send: ASGISendCallable,
+        headers: dict[str, str],
+        trace_id: str,
+    ) -> None:
         admitted = False
-        generated_context = RequestContext()
+        generated_context = RequestContext(trace_id=trace_id)
         response_context = generated_context
         try:
             if not self._is_operational_path(scope["path"]):
@@ -342,13 +355,12 @@ class BusinessOSApplication:
                 self._active_requests += 1
                 self._requests_drained.clear()
                 admitted = True
-            headers = self._headers(scope)
             identity = RequestIdentity(
                 method=scope["method"],
                 path=scope["path"],
                 headers=headers,
                 correlation_id=headers.get("x-correlation-id", generated_context.correlation_id),
-                trace_id=headers.get("traceparent", generated_context.trace_id),
+                trace_id=trace_id,
             )
             context = await self._context_resolver.resolve(identity)
             response_context = context
@@ -360,6 +372,7 @@ class BusinessOSApplication:
                 path_params=match.path_params,
                 body_limit_bytes=self.settings.request_body_limit_bytes,
             )
+            await request.body()
             dependency_scope = (
                 RequestDependencyScope(self.container)
                 if self._is_operational_path(scope["path"])
@@ -373,9 +386,13 @@ class BusinessOSApplication:
                     permission=match.route.permission,
                 )
                 module_middleware = self.runtime.middleware.active() if self.runtime else ()
-                response = await compose_middleware(
-                    (*self._middleware, *module_middleware), endpoint
-                )(request)
+                response = await self._run_request_until_disconnect(
+                    compose_middleware((*self._middleware, *module_middleware), endpoint),
+                    request,
+                    receive,
+                )
+        except ClientDisconnectedError:
+            return
         except BusinessOSError as exc:
             if not exc.public:
                 response = Response.json(
@@ -415,6 +432,47 @@ class BusinessOSApplication:
         if scope["method"] == "HEAD":
             response.body = b""
         await response.send(send)
+
+    async def _run_request_until_disconnect(
+        self,
+        endpoint: Callable[[Request], Awaitable[Response]],
+        request: Request,
+        receive: ASGIReceiveCallable,
+    ) -> Response:
+        async def invoke() -> Response:
+            return await endpoint(request)
+
+        handler: asyncio.Task[Response] = asyncio.create_task(
+            invoke(), name="businessos-http-handler"
+        )
+        disconnected = asyncio.create_task(
+            self._wait_for_disconnect(receive),
+            name="businessos-http-disconnect-watcher",
+        )
+        try:
+            done, _ = await asyncio.wait(
+                (handler, disconnected),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except BaseException:
+            handler.cancel()
+            disconnected.cancel()
+            await asyncio.gather(handler, disconnected, return_exceptions=True)
+            raise
+        if handler in done:
+            disconnected.cancel()
+            await asyncio.gather(disconnected, return_exceptions=True)
+            return handler.result()
+        handler.cancel()
+        await asyncio.gather(handler, return_exceptions=True)
+        raise ClientDisconnectedError
+
+    @staticmethod
+    async def _wait_for_disconnect(receive: ASGIReceiveCallable) -> None:
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
 
     @staticmethod
     def _endpoint(

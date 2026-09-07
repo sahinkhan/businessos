@@ -40,6 +40,15 @@ class BusinessOSError(Exception):
         return ErrorPayload(code=self.code, message=self.message, details=self.details)
 
 
+class ClientDisconnectedError(BusinessOSError):
+    def __init__(self) -> None:
+        super().__init__(
+            "client_disconnected",
+            "Client disconnected",
+            status_code=499,
+        )
+
+
 class ConfigurationError(BusinessOSError):
     def __init__(self, message: str) -> None:
         super().__init__("configuration_error", message, status_code=500)

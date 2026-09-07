@@ -17,6 +17,14 @@ Module-owned repositories execute SQLAlchemy statements through
 `HandlingContext.unit_of_work.persistence`; that adapter is bound to the active framework
 transaction and intentionally exposes no commit or rollback operation.
 
+Durable event handlers receive `EventHandlingContext`. Its persistence adapter and the framework
+inbox claim share one tenant-scoped Unit of Work, so a subscriber must not open an independent
+session. Command handlers only write the outbox; they never invoke subscribers directly. Providers
+required by a module manifest are supplied by the distribution composition root, started before
+modules, exposed through typed SDK dependency keys and included in readiness. An absent optional
+provider has no startup or readiness effect, while an absent or unhealthy required capability fails
+closed before the module publishes contributions.
+
 ## Docker Development
 
 Copy `.env.example` to `.env` only when local overrides are needed. The committed Compose defaults are development-only credentials.
@@ -110,6 +118,10 @@ Pyright is configured as an approved secondary checker:
 ```bash
 pyright platform/src examples/proof_module/src
 ```
+
+HTTP ingress extracts W3C trace context and creates a server span. Command, query, event-consumer
+and job dispatch create child spans. Outbox publication restores `traceparent` and `tracestate`
+headers and always derives the tenant NATS subject from the persisted tenant UUID.
 
 Provider integration tests additionally use:
 

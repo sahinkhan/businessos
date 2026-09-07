@@ -148,7 +148,11 @@ businessos/
 
 Phase 0's Python/ASGI documentation cutover is complete. Phase 1 now provides the protected custom ASGI framework foundation, PostgreSQL/Alembic runtime and an external SDK proof module. No business modules or later roadmap foundations are implemented.
 
-The external proof module demonstrates discovery, installation, tenant-aware API operation, module-owned migrations, metadata, permissions, commands/queries/events, object storage, v1-to-v2 upgrade and lifecycle without modifying protected kernel source.
+The external proof module demonstrates discovery, installation, tenant-aware API operation,
+module-owned migrations, metadata, permissions, commands/queries, transactional outbox publication,
+durable inbox consumption, object storage, v1-to-v2 upgrade and lifecycle without importing
+protected kernel internals. Required infrastructure capabilities are health-checked before module
+activation; optional absent providers do not block the runtime.
 
 Core and module migrations are shipped inside their respective wheels and discovered through
 package resources. The coordinator validates the complete multi-head graph before database changes;

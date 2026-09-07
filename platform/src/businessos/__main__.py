@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import multiprocessing
 import os
 import signal
@@ -126,7 +127,14 @@ async def _serve_event_worker() -> None:
 
 
 def _event_worker_child() -> None:
-    asyncio.run(_serve_event_worker())
+    try:
+        asyncio.run(_serve_event_worker())
+    except BaseException as exc:
+        logging.getLogger("businessos.event-worker").error(
+            "Event worker child failed",
+            extra={"error_type": type(exc).__name__},
+        )
+        raise SystemExit(1) from None
 
 
 def _supervise_event_worker(settings: EventWorkerSettings) -> None:

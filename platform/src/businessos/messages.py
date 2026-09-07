@@ -234,10 +234,20 @@ class EventBus:
             permission,
         )
 
-    def decode(self, event_type: str, payload: bytes) -> DomainEvent:
+    def decode(
+        self,
+        event_type: str,
+        payload: bytes,
+        *,
+        schema_version: int | None = None,
+    ) -> DomainEvent:
         registered = self._event_types.get(event_type)
         if registered is None:
             raise NotFoundError(f"Unknown event type: {event_type}")
+        if schema_version is not None and schema_version != registered.schema_version:
+            raise DeliveryUnavailableError(
+                f"Unsupported event schema version: {event_type}/{schema_version}"
+            )
         return registered.model_validate_json(payload)
 
     def subscribers(self, event: DomainEvent) -> tuple[_OwnedEventHandler, ...]:

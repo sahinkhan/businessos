@@ -60,6 +60,8 @@ bounds each subscription, publisher, application and database cleanup step while
 all later finalizers after an earlier timeout. Mandatory cleanup retains ownership until it reaches
 a terminal result. The `businessos events run` supervisor provides the hard process deadline and
 terminates the isolated child if an in-process dependency cannot complete cleanup cooperatively.
+Unexpected child failures emit only a stable error category; raw exception details and credentials
+must never be written to worker stderr.
 
 Verify diagnostics:
 

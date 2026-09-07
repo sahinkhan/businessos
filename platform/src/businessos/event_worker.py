@@ -2,12 +2,12 @@
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import ClassVar
+from datetime import datetime
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -18,7 +18,7 @@ from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
 from businessos.eventing import OutboxPublisher
-from businessos.messages import DomainEvent, DurableSubscriberDeclaration
+from businessos.messages import DurableSubscriberDeclaration
 from businessos.modules import BusinessOSModule, discover_modules
 from businessos.persistence import (
     Database,
@@ -119,10 +119,17 @@ class _WorkerPermissionPolicy:
         return principal_id == self.principal_id and permission in self.permissions
 
 
-class _CommonBrokerEvent(DomainEvent):
+class _CommonBrokerEvent(BaseModel):
     """Validate transport-neutral event fields before contract lookup."""
 
-    event_type: ClassVar[str] = "businessos.internal.common-envelope"
+    model_config = ConfigDict(frozen=True)
+
+    event_id: UUID
+    tenant_id: UUID
+    occurred_at: datetime
+    correlation_id: str
+    causation_id: str | None = None
+    trace_context: Mapping[str, str] = Field(default_factory=dict)
 
 
 class EventWorker:
@@ -375,7 +382,11 @@ class EventWorker:
                 or common_event.correlation_id != correlation_id
             ):
                 raise ValueError("event payload does not match its trusted envelope")
-            event = runtime.events.decode(event_type, delivery.payload)
+            event = runtime.events.decode(
+                event_type,
+                delivery.payload,
+                schema_version=schema_version,
+            )
             if (
                 event.event_id != event_id
                 or event.tenant_id != tenant_id

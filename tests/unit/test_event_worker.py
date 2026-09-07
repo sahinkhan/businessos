@@ -1,11 +1,14 @@
 import asyncio
+import json
+import logging
 from typing import Any, ClassVar, cast
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
-from businessos.errors import BusinessOSError
+import businessos.__main__ as cli
+from businessos.errors import BusinessOSError, DeliveryUnavailableError
 from businessos.event_worker import EventWorkerSettings, create_event_worker
 from businessos.messages import DomainEvent
 from businessos.providers import BrokerEvent, PermanentDeliveryError
@@ -134,6 +137,91 @@ async def test_malformed_unknown_event_is_permanently_rejected() -> None:
         await worker._consume_delivery(delivery)
 
     await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_unknown_event_missing_required_common_timestamp_is_permanently_rejected() -> None:
+    settings = _settings()
+    worker = create_event_worker(settings, modules=(), broker=cast(Any, _Broker()))
+    tenant_id = uuid4()
+    event_id = uuid4()
+    delivery = BrokerEvent(
+        subject=f"businessos.events.tenant.{tenant_id}.future.event",
+        payload=json.dumps(
+            {
+                "event_id": str(event_id),
+                "tenant_id": str(tenant_id),
+                "correlation_id": "missing-timestamp",
+            }
+        ).encode(),
+        headers={
+            "event-id": str(event_id),
+            "event-type": "future.event",
+            "tenant-id": str(tenant_id),
+            "schema-version": "1",
+            "correlation-id": "missing-timestamp",
+        },
+    )
+
+    with pytest.raises(PermanentDeliveryError, match="Invalid event envelope"):
+        await worker._consume_delivery(delivery)
+
+    await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_known_future_event_schema_version_is_retryable() -> None:
+    settings = _settings()
+    worker = create_event_worker(settings, modules=(), broker=cast(Any, _Broker()))
+    assert worker.application.runtime is not None
+
+    async def consume(_: _UnknownEvent, __: object) -> None:
+        return None
+
+    worker.application.runtime.events.subscribe(_UnknownEvent, "projection", cast(Any, consume))
+    tenant_id = uuid4()
+    event = _UnknownEvent(tenant_id=tenant_id, correlation_id="future-schema")
+    delivery = BrokerEvent(
+        subject=f"businessos.events.tenant.{tenant_id}.{event.event_type}",
+        payload=event.model_dump_json().encode(),
+        headers={
+            "event-id": str(event.event_id),
+            "event-type": event.event_type,
+            "tenant-id": str(tenant_id),
+            "schema-version": "2",
+            "correlation-id": event.correlation_id,
+        },
+    )
+
+    with pytest.raises(DeliveryUnavailableError, match="Unsupported event schema version"):
+        await worker._consume_delivery(delivery)
+
+    await worker.stop()
+
+
+def test_event_worker_child_redacts_unexpected_exception_details(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret = "postgresql://probe:PROBE_CREDENTIAL_CANARY@localhost/db"
+
+    async def fail() -> None:
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(cli, "_serve_event_worker", fail)
+    caplog.set_level(logging.ERROR, logger="businessos.event-worker")
+
+    with pytest.raises(SystemExit) as raised:
+        cli._event_worker_child()
+
+    captured = capsys.readouterr()
+    visible_output = captured.out + captured.err + caplog.text
+    assert raised.value.code == 1
+    assert secret not in visible_output
+    assert "PROBE_CREDENTIAL_CANARY" not in visible_output
+    assert "Traceback" not in visible_output
+    assert "Event worker child failed" in visible_output
 
 
 @pytest.mark.asyncio

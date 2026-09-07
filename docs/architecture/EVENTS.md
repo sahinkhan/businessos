@@ -65,7 +65,10 @@ recreation: a valid event is negatively acknowledged while any obligated subscri
 unavailable, then redelivered after a clean re-enable. Removing a package or retiring a module does
 not silently erase its durable obligations; retirement requires a reviewed migration/operational
 policy for outstanding deliveries. Unknown but structurally valid event types are retried for
-rolling-deployment compatibility, while invalid common envelopes are terminated as malformed.
+rolling-deployment compatibility. A known event type carrying an unsupported schema version is
+also retried until a compatible consumer is deployed. The common envelope requires event, tenant,
+occurrence-time and correlation identity; invalid or incomplete common envelopes are terminated as
+malformed before tenant transaction work begins.
 The complete applicable subscriber generation set is admitted atomically before any authorization,
 inbox claim or handler work starts.
 

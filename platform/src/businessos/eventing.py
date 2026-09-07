@@ -18,6 +18,7 @@ from businessos.persistence import (
     InboxReceipt,
     OutboxMessage,
     SQLAlchemyUnitOfWorkFactory,
+    UnitOfWorkFactory,
 )
 from businessos.providers import EventPublisher
 from businessos.telemetry import consumer_span
@@ -107,7 +108,7 @@ class Inbox:
 class DurableEventConsumer:
     """Deliver each subscriber once under its inbox and tenant transaction."""
 
-    def __init__(self, unit_of_work_factory: SQLAlchemyUnitOfWorkFactory, events: EventBus) -> None:
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory, events: EventBus) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._events = events
 
@@ -125,8 +126,8 @@ class DurableEventConsumer:
         with consumer_span(event.event_type, event.trace_context) as trace_id:
             traced_context = replace(context, trace_id=trace_id)
             processed = 0
-            for subscriber in self._events.delivery_subscribers(event):
-                async with self._events.admitted(subscriber):
+            async with self._events.admit_delivery(event) as subscribers:
+                for subscriber in subscribers:
                     await self._events.authorize(traced_context, subscriber.permission)
                     unit_of_work = self._unit_of_work_factory.for_tenant(tenant)
                     async with unit_of_work:

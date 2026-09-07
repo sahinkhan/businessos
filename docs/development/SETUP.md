@@ -57,7 +57,9 @@ permissions are an explicit comma-separated allowlist; an empty allowlist denies
 subscriber. Installation and principal UUIDs identify the trusted worker service account until the
 later identity foundation supplies that deployment integration. The worker's shutdown timeout
 bounds each subscription, publisher, application and database cleanup step while still attempting
-all later finalizers after an earlier timeout.
+all later finalizers after an earlier timeout. Mandatory cleanup retains ownership until it reaches
+a terminal result. The `businessos events run` supervisor provides the hard process deadline and
+terminates the isolated child if an in-process dependency cannot complete cleanup cooperatively.
 
 Verify diagnostics:
 

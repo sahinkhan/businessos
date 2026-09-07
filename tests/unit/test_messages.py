@@ -10,6 +10,7 @@ from businessos.activation import ContributionGate
 from businessos.context import RequestContext, TenantContext
 from businessos.di import Container
 from businessos.errors import BusinessOSError, ConflictError, DeliveryUnavailableError
+from businessos.eventing import DurableEventConsumer
 from businessos.messages import (
     Command,
     DomainEvent,
@@ -429,3 +430,67 @@ def test_durable_subscriber_cannot_be_claimed_by_another_owner() -> None:
             owner="attacker",
             generation=gate.reserve("attacker"),
         )
+
+
+@pytest.mark.asyncio
+async def test_complete_subscriber_set_is_admitted_before_authorization() -> None:
+    gate = ContributionGate()
+    generation_a = gate.reserve("a")
+    generation_b = gate.reserve("b")
+    authorization_entered = asyncio.Event()
+    authorization_release = asyncio.Event()
+
+    class BlockingPolicy:
+        async def is_allowed(
+            self,
+            principal_id: UUID,
+            tenant: TenantContext,
+            permission: str,
+        ) -> bool:
+            authorization_entered.set()
+            await authorization_release.wait()
+            return True
+
+    events = EventBus(gate, Authorizer(BlockingPolicy()))
+
+    async def consume(_: NameChanged, __: EventHandlingContext) -> None:
+        return None
+
+    events.subscribe(
+        NameChanged,
+        "a",
+        consume,
+        owner="a",
+        generation=generation_a,
+        permission="consume",
+    )
+    events.subscribe(
+        NameChanged,
+        "b",
+        consume,
+        owner="b",
+        generation=generation_b,
+    )
+    gate.publish(generation_a)
+    gate.publish(generation_b)
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    event = NameChanged(tenant_id=tenant.tenant_id, correlation_id="atomic-admission", name="n")
+    factory = FakeUnitOfWorkFactory([])
+    container = Container()
+    async with container.request_scope() as dependencies:
+        delivery = asyncio.create_task(
+            DurableEventConsumer(factory, events).consume(
+                event,
+                RequestContext(tenant=tenant),
+                dependencies,
+            )
+        )
+        await authorization_entered.wait()
+        drain = asyncio.create_task(gate.close_and_drain(generation_b, timeout_seconds=1))
+        await asyncio.sleep(0)
+        assert not drain.done()
+        authorization_release.set()
+        assert await delivery == 2
+        await drain
+
+    assert len(factory.created) == 2

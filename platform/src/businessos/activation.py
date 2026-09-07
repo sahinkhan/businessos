@@ -1,7 +1,7 @@
 """Atomic owner-generation admission for runtime contributions."""
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -87,6 +87,30 @@ class ContributionGate:
             state.in_flight -= 1
             if state.in_flight == 0:
                 state.drained.set()
+
+    @asynccontextmanager
+    async def admit_many(
+        self,
+        generations: Iterable[ContributionGeneration | None],
+    ) -> AsyncGenerator[None]:
+        """Atomically admit a complete contribution set before yielding."""
+        unique = tuple(dict.fromkeys(item for item in generations if item is not None))
+        states: list[_GenerationState] = []
+        for generation in unique:
+            state = self._states.get(generation)
+            if state is None or state.lifecycle is not ContributionState.ACTIVE:
+                raise NotFoundError("Module contribution is not active")
+            states.append(state)
+        for state in states:
+            state.in_flight += 1
+            state.drained.clear()
+        try:
+            yield
+        finally:
+            for state in states:
+                state.in_flight -= 1
+                if state.in_flight == 0:
+                    state.drained.set()
 
     async def close_and_drain(
         self,

@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import multiprocessing
 import os
 import signal
 import sys
@@ -124,6 +125,50 @@ async def _serve_event_worker() -> None:
             loop.remove_signal_handler(current_signal)
 
 
+def _event_worker_child() -> None:
+    asyncio.run(_serve_event_worker())
+
+
+def _supervise_event_worker(settings: EventWorkerSettings) -> None:
+    """Give the async worker a hard OS-process shutdown boundary."""
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(target=_event_worker_child, name="businessos-event-worker")
+    stop_requested = False
+
+    def request_stop(_: int, __: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+    process.start()
+    process_id = process.pid
+    if process_id is None:  # pragma: no cover - multiprocessing start contract
+        raise RuntimeError("Event worker process did not start")
+    forced = False
+    exit_code: int | None = None
+    try:
+        while process.is_alive() and not stop_requested:
+            process.join(timeout=0.2)
+        if stop_requested and process.is_alive():
+            os.kill(process_id, signal.SIGTERM)
+            process.join(timeout=settings.process_shutdown_timeout_seconds)
+        if process.is_alive():
+            forced = True
+            process.kill()
+            process.join(timeout=5.0)
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5.0)
+        exit_code = process.exitcode
+        process.close()
+    if forced:
+        raise SystemExit("Event worker exceeded its process shutdown deadline")
+    if exit_code not in {0, -signal.SIGINT, -signal.SIGTERM}:
+        raise SystemExit("Event worker process failed")
+
+
 def _run_events(arguments: Sequence[str]) -> None:
     parser = argparse.ArgumentParser(prog="businessos events")
     subcommands = parser.add_subparsers(dest="action", required=True)
@@ -131,7 +176,11 @@ def _run_events(arguments: Sequence[str]) -> None:
     parsed = parser.parse_args(arguments)
     if parsed.action != "run":  # pragma: no cover - argparse guards this
         parser.error("unsupported event worker action")
-    asyncio.run(_serve_event_worker())
+    try:
+        settings = EventWorkerSettings()  # pyright: ignore[reportCallIssue]
+    except ValidationError:
+        raise SystemExit("Invalid or incomplete event worker configuration") from None
+    _supervise_event_worker(settings)
 
 
 def main(arguments: Sequence[str] | None = None) -> None:

@@ -202,6 +202,12 @@ def _grant_exact_runtime_access(
         ("eventing", "inbox_receipts", APPLICATION_ROLE, sql.SQL("SELECT, INSERT")),
         ("eventing", "outbox_messages", OPERATIONS_ROLE, sql.SQL("SELECT, UPDATE")),
         ("eventing", "inbox_receipts", OPERATIONS_ROLE, sql.SQL("SELECT, INSERT")),
+        (
+            "eventing",
+            "event_subscriber_obligations",
+            OPERATIONS_ROLE,
+            sql.SQL("SELECT, INSERT"),
+        ),
         ("platform_module", "module_runtime_state", APPLICATION_ROLE, sql.SQL("SELECT")),
         (
             "platform_module",
@@ -295,6 +301,7 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
             for schema_name, table_name in (
                 ("eventing", "outbox_messages"),
                 ("eventing", "inbox_receipts"),
+                ("eventing", "event_subscriber_obligations"),
                 ("platform_module", "module_runtime_state"),
                 ("platform_module", "installed_module_migrations"),
                 ("mod_example_phase1_proof", "proof_records"),

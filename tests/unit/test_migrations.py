@@ -87,7 +87,7 @@ def test_plan_supports_core_and_two_independent_module_heads(tmp_path: Path) -> 
     plan = coordinator.plan()
 
     assert plan.heads == (
-        "0004_strict_migration_inventory",
+        "0005_durable_event_subscribers",
         "alpha_0001",
         "beta_0001",
     )
@@ -129,7 +129,7 @@ def test_plan_supports_a_valid_cross_module_merge_revision(tmp_path: Path) -> No
         )
     ).plan()
 
-    assert plan.heads == ("0004_strict_migration_inventory", "merge_0001")
+    assert plan.heads == ("0005_durable_event_subscribers", "merge_0001")
 
 
 def test_plan_rejects_duplicate_revision_and_branch_label(tmp_path: Path) -> None:

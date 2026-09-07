@@ -62,7 +62,8 @@ async def test_runtime_role_is_non_owner_non_bypass_and_rls_is_forced(
                     "c.relrowsecurity, c.relforcerowsecurity "
                     "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
                     "WHERE n.nspname = 'eventing' "
-                    "AND c.relname IN ('inbox_receipts', 'outbox_messages') "
+                    "AND c.relname IN "
+                    "('event_subscriber_obligations', 'inbox_receipts', 'outbox_messages') "
                     "ORDER BY c.relname"
                 )
             )
@@ -73,11 +74,13 @@ async def test_runtime_role_is_non_owner_non_bypass_and_rls_is_forced(
     assert tuple(role) == ("businessos_app", False, False)
     assert database_owner == "businessos_migrator"
     assert [(row[0], row[1]) for row in tables] == [
+        ("eventing", "event_subscriber_obligations"),
         ("eventing", "inbox_receipts"),
         ("eventing", "outbox_messages"),
     ]
     assert all(row[2] == "businessos_migrator" for row in tables)
-    assert all(row[3] is True and row[4] is True for row in tables)
+    assert tuple(tables[0][3:]) == (False, False)
+    assert all(row[3] is True and row[4] is True for row in tables[1:])
 
 
 @pytest.mark.integration
@@ -163,6 +166,12 @@ async def test_runtime_cannot_disable_rls_and_operations_access_is_explicit(
             await unit_of_work.commit()
 
     async with runtime.sessions() as session:
+        can_access_obligations = await session.scalar(
+            text(
+                "SELECT has_table_privilege(current_user, "
+                "'eventing.event_subscriber_obligations', 'SELECT')"
+            )
+        )
         with pytest.raises(DBAPIError):
             await session.execute(
                 text("ALTER TABLE eventing.outbox_messages DISABLE ROW LEVEL SECURITY")
@@ -190,6 +199,24 @@ async def test_runtime_cannot_disable_rls_and_operations_access_is_explicit(
                 "AND c.relname = 'module_runtime_state'"
             )
         )
+        can_read_obligations = await session.scalar(
+            text(
+                "SELECT has_table_privilege(current_user, "
+                "'eventing.event_subscriber_obligations', 'SELECT')"
+            )
+        )
+        can_insert_obligations = await session.scalar(
+            text(
+                "SELECT has_table_privilege(current_user, "
+                "'eventing.event_subscriber_obligations', 'INSERT')"
+            )
+        )
+        can_mutate_obligations = await session.scalar(
+            text(
+                "SELECT has_table_privilege(current_user, "
+                "'eventing.event_subscriber_obligations', 'UPDATE, DELETE')"
+            )
+        )
 
     await runtime.close()
     await operations.close()
@@ -199,3 +226,7 @@ async def test_runtime_cannot_disable_rls_and_operations_access_is_explicit(
     assert can_create is False
     assert can_update_outbox is True
     assert can_access_modules is False
+    assert can_access_obligations is False
+    assert can_read_obligations is True
+    assert can_insert_obligations is True
+    assert can_mutate_obligations is False

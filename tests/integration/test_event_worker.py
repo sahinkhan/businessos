@@ -1,20 +1,25 @@
 import asyncio
 import json
 import os
+from typing import ClassVar
 from uuid import uuid4
 
 import boto3
+import psycopg
 import pytest
 from businessos_proof.module import PROOF_RECORDS, ProofModule, ProofStored, StoreProof
-from sqlalchemy import select
+from sqlalchemy import select, text
 
+from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
+from businessos.errors import DeliveryUnavailableError
 from businessos.event_worker import EventWorkerSettings, create_event_worker
-from businessos.messages import EventHandlingContext
+from businessos.messages import DomainEvent, EventHandlingContext
 from businessos.migrations import MigrationCoordinator
-from businessos.modules import ModuleRegistry
+from businessos.modules import ModuleManifest, ModuleRegistration, ModuleRegistry
 from businessos.persistence import (
     Database,
+    EventSubscriberObligation,
     InboxReceipt,
     OutboxMessage,
     SQLAlchemyUnitOfWorkFactory,
@@ -42,6 +47,43 @@ class _RetryingProofModule(ProofModule):
             raise RuntimeError("deterministic first delivery failure")
         await super()._project(event, context)
         self.projected.set()
+
+
+class _ObligationEvent(DomainEvent):
+    event_type: ClassVar[str] = "test.durable-obligation"
+
+
+class _SubscriberModule:
+    def __init__(self, module_id: str, calls: list[str], completed: asyncio.Event) -> None:
+        self.manifest = ModuleManifest(
+            module_id=module_id,
+            name=module_id,
+            publisher="businessos-tests",
+            version="1.0.0",
+            platform=">=0.1,<1",
+            sdk=">=0.1,<1",
+            entry_point="tests.integration.test_event_worker:_SubscriberModule",
+        )
+        self._calls = calls
+        self._completed = completed
+
+    async def register(self, registration: ModuleRegistration) -> None:
+        registration.event(_ObligationEvent, "projection", self._consume)
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+    async def _consume(
+        self,
+        event: _ObligationEvent,
+        context: EventHandlingContext,
+    ) -> None:
+        self._calls.append(self.manifest.module_id)
+        if len(self._calls) == 2:
+            self._completed.set()
 
 
 @pytest.mark.integration
@@ -224,3 +266,198 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     await inspection_database.close()
 
     await migrations.downgrade_async(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.providers
+@pytest.mark.asyncio
+async def test_subscriber_obligations_survive_worker_recreation(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    migrations = MigrationCoordinator(ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0"))
+    await migrations.upgrade_async(postgres_database.migration_url)
+    tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="test")
+    durable_name = f"businessos-obligations-{uuid4().hex}"
+    settings = EventWorkerSettings(
+        runtime_database_url=postgres_database.runtime_url,
+        operations_database_url=postgres_database.operations_url,
+        nats_url=_required_env("BOS_TEST_NATS_URL"),
+        installation_id=tenant.installation_id,
+        principal_id=tenant.principal_id,
+        durable_name=durable_name,
+        publish_interval_seconds=0.02,
+    )
+    calls: list[str] = []
+    completed = asyncio.Event()
+
+    first_worker = create_event_worker(
+        settings,
+        modules=(
+            _SubscriberModule("example.obligation-a", calls, completed),
+            _SubscriberModule("example.obligation-b", calls, completed),
+        ),
+        broker=NatsJetStreamPublisher((settings.nats_url,)),
+    )
+    await first_worker.start()
+    await first_worker.stop()
+
+    second_broker = NatsJetStreamPublisher((settings.nats_url,))
+    second_worker = create_event_worker(
+        settings,
+        modules=(_SubscriberModule("example.obligation-a", calls, completed),),
+        broker=second_broker,
+    )
+    await second_worker.start()
+    assert second_worker.application.runtime is not None
+    event = _ObligationEvent(
+        tenant_id=tenant.tenant_id,
+        correlation_id="durable-obligation-restart",
+    )
+    with pytest.raises(DeliveryUnavailableError):
+        second_worker.application.runtime.events.delivery_subscribers(event)
+    await second_broker.publish(
+        f"businessos.events.tenant.{tenant.tenant_id}.{event.event_type}",
+        event.model_dump_json().encode(),
+        {
+            "event-id": str(event.event_id),
+            "event-type": event.event_type,
+            "tenant-id": str(event.tenant_id),
+            "schema-version": str(event.schema_version),
+            "correlation-id": event.correlation_id,
+        },
+    )
+    await asyncio.sleep(0.3)
+    assert calls == []
+    await second_worker.stop()
+
+    third_worker = create_event_worker(
+        settings,
+        modules=(
+            _SubscriberModule("example.obligation-a", calls, completed),
+            _SubscriberModule("example.obligation-b", calls, completed),
+        ),
+        broker=NatsJetStreamPublisher((settings.nats_url,)),
+    )
+    await third_worker.start()
+    await asyncio.wait_for(completed.wait(), timeout=10.0)
+    assert calls == ["example.obligation-a", "example.obligation-b"]
+
+    inspection = Database(Settings(database_url=postgres_database.operations_url))
+    inspection_factory = SQLAlchemyUnitOfWorkFactory(
+        inspection.sessions,
+        system_sessions=inspection.sessions,
+    )
+    async with inspection_factory.system() as unit_of_work:
+        assert unit_of_work.session is not None
+        obligations = (
+            await unit_of_work.session.scalars(
+                select(EventSubscriberObligation).where(
+                    EventSubscriberObligation.event_type == event.event_type
+                )
+            )
+        ).all()
+        obligation_identities = {(item.subscriber, item.owner) for item in obligations}
+    assert obligation_identities == {
+        ("example.obligation-a.projection", "example.obligation-a"),
+        ("example.obligation-b.projection", "example.obligation-b"),
+    }
+    runtime_inspection = Database(Settings(database_url=postgres_database.runtime_url))
+    runtime_factory = SQLAlchemyUnitOfWorkFactory(runtime_inspection.sessions)
+    async with runtime_factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        receipts = (
+            await unit_of_work.session.scalars(
+                select(InboxReceipt).where(InboxReceipt.event_id == event.event_id)
+            )
+        ).all()
+    assert len(receipts) == 2
+    await third_worker.stop()
+    await inspection.close()
+    await runtime_inspection.close()
+    await migrations.downgrade_async(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_worker_stop_retains_real_uow_cleanup_until_backend_closes(
+    postgres_database: PostgreSQLTestDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = EventWorkerSettings(
+        runtime_database_url=postgres_database.runtime_url,
+        operations_database_url=postgres_database.operations_url,
+        installation_id=uuid4(),
+        principal_id=uuid4(),
+        shutdown_timeout_seconds=0.02,
+    )
+    worker = create_event_worker(
+        settings,
+        modules=(),
+        broker=NatsJetStreamPublisher(("nats://unused",)),
+    )
+    session = worker._operations_database.sessions()
+    original_rollback = session.rollback
+    publisher_entered = asyncio.Event()
+    rollback_entered = asyncio.Event()
+    rollback_release = asyncio.Event()
+    backend_pid: int | None = None
+
+    async def delayed_rollback() -> None:
+        rollback_entered.set()
+        await rollback_release.wait()
+        await original_rollback()
+
+    monkeypatch.setattr(session, "rollback", delayed_rollback)
+    factory = SQLAlchemyUnitOfWorkFactory(
+        lambda: session,
+        system_sessions=lambda: session,
+    )
+
+    async def publisher_with_transaction() -> None:
+        nonlocal backend_pid
+        async with factory.system() as unit_of_work:
+            assert unit_of_work.session is not None
+            backend_pid = await unit_of_work.session.scalar(text("SELECT pg_backend_pid()"))
+            publisher_entered.set()
+            await asyncio.Event().wait()
+
+    publisher = asyncio.create_task(
+        publisher_with_transaction(),
+        name="real-uow-publisher",
+    )
+    worker._publisher_task = publisher
+    worker._started = True
+    await publisher_entered.wait()
+    stopping = asyncio.create_task(worker.stop())
+    await rollback_entered.wait()
+    for _ in range(3):
+        stopping.cancel()
+        await asyncio.sleep(0)
+    try:
+        await asyncio.sleep(0.05)
+        assert not stopping.done()
+        assert not publisher.done()
+        assert backend_pid is not None
+        with psycopg.connect(postgres_database.administrator_url) as connection:
+            backend_state = connection.execute(
+                "SELECT state FROM pg_stat_activity WHERE pid = %s",
+                (backend_pid,),
+            ).fetchone()
+        assert backend_state == ("idle in transaction",)
+    finally:
+        rollback_release.set()
+
+    with pytest.raises(BaseExceptionGroup, match="Event worker cleanup failed"):
+        await asyncio.wait_for(stopping, timeout=1.0)
+    assert stopping.cancelling() == 0
+    assert not stopping.cancelled()
+    assert publisher.done()
+    assert worker._publisher_task is None
+    with psycopg.connect(postgres_database.administrator_url) as connection:
+        backend_count = connection.execute(
+            "SELECT count(*) FROM pg_stat_activity WHERE pid = %s",
+            (backend_pid,),
+        ).fetchone()
+    assert backend_count == (0,)

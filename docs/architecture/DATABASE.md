@@ -175,6 +175,11 @@ When a domain command produces an integration/domain event, authoritative state 
 
 Publishing to NATS occurs after commit through the outbox publisher.
 
+The migration-owned `eventing.event_subscriber_obligations` table stores non-tenant event contract
+identity and ownership. Only the isolated operations role may select or append obligations; the web
+application role has no access, and obligation removal requires an explicit reviewed migration or
+operational retirement procedure.
+
 ## Audit
 
 Audit evidence is not a substitute for domain history. Critical domain histories, financial ledgers and inventory ledgers retain their own immutable business records in addition to security/business audit logs.

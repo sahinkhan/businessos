@@ -50,7 +50,8 @@ class _RawMessage:
     async def ack(self) -> None:
         self.acked += 1
 
-    async def nak(self) -> None:
+    async def nak(self, *, delay: float | None = None) -> None:
+        assert delay == 0.25
         self.nacked += 1
 
     async def term(self) -> None:

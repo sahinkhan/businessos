@@ -2,7 +2,13 @@
 
 from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.database import Database
-from businessos.persistence.models import Base, InboxReceipt, ModuleRuntimeState, OutboxMessage
+from businessos.persistence.models import (
+    Base,
+    EventSubscriberObligation,
+    InboxReceipt,
+    ModuleRuntimeState,
+    OutboxMessage,
+)
 from businessos.persistence.outbox import PendingOutboxMessage
 from businessos.persistence.uow import (
     SQLAlchemyUnitOfWork,
@@ -14,6 +20,7 @@ from businessos.persistence.uow import (
 __all__ = [
     "Base",
     "Database",
+    "EventSubscriberObligation",
     "InboxReceipt",
     "ModuleRuntimeState",
     "OutboxMessage",

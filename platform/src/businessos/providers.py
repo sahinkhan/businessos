@@ -155,12 +155,14 @@ class NatsJetStreamPublisher:
         subjects: tuple[str, ...] = ("businessos.events.>",),
         readiness_timeout_seconds: float = 5.0,
         subscription_drain_timeout_seconds: float = 10.0,
+        delivery_retry_delay_seconds: float = 0.25,
     ) -> None:
         self._servers = servers
         self._stream_name = stream_name
         self._subjects = subjects
         self._readiness_timeout_seconds = readiness_timeout_seconds
         self._subscription_drain_timeout_seconds = subscription_drain_timeout_seconds
+        self._delivery_retry_delay_seconds = delivery_retry_delay_seconds
         self._connection: Any = None
         self._jetstream: Any = None
         self._subscriptions: list[_NatsSubscription] = []
@@ -204,14 +206,14 @@ class NatsJetStreamPublisher:
                 )
                 await message.term()
             except asyncio.CancelledError:
-                await message.nak()
+                await message.nak(delay=self._delivery_retry_delay_seconds)
                 raise
             except Exception as exc:
                 self._logger.warning(
                     "Event delivery will be retried",
                     extra={"error_type": type(exc).__name__},
                 )
-                await message.nak()
+                await message.nak(delay=self._delivery_retry_delay_seconds)
             else:
                 await message.ack()
 

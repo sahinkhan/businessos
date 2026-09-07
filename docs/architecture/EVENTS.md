@@ -59,10 +59,15 @@ the non-owner, `NOBYPASSRLS` application role. The web process never receives op
 credentials. A JetStream message is acknowledged only after every admitted subscriber has either
 committed its inbox receipt and side effect or was already durably claimed. Retryable failures are
 negatively acknowledged; malformed envelopes are terminated without entering a tenant transaction.
-Subscriber obligations survive module disable/removal in the running process: a valid event is
-negatively acknowledged while any obligated subscriber generation is unavailable, then redelivered
-after a clean re-enable. Unknown but well-formed event types are likewise retried for rolling
-deployment compatibility rather than classified as malformed.
+Subscriber identity, owner and delivery obligations are persisted in migration-owned kernel
+metadata using the limited operations role. They survive module disable, removal and worker
+recreation: a valid event is negatively acknowledged while any obligated subscriber generation is
+unavailable, then redelivered after a clean re-enable. Removing a package or retiring a module does
+not silently erase its durable obligations; retirement requires a reviewed migration/operational
+policy for outstanding deliveries. Unknown but structurally valid event types are retried for
+rolling-deployment compatibility, while invalid common envelopes are terminated as malformed.
+The complete applicable subscriber generation set is admitted atomically before any authorization,
+inbox claim or handler work starts.
 
 Authoritative worker tenant context is established only when the framework-owned subject, headers
 and validated event payload agree on the tenant UUID, event UUID, type, version and correlation ID.

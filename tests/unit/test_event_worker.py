@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from uuid import uuid4
 
 import pytest
@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from businessos.errors import BusinessOSError
 from businessos.event_worker import EventWorkerSettings, create_event_worker
+from businessos.messages import DomainEvent
 from businessos.providers import BrokerEvent, PermanentDeliveryError
 
 
@@ -19,6 +20,10 @@ class _Broker:
 
     async def subscribe(self, subject: str, durable_name: str, handler: object) -> object:
         raise AssertionError("invalid envelope must not subscribe")
+
+
+class _UnknownEvent(DomainEvent):
+    event_type: ClassVar[str] = "future.event"
 
 
 def _settings() -> EventWorkerSettings:
@@ -84,9 +89,14 @@ async def test_unknown_well_formed_event_is_retryable_for_rolling_deployments() 
     worker = create_event_worker(settings, modules=(), broker=cast(Any, _Broker()))
     tenant_id = uuid4()
     event_id = uuid4()
+    event = _UnknownEvent(
+        event_id=event_id,
+        tenant_id=tenant_id,
+        correlation_id="rolling-deployment",
+    )
     delivery = BrokerEvent(
         subject=f"businessos.events.tenant.{tenant_id}.future.event",
-        payload=b"{}",
+        payload=event.model_dump_json().encode(),
         headers={
             "event-id": str(event_id),
             "event-type": "future.event",
@@ -100,6 +110,29 @@ async def test_unknown_well_formed_event_is_retryable_for_rolling_deployments() 
         await worker._consume_delivery(delivery)
 
     assert raised.value.code == "not_found"
+    await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_malformed_unknown_event_is_permanently_rejected() -> None:
+    settings = _settings()
+    worker = create_event_worker(settings, modules=(), broker=cast(Any, _Broker()))
+    tenant_id = uuid4()
+    delivery = BrokerEvent(
+        subject=f"businessos.events.tenant.{tenant_id}.future.event",
+        payload=b"not-json",
+        headers={
+            "event-id": str(uuid4()),
+            "event-type": "future.event",
+            "tenant-id": str(tenant_id),
+            "schema-version": "1",
+            "correlation-id": "malformed-unknown",
+        },
+    )
+
+    with pytest.raises(PermanentDeliveryError, match="Invalid event envelope"):
+        await worker._consume_delivery(delivery)
+
     await worker.stop()
 
 
@@ -183,3 +216,61 @@ async def test_worker_stop_bounds_stalled_publisher_and_runs_finalizers() -> Non
     assert application_stopped
     assert database_closed
     assert worker._publisher_task is None
+
+
+@pytest.mark.asyncio
+async def test_worker_retains_cleanup_ownership_until_resistant_publisher_finishes() -> None:
+    settings = _settings().model_copy(update={"shutdown_timeout_seconds": 0.01})
+    worker = create_event_worker(settings, modules=(), broker=cast(Any, _Broker()))
+    publisher_entered = asyncio.Event()
+    cleanup_entered = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    application_stopped = False
+    database_closed = False
+
+    async def resistant_publisher() -> None:
+        publisher_entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_entered.set()
+            current = asyncio.current_task()
+            while not cleanup_release.is_set():
+                try:
+                    await asyncio.shield(cleanup_release.wait())
+                except asyncio.CancelledError:
+                    if current is not None:
+                        while current.cancelling():
+                            current.uncancel()
+
+    async def shutdown() -> None:
+        nonlocal application_stopped
+        application_stopped = True
+
+    async def close_database() -> None:
+        nonlocal database_closed
+        database_closed = True
+
+    cast(Any, worker.application).shutdown = shutdown
+    cast(Any, worker._operations_database).close = close_database
+    publisher = asyncio.create_task(resistant_publisher(), name="resistant-publisher")
+    worker._publisher_task = publisher
+    worker._started = True
+    await publisher_entered.wait()
+    stopping = asyncio.create_task(worker.stop())
+    await cleanup_entered.wait()
+    await asyncio.sleep(0.03)
+
+    assert not stopping.done()
+    assert not publisher.done()
+    assert worker._publisher_task is publisher
+    assert application_stopped
+    assert not database_closed
+
+    cleanup_release.set()
+    with pytest.raises(BaseExceptionGroup, match="Event worker cleanup failed"):
+        await asyncio.wait_for(stopping, timeout=0.5)
+
+    assert publisher.done()
+    assert worker._publisher_task is None
+    assert database_closed

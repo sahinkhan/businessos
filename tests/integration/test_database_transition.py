@@ -65,6 +65,7 @@ def _post_transition_security_snapshot(database_url: str) -> dict[str, object]:
                 "JOIN pg_roles AS owner ON owner.oid = c.relowner "
                 "WHERE (n.nspname, c.relname) IN "
                 "(('eventing', 'outbox_messages'), ('eventing', 'inbox_receipts'), "
+                "('eventing', 'event_subscriber_obligations'), "
                 "('platform_module', 'module_runtime_state'), "
                 "('platform_module', 'installed_module_migrations'), "
                 "('mod_example_phase1_proof', 'proof_records')) "
@@ -75,6 +76,7 @@ def _post_transition_security_snapshot(database_url: str) -> dict[str, object]:
                 "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
                 "WHERE (n.nspname, c.relname) IN "
                 "(('eventing', 'outbox_messages'), ('eventing', 'inbox_receipts'), "
+                "('eventing', 'event_subscriber_obligations'), "
                 "('mod_example_phase1_proof', 'proof_records')) "
                 "ORDER BY n.nspname, c.relname"
             ).fetchall(),
@@ -268,6 +270,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
                 "JOIN pg_roles AS owner ON owner.oid = c.relowner "
                 "WHERE (n.nspname, c.relname) IN "
                 "(('eventing', 'outbox_messages'), ('eventing', 'inbox_receipts'), "
+                "('eventing', 'event_subscriber_obligations'), "
                 "('platform_module', 'module_runtime_state'), "
                 "('platform_module', 'installed_module_migrations'), "
                 "('mod_example_phase1_proof', 'proof_records')) "
@@ -289,7 +292,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
                 "SELECT oid FROM pg_database WHERE datname = current_database()"
             ).fetchone()
         assert retained == ("retained-value", "retained-description")
-        assert revisions == {("0004_strict_migration_inventory",), ("proof_0003",)}
+        assert revisions == {("0005_durable_event_subscribers",), ("proof_0003",)}
         assert roles == [
             ("businessos_app", False, False, False),
             ("businessos_migrator", False, False, False),

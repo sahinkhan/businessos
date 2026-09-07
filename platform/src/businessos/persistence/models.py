@@ -57,6 +57,18 @@ class InboxReceipt(Base):
     )
 
 
+class EventSubscriberObligation(Base):
+    __tablename__ = "event_subscriber_obligations"
+    __table_args__ = ({"schema": "eventing"},)
+
+    event_type: Mapped[str] = mapped_column(String(200), primary_key=True)
+    subscriber: Mapped[str] = mapped_column(String(200), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class ModuleRuntimeState(Base):
     __tablename__ = "module_runtime_state"
     __table_args__ = ({"schema": "platform_module"},)

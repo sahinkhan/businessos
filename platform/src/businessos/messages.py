@@ -1,6 +1,6 @@
 """Framework-owned command, query and event contracts and dispatch."""
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -179,6 +179,13 @@ class _OwnedEventHandler:
     permission: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class DurableSubscriberDeclaration:
+    event_type: str
+    subscriber: str
+    owner: str
+
+
 class EventBus:
     def __init__(
         self,
@@ -189,7 +196,7 @@ class EventBus:
         self._authorizer = authorizer
         self._handlers: dict[type[DomainEvent], dict[str, _OwnedEventHandler]] = {}
         self._event_types: dict[str, type[DomainEvent]] = {}
-        self._durable_subscriber_owners: dict[type[DomainEvent], dict[str, str]] = {}
+        self._durable_subscriber_owners: dict[str, dict[str, str]] = {}
 
     def subscribe[E: DomainEvent](
         self,
@@ -206,7 +213,9 @@ class EventBus:
             raise ConflictError(f"Event type is already registered: {event_type.event_type}")
         self._event_types[event_type.event_type] = event_type
         resolved_owner = owner or subscriber
-        durable_owner = self._durable_subscriber_owners.get(event_type, {}).get(subscriber)
+        durable_owner = self._durable_subscriber_owners.get(event_type.event_type, {}).get(
+            subscriber
+        )
         if durable_owner is not None and durable_owner != resolved_owner:
             raise ConflictError(
                 f"Durable event subscriber is owned by another module: "
@@ -242,12 +251,62 @@ class EventBus:
     def delivery_subscribers(self, event: DomainEvent) -> tuple[_OwnedEventHandler, ...]:
         """Return the complete active obligation set or require broker redelivery."""
         handlers = self._handlers.get(type(event), {})
-        obligated = set(self._durable_subscriber_owners.get(type(event), {}))
+        obligated = set(self._durable_subscriber_owners.get(event.event_type, {}))
         obligated.update(handlers)
         active = self.subscribers(event)
         if obligated - {handler.subscriber for handler in active}:
             raise DeliveryUnavailableError("Durable event subscriber is temporarily unavailable")
         return active
+
+    @asynccontextmanager
+    async def admit_delivery(
+        self,
+        event: DomainEvent,
+    ) -> AsyncGenerator[tuple[_OwnedEventHandler, ...]]:
+        """Hold one atomic admission lease for the complete durable subscriber set."""
+        subscribers = self.delivery_subscribers(event)
+        if self._gate is None:
+            yield subscribers
+            return
+        async with self._gate.admit_many(item.generation for item in subscribers):
+            yield subscribers
+
+    def subscriber_declarations(self) -> tuple[DurableSubscriberDeclaration, ...]:
+        return tuple(
+            DurableSubscriberDeclaration(event_type.event_type, subscriber, handler.owner)
+            for event_type, handlers in sorted(
+                self._handlers.items(), key=lambda item: item[0].event_type
+            )
+            for subscriber, handler in sorted(handlers.items())
+        )
+
+    def bind_durable_subscribers(
+        self,
+        declarations: Iterable[DurableSubscriberDeclaration],
+    ) -> None:
+        merged = {
+            event_type: dict(owners)
+            for event_type, owners in self._durable_subscriber_owners.items()
+        }
+        for declaration in declarations:
+            owners = merged.setdefault(declaration.event_type, {})
+            existing = owners.get(declaration.subscriber)
+            if existing is not None and existing != declaration.owner:
+                raise ConflictError(
+                    "Durable event subscriber ownership changed: "
+                    f"{declaration.event_type}/{declaration.subscriber}"
+                )
+            for event_type, handlers in self._handlers.items():
+                if event_type.event_type != declaration.event_type:
+                    continue
+                current = handlers.get(declaration.subscriber)
+                if current is not None and current.owner != declaration.owner:
+                    raise ConflictError(
+                        "Durable event subscriber is owned by another module: "
+                        f"{declaration.event_type}/{declaration.subscriber}"
+                    )
+            owners[declaration.subscriber] = declaration.owner
+        self._durable_subscriber_owners = merged
 
     async def authorize(self, context: RequestContext, permission: str | None) -> None:
         await self._authorize(context, permission)
@@ -291,7 +350,9 @@ class EventBus:
         for event_type in tuple(self._handlers):
             handlers = self._handlers[event_type]
             if generation_was_published:
-                durable_owners = self._durable_subscriber_owners.setdefault(event_type, {})
+                durable_owners = self._durable_subscriber_owners.setdefault(
+                    event_type.event_type, {}
+                )
                 for handler in handlers.values():
                     if handler.generation == generation:
                         durable_owners[handler.subscriber] = handler.owner
@@ -302,7 +363,7 @@ class EventBus:
             }
             if not self._handlers[event_type]:
                 del self._handlers[event_type]
-                if not self._durable_subscriber_owners.get(event_type):
+                if not self._durable_subscriber_owners.get(event_type.event_type):
                     self._event_types.pop(event_type.event_type, None)
 
 

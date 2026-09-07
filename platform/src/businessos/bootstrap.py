@@ -110,7 +110,7 @@ def create_application(
             )
     features = FeatureFlagRegistry(contributions)
     jobs = JobHandlerRegistry(contributions, resolved_authorizer)
-    module_registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    module_registry = ModuleRegistry(platform_version=version, sdk_version="0.1.0")
     for module in modules:
         module_registry.add(module)
 

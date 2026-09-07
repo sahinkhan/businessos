@@ -15,29 +15,40 @@ FROM base AS wheel-builder
 COPY pyproject.toml README.md ./
 COPY requirements/constraints-py313.txt /build/constraints-py313.txt
 COPY platform ./platform
+COPY foundations ./foundations
 COPY examples/proof_module ./examples/proof_module
 ENV PIP_CONSTRAINT=/build/constraints-py313.txt
 RUN python -m pip wheel --no-deps --wheel-dir /wheels . \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/tenant \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/identity \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/organization \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./examples/proof_module
 
 FROM base AS development
 COPY pyproject.toml README.md ./
 COPY requirements ./requirements
 COPY platform ./platform
+COPY foundations ./foundations
 COPY examples/proof_module ./examples/proof_module
 RUN python -m pip install --no-cache-dir \
     --constraint requirements/constraints-py313.txt \
     -e '.[dev,providers]' \
+    -e foundations/tenant \
+    -e foundations/identity \
+    -e foundations/organization \
     -e examples/proof_module
 COPY . .
 CMD ["uvicorn", "businessos.asgi:application", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 FROM base AS production
 COPY requirements/constraints-py313.txt /tmp/constraints-py313.txt
-COPY --from=wheel-builder /wheels/businessos-*.whl /tmp/wheels/
+COPY --from=wheel-builder /wheels/*.whl /tmp/wheels/
 RUN python -m pip install --no-cache-dir \
     --constraint /tmp/constraints-py313.txt \
-    '/tmp/wheels/businessos-0.1.0-py3-none-any.whl[providers]' \
+    '/tmp/wheels/businessos-0.2.0-py3-none-any.whl[providers]' \
+    /tmp/wheels/businessos_foundation_tenant-*.whl \
+    /tmp/wheels/businessos_foundation_identity-*.whl \
+    /tmp/wheels/businessos_foundation_organization-*.whl \
     && rm -rf /tmp/wheels /tmp/constraints-py313.txt
 USER 65532:65532
 WORKDIR /srv/businessos

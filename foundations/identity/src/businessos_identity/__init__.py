@@ -1,0 +1,63 @@
+"""BusinessOS identity foundation public surface."""
+
+from .contracts import (
+    ActiveScopeSelection,
+    AuthenticationStrength,
+    BreakGlassCredentialValidator,
+    IdentityContract,
+    MembershipRecord,
+    MembershipStatus,
+    PrincipalIdentity,
+    SAMLAssertionValidator,
+)
+from .module import (
+    ConfigureOIDCProvider,
+    CreateUser,
+    GetMembership,
+    GrantMembership,
+    IdentityModule,
+    MapExternalIdentity,
+    MembershipGranted,
+    MembershipRevoked,
+    RegisterDevice,
+    RegisterServiceAccount,
+    RevokeMembership,
+    SetMFAPolicy,
+)
+from .oidc import (
+    OIDCConfiguration,
+    OIDCContextResolver,
+    OIDCTokenVerifier,
+    RemoteJWKSetResolver,
+    SigningKeyResolver,
+    VerifiedOIDCClaims,
+)
+
+__all__ = [
+    "ActiveScopeSelection",
+    "AuthenticationStrength",
+    "BreakGlassCredentialValidator",
+    "ConfigureOIDCProvider",
+    "CreateUser",
+    "GetMembership",
+    "GrantMembership",
+    "IdentityContract",
+    "IdentityModule",
+    "MapExternalIdentity",
+    "MembershipGranted",
+    "MembershipRecord",
+    "MembershipRevoked",
+    "MembershipStatus",
+    "OIDCConfiguration",
+    "OIDCContextResolver",
+    "OIDCTokenVerifier",
+    "PrincipalIdentity",
+    "RegisterDevice",
+    "RegisterServiceAccount",
+    "RemoteJWKSetResolver",
+    "RevokeMembership",
+    "SAMLAssertionValidator",
+    "SetMFAPolicy",
+    "SigningKeyResolver",
+    "VerifiedOIDCClaims",
+]

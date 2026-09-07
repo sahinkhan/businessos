@@ -1,0 +1,21 @@
+{
+  "module_id": "foundation.tenant",
+  "name": "Tenant Management",
+  "publisher": "BusinessOS",
+  "version": "0.2.0",
+  "platform": ">=0.1,<1",
+  "sdk": ">=0.1,<1",
+  "python": ">=3.13",
+  "execution_type": "in_process",
+  "entry_point": "businessos_tenant:TenantModule",
+  "dependencies": [],
+  "capabilities": [],
+  "permissions": [
+    "foundation.tenant.read",
+    "foundation.tenant.manage",
+    "foundation.tenant.provision"
+  ],
+  "migrations": ["python://businessos_tenant/migrations/versions"],
+  "migration_namespace": "foundation_tenant",
+  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+}

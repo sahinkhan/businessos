@@ -35,15 +35,18 @@ jobs:
       - name: Install constrained framework and proof module
         run: |
           python -m pip install --constraint requirements/constraints-py313.txt -e '.[dev,providers]'
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/tenant
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/identity
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/organization
           python -m pip install --constraint requirements/constraints-py313.txt -e examples/proof_module
       - name: Ruff formatting
-        run: ruff format --check platform/src examples tests
+        run: ruff format --check platform/src foundations examples tests
       - name: Ruff linting
-        run: ruff check platform/src examples tests
+        run: ruff check platform/src foundations examples tests
       - name: Static typing
         run: |
-          mypy platform/src tests examples/proof_module/src
-          pyright platform/src examples/proof_module/src
+          mypy platform/src foundations tests examples/proof_module/src
+          pyright platform/src foundations examples/proof_module/src
       - name: Unit tests
         run: pytest -q tests/unit
       - name: Whole-suite collection

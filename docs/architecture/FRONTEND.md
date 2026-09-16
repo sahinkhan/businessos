@@ -11,6 +11,14 @@ The authenticated enterprise backoffice uses:
 
 Next.js is optional for public storefronts, portals and SEO/SSR-heavy applications.
 
+## UI Foundation Gate
+
+The dedicated enterprise frontend foundation is defined in `docs/roadmap/PHASE-4.5-UI-FOUNDATION.md`.
+
+Phase 4.5 is an inter-phase dependency gate after certified Phase 4 and before Phase 5 Metadata, Studio and Dynamic UI. It owns the reusable shell, design-system primitives, theme/tokens, routing/navigation contribution contracts, scope presentation, permission-aware presentation helpers, form/table foundations, i18n, accessibility, responsive behavior, data-access conventions and frontend CI baseline.
+
+Phase 5 consumes these stable primitives for metadata-driven rendering. Phase 4.5 must not implement the Phase 5 metadata registry, dynamic renderer or Studio, and Phase 5 must not replace the shared shell/design-system architecture with a parallel private UI framework.
+
 ## Goals
 
 The frontend must support a large modular enterprise application without forcing every module to own an independent frontend shell.

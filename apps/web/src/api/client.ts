@@ -1,0 +1,122 @@
+import { ApiError, RequestOptions } from './types';
+
+export class ApiClient {
+  private baseUrl: string;
+
+  constructor(baseUrl: string = '/api') {
+    this.baseUrl = baseUrl;
+  }
+
+  private getAuthToken(): string | null {
+    try {
+      const sessionStr = localStorage.getItem('businessos.auth.session');
+      if (sessionStr) {
+        const session = JSON.parse(sessionStr);
+        return session.token || null;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  private getActiveScope() {
+    try {
+      const scopeStr = localStorage.getItem('businessos.active_scope');
+      if (scopeStr) return JSON.parse(scopeStr);
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  public async request<T = any>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    const { params, body, headers: customHeaders, scope, ...customOptions } = options;
+
+    let url = endpoint.startsWith('http')
+      ? endpoint
+      : `${this.baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+
+    if (params) {
+      const searchParams = new URLSearchParams();
+      Object.entries(params).forEach(([key, val]) => {
+        if (val !== undefined && val !== null) {
+          searchParams.append(key, String(val));
+        }
+      });
+      const qs = searchParams.toString();
+      if (qs) {
+        url += (url.includes('?') ? '&' : '?') + qs;
+      }
+    }
+
+    const token = this.getAuthToken();
+    const activeScope = scope || this.getActiveScope();
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'X-Correlation-Id': 'corr_' + Math.random().toString(36).substring(2, 9),
+      ...(customHeaders as Record<string, string>),
+    };
+
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    if (activeScope?.tenantId) {
+      headers['X-Tenant-Id'] = activeScope.tenantId;
+    }
+    if (activeScope?.companyId) {
+      headers['X-Company-Id'] = activeScope.companyId;
+    }
+    if (activeScope?.siteId) {
+      headers['X-Operating-Site-Id'] = activeScope.siteId;
+    }
+
+    const config: RequestInit = {
+      ...customOptions,
+      headers,
+    };
+
+    if (body !== undefined) {
+      config.body = typeof body === 'string' ? body : JSON.stringify(body);
+    }
+
+    const response = await fetch(url, config);
+
+    if (!response.ok) {
+      let errorPayload = { code: 'HTTP_ERROR', message: response.statusText };
+      try {
+        errorPayload = await response.json();
+      } catch {
+        // ignore
+      }
+      throw new ApiError(response.status, errorPayload);
+    }
+
+    if (response.status === 204) {
+      return {} as T;
+    }
+
+    return (await response.json()) as T;
+  }
+
+  public get<T = any>(endpoint: string, options?: RequestOptions): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: 'GET' });
+  }
+
+  public post<T = any>(endpoint: string, body?: any, options?: RequestOptions): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: 'POST', body });
+  }
+
+  public put<T = any>(endpoint: string, body?: any, options?: RequestOptions): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: 'PUT', body });
+  }
+
+  public delete<T = any>(endpoint: string, options?: RequestOptions): Promise<T> {
+    return this.request<T>(endpoint, { ...options, method: 'DELETE' });
+  }
+}
+
+export const apiClient = new ApiClient();

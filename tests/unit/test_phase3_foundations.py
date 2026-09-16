@@ -1,35 +1,27 @@
 """Unit tests for Phase 3 foundational modules: UoM, Geography, Reference Data, and Party."""
 
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
 from uuid import uuid4
-import pytest
-from pydantic import ValidationError
 
+import pytest
 from businessos_geography import (
     AddressFormatProviderContract,
     AddressRecord,
-    CountryRecord,
     RegisterCountry,
 )
 from businessos_party import (
-    AddContactPoint,
-    AddExternalIdentifier,
-    AddPartyRelationship,
     CreateOrganizationParty,
     CreatePersonParty,
 )
 from businessos_reference_data import (
-    ConfigureNumberSequence,
-    CreateReferenceValue,
     RegisterReferenceSet,
 )
 from businessos_uom import (
-    CreateMeasurementCategory,
-    CreateUnitOfMeasure,
     UnitOfMeasureRecord,
     UomConversionService,
 )
+from pydantic import ValidationError
 
 
 def test_uom_conversion_service_exact_arithmetic_and_round_trip() -> None:

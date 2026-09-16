@@ -10,7 +10,6 @@ from .contracts import (
 from .models import ADDRESSES, CITIES, COUNTRIES, SUBDIVISIONS, metadata
 from .module import (
     AddressCreated,
-    CountryRegistered,
     CreateAddress,
     GeographyModule,
     GetAddress,
@@ -21,6 +20,9 @@ from .module import (
     RegisterCity,
     RegisterCountry,
     RegisterSubdivision,
+)
+from .module import (
+    CountryRegistered as CountryRegistered,
 )
 
 __all__ = [

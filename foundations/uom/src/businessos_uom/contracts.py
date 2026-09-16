@@ -2,17 +2,17 @@
 
 from datetime import datetime
 from decimal import (
-    Decimal,
     ROUND_CEILING,
     ROUND_DOWN,
     ROUND_FLOOR,
     ROUND_HALF_EVEN,
     ROUND_HALF_UP,
     ROUND_UP,
+    Decimal,
 )
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict
 
+from pydantic import BaseModel, ConfigDict
 
 _ROUNDING_MODES = {
     "ROUND_HALF_UP": ROUND_HALF_UP,
@@ -76,7 +76,8 @@ class UomConversionService:
     ) -> ConvertedAmountRecord:
         if from_unit.category_code != to_unit.category_code:
             raise ValueError(
-                f"Cannot convert between different categories: '{from_unit.category_code}' and '{to_unit.category_code}'"
+                f"Cannot convert between different categories: '{from_unit.category_code}' "
+                f"and '{to_unit.category_code}'"
             )
 
         amt = Decimal(str(amount))

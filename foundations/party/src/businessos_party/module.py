@@ -5,8 +5,10 @@ from datetime import date, datetime
 from importlib.resources import files
 from typing import ClassVar
 from uuid import UUID, uuid4
+
 from pydantic import Field
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import insert, or_, select, update
+
 from businessos.sdk import (
     BusinessOSError,
     Command,
@@ -19,6 +21,7 @@ from businessos.sdk import (
     RequestContext,
     TenantContext,
 )
+
 from .contracts import (
     ContactPointRecord,
     ExternalIdentifierRecord,

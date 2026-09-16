@@ -5,6 +5,7 @@ Revises: geography_0001
 """
 
 from collections.abc import Sequence
+
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
@@ -87,7 +88,8 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.CheckConstraint(
-            "effective_until IS NULL OR effective_from IS NULL OR effective_until >= effective_from",
+            "effective_until IS NULL OR effective_from IS NULL OR "
+            "effective_until >= effective_from",
             name="ck_ref_value_effective_dates",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_reference_values"),

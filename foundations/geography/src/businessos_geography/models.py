@@ -2,7 +2,6 @@
 
 from sqlalchemy import (
     Boolean,
-    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,

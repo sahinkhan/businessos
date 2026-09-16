@@ -6,8 +6,10 @@ from decimal import Decimal
 from importlib.resources import files
 from typing import ClassVar
 from uuid import UUID, uuid4
+
 from pydantic import Field
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select
+
 from businessos.sdk import (
     BusinessOSError,
     Command,
@@ -20,6 +22,7 @@ from businessos.sdk import (
     RequestContext,
     TenantContext,
 )
+
 from .contracts import (
     ConvertedAmountRecord,
     MeasurementCategoryRecord,

@@ -32,10 +32,10 @@ __all__ = [
     "ListMeasurementCategories",
     "ListUnitsOfMeasure",
     "MeasurementCategoryRecord",
+    "UnitOfMeasureRecord",
     "UomCategoryCreated",
     "UomConversionService",
     "UomModule",
     "UomUnitChanged",
-    "UnitOfMeasureRecord",
     "metadata",
 ]

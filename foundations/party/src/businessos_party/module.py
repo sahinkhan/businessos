@@ -264,6 +264,8 @@ class PartyModule:
 
         context.emit(
             PartyCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 party_id=party_id,
                 party_number=party_num,
                 party_type="person",
@@ -327,6 +329,8 @@ class PartyModule:
 
         context.emit(
             PartyCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 party_id=party_id,
                 party_number=party_num,
                 party_type="organization",
@@ -374,9 +378,16 @@ class PartyModule:
             GetParty(tenant_id=tenant.tenant_id, party_id=command.party_id), context
         )
         if not party:
-            raise BusinessOSError("party not found", status_code=404)
+            raise BusinessOSError("not_found", "Party not found", status_code=404)
 
-        context.emit(PartyUpdated(party_id=party.id, display_name=party.display_name))
+        context.emit(
+            PartyUpdated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                party_id=party.id,
+                display_name=party.display_name,
+            )
+        )
         return party
 
     async def _add_relationship(
@@ -391,7 +402,11 @@ class PartyModule:
             GetParty(tenant_id=tenant.tenant_id, party_id=command.to_party_id), context
         )
         if not from_p or not to_p:
-            raise BusinessOSError("both parties must exist in the tenant boundary", status_code=404)
+            raise BusinessOSError(
+                "not_found",
+                "Both parties must exist in the tenant boundary",
+                status_code=404,
+            )
 
         rel_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
@@ -414,6 +429,8 @@ class PartyModule:
 
         context.emit(
             PartyRelationshipCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 relationship_id=rel_id,
                 from_party_id=command.from_party_id,
                 to_party_id=command.to_party_id,
@@ -763,7 +780,15 @@ class PartyModule:
 
 def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> TenantContext:
     if request is None or request.tenant is None:
-        raise BusinessOSError("tenant context is required", status_code=400)
+        raise BusinessOSError(
+            "tenant_context_required",
+            "Tenant context is required",
+            status_code=400,
+        )
     if request.tenant.tenant_id != target_tenant_id:
-        raise BusinessOSError("target tenant does not match active boundary", status_code=403)
+        raise BusinessOSError(
+            "tenant_scope_mismatch",
+            "Target tenant does not match active boundary",
+            status_code=403,
+        )
     return request.tenant

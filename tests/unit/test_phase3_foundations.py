@@ -7,7 +7,6 @@ from uuid import uuid4
 import pytest
 from businessos_geography import (
     AddressFormatProviderContract,
-    AddressRecord,
     RegisterCountry,
 )
 from businessos_party import (
@@ -177,24 +176,14 @@ def test_uom_rejects_cross_category_conversion() -> None:
 
 def test_geography_address_formatting_contract() -> None:
     formatter = AddressFormatProviderContract()
-    tenant_id = uuid4()
-    now = datetime.now()
-
-    address = AddressRecord(
-        id=uuid4(),
-        tenant_id=tenant_id,
-        country_code="US",
-        subdivision_code="CA",
-        city="San Francisco",
-        postal_code="94105",
+    formatted = formatter.format(
         street_line1="100 Market St",
         street_line2="Suite 400",
-        formatted_address="",
-        created_at=now,
-        updated_at=now,
+        city="San Francisco",
+        subdivision_code="CA",
+        postal_code="94105",
+        country_code="US",
     )
-
-    formatted = formatter.format_address(address)
     assert "100 Market St" in formatted
     assert "Suite 400" in formatted
     assert "San Francisco" in formatted

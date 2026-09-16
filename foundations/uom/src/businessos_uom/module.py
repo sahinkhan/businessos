@@ -151,7 +151,14 @@ class UomModule:
                 is_active=True,
             )
         )
-        context.emit(UomCategoryCreated(code=command.code, base_unit_code=command.base_unit_code))
+        context.emit(
+            UomCategoryCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                code=command.code,
+                base_unit_code=command.base_unit_code,
+            )
+        )
         return MeasurementCategoryRecord(
             id=cat_id,
             tenant_id=tenant.tenant_id,
@@ -189,7 +196,14 @@ class UomModule:
         row = res.first()
         created_at = row[0] if row else datetime.now()
 
-        context.emit(UomUnitChanged(unit_code=command.code, category_code=command.category_code))
+        context.emit(
+            UomUnitChanged(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                unit_code=command.code,
+                category_code=command.category_code,
+            )
+        )
         return UnitOfMeasureRecord(
             id=unit_id,
             tenant_id=tenant.tenant_id,
@@ -215,13 +229,19 @@ class UomModule:
         )
         if not u1:
             raise BusinessOSError(
-                f"Source unit not found: {command.from_unit_code}", status_code=404
+                "not_found",
+                f"Source unit not found: {command.from_unit_code}",
+                status_code=404,
             )
         u2 = await self._get_unit(
             GetUnitOfMeasure(tenant_id=tenant.tenant_id, code=command.to_unit_code), context
         )
         if not u2:
-            raise BusinessOSError(f"Target unit not found: {command.to_unit_code}", status_code=404)
+            raise BusinessOSError(
+                "not_found",
+                f"Target unit not found: {command.to_unit_code}",
+                status_code=404,
+            )
 
         return self.conversion_service.convert(command.amount, u1, u2)
 
@@ -326,7 +346,15 @@ class UomModule:
 
 def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> TenantContext:
     if request is None or request.tenant is None:
-        raise BusinessOSError("tenant context is required", status_code=400)
+        raise BusinessOSError(
+            "tenant_context_required",
+            "Tenant context is required",
+            status_code=400,
+        )
     if request.tenant.tenant_id != target_tenant_id:
-        raise BusinessOSError("target tenant does not match active boundary", status_code=403)
+        raise BusinessOSError(
+            "tenant_scope_mismatch",
+            "Target tenant does not match active boundary",
+            status_code=403,
+        )
     return request.tenant

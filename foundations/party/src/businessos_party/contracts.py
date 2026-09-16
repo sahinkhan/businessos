@@ -111,6 +111,10 @@ class FullPartyRecord(BaseModel):
     party: PartyRecord
     person_profile: PersonProfileRecord | None = None
     organization_profile: OrganizationProfileRecord | None = None
-    contacts: list[ContactPointRecord] = Field(default_factory=list)
-    addresses: list[PartyAddressAssignmentRecord] = Field(default_factory=list)
-    identifiers: list[ExternalIdentifierRecord] = Field(default_factory=list)
+    contacts: list[ContactPointRecord] = Field(default_factory=lambda: list[ContactPointRecord]())
+    addresses: list[PartyAddressAssignmentRecord] = Field(
+        default_factory=lambda: list[PartyAddressAssignmentRecord]()
+    )
+    identifiers: list[ExternalIdentifierRecord] = Field(
+        default_factory=lambda: list[ExternalIdentifierRecord]()
+    )

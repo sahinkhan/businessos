@@ -68,6 +68,8 @@ class ConvertedAmountRecord(BaseModel):
 class UomConversionService:
     """Accurate UoM conversion using exact Decimal arithmetic and rounding."""
 
+    version: str = "1.0"
+
     def convert(
         self,
         amount: Decimal | float | str,

@@ -159,6 +159,7 @@ class GeographyModule:
     async def _register_country(
         self, command: RegisterCountry, context: HandlingContext
     ) -> CountryRecord:
+        tenant = _require_active_tenant(context.request)
         country_id = uuid4()
         await context.unit_of_work.persistence.execute(
             insert(COUNTRIES).values(
@@ -173,7 +174,14 @@ class GeographyModule:
                 is_active=True,
             )
         )
-        context.emit(CountryRegistered(country_code=command.code, country_name=command.name))
+        context.emit(
+            CountryRegistered(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                country_code=command.code,
+                country_name=command.name,
+            )
+        )
         return CountryRecord(
             id=country_id,
             code=command.code,
@@ -261,10 +269,14 @@ class GeographyModule:
             .returning(ADDRESSES.c.created_at)
         )
         row = res.first()
-        created_at = row[0] if row else None
+        if row is None:
+            raise RuntimeError("Address insert did not return its database timestamp")
+        created_at = row[0]
 
         context.emit(
             AddressCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 address_id=addr_id,
                 country_code=command.country_code,
                 city=command.city,
@@ -389,8 +401,21 @@ class GeographyModule:
 
 
 def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> TenantContext:
+    tenant = _require_active_tenant(request)
+    if tenant.tenant_id != target_tenant_id:
+        raise BusinessOSError(
+            "tenant_scope_mismatch",
+            "Target tenant does not match active boundary",
+            status_code=403,
+        )
+    return tenant
+
+
+def _require_active_tenant(request: RequestContext | None) -> TenantContext:
     if request is None or request.tenant is None:
-        raise BusinessOSError("tenant context is required", status_code=400)
-    if request.tenant.tenant_id != target_tenant_id:
-        raise BusinessOSError("target tenant does not match active boundary", status_code=403)
+        raise BusinessOSError(
+            "tenant_context_required",
+            "Tenant context is required",
+            status_code=400,
+        )
     return request.tenant

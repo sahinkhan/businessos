@@ -190,7 +190,12 @@ class ReferenceDataModule:
             )
         )
         context.emit(
-            ReferenceSetRegistered(set_code=command.code, owning_module=command.owning_module)
+            ReferenceSetRegistered(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                set_code=command.code,
+                owning_module=command.owning_module,
+            )
         )
         return ReferenceSetRecord(
             id=set_id,
@@ -235,6 +240,8 @@ class ReferenceDataModule:
 
         context.emit(
             ReferenceValueChanged(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 set_code=command.set_code,
                 value_code=command.code,
                 label=command.default_label,
@@ -520,7 +527,15 @@ class ReferenceDataModule:
 
 def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> TenantContext:
     if request is None or request.tenant is None:
-        raise BusinessOSError("tenant context is required", status_code=400)
+        raise BusinessOSError(
+            "tenant_context_required",
+            "Tenant context is required",
+            status_code=400,
+        )
     if request.tenant.tenant_id != target_tenant_id:
-        raise BusinessOSError("target tenant does not match active boundary", status_code=403)
+        raise BusinessOSError(
+            "tenant_scope_mismatch",
+            "Target tenant does not match active boundary",
+            status_code=403,
+        )
     return request.tenant

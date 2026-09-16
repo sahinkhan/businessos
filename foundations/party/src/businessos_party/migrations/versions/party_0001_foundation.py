@@ -3,6 +3,7 @@
 Revision ID: party_0001
 Revises: uom_0001
 """
+
 from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
@@ -214,9 +215,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.ForeignKeyConstraint(
-            ["party_id"], [f"{SCHEMA}.parties.id"], name="fk_ext_ident_party"
-        ),
+        sa.ForeignKeyConstraint(["party_id"], [f"{SCHEMA}.parties.id"], name="fk_ext_ident_party"),
         sa.PrimaryKeyConstraint("id", name="pk_external_identifiers"),
         sa.UniqueConstraint(
             "tenant_id", "provider", "identifier_value", name="uq_party_tenant_provider_identifier"

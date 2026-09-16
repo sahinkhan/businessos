@@ -1,4 +1,5 @@
 """SQLAlchemy models owned by the unit-of-measure foundation."""
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,

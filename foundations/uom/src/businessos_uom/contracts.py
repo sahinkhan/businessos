@@ -1,6 +1,15 @@
 """Domain and application contracts for the unit of measure foundation."""
+
 from datetime import datetime
-from decimal import Decimal, ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, ROUND_HALF_EVEN, ROUND_HALF_UP, ROUND_UP
+from decimal import (
+    Decimal,
+    ROUND_CEILING,
+    ROUND_DOWN,
+    ROUND_FLOOR,
+    ROUND_HALF_EVEN,
+    ROUND_HALF_UP,
+    ROUND_UP,
+)
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 

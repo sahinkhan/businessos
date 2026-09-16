@@ -1,4 +1,5 @@
 """Units of measure foundation module."""
+
 from .contracts import (
     ConvertedAmountRecord,
     MeasurementCategoryRecord,

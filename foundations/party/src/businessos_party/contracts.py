@@ -1,4 +1,5 @@
 """Domain and application contracts for the party foundation."""
+
 from datetime import date, datetime
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field

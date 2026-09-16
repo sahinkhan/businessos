@@ -1,4 +1,5 @@
 """SQLAlchemy models owned by the geography foundation."""
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -51,7 +52,12 @@ CITIES = Table(
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("country_code", String(2), ForeignKey("platform_geo.countries.code"), nullable=False),
-    Column("subdivision_id", UUID(as_uuid=True), ForeignKey("platform_geo.subdivisions.id"), nullable=True),
+    Column(
+        "subdivision_id",
+        UUID(as_uuid=True),
+        ForeignKey("platform_geo.subdivisions.id"),
+        nullable=True,
+    ),
     Column("name", String(200), nullable=False),
     Column("postal_code_pattern", String(50), nullable=True),
     Column("is_active", Boolean(), nullable=False, server_default="true"),

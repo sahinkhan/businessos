@@ -1,4 +1,5 @@
 """Reference data and number sequence foundation module registration and handlers."""
+
 import json
 from datetime import datetime
 from importlib.resources import files
@@ -117,22 +118,49 @@ class ReferenceDataModule:
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.permission(
-            PermissionDeclaration(key="foundation.reference_data.read", description="Read reference data")
+            PermissionDeclaration(
+                key="foundation.reference_data.read", description="Read reference data"
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.reference_data.manage", description="Manage reference data and sequences")
+            PermissionDeclaration(
+                key="foundation.reference_data.manage",
+                description="Manage reference data and sequences",
+            )
         )
 
-        registration.command(RegisterReferenceSet, self._register_set, permission="foundation.reference_data.manage")
-        registration.command(CreateReferenceValue, self._create_value, permission="foundation.reference_data.manage")
-        registration.command(ConfigureNumberSequence, self._configure_sequence, permission="foundation.reference_data.manage")
-        registration.command(GenerateNextNumber, self._generate_number, permission="foundation.reference_data.manage")
+        registration.command(
+            RegisterReferenceSet, self._register_set, permission="foundation.reference_data.manage"
+        )
+        registration.command(
+            CreateReferenceValue, self._create_value, permission="foundation.reference_data.manage"
+        )
+        registration.command(
+            ConfigureNumberSequence,
+            self._configure_sequence,
+            permission="foundation.reference_data.manage",
+        )
+        registration.command(
+            GenerateNextNumber, self._generate_number, permission="foundation.reference_data.manage"
+        )
 
-        registration.query(GetReferenceSet, self._get_set, permission="foundation.reference_data.read")
-        registration.query(ListReferenceSets, self._list_sets, permission="foundation.reference_data.read")
-        registration.query(GetReferenceValue, self._get_value, permission="foundation.reference_data.read")
-        registration.query(ListReferenceValues, self._list_values, permission="foundation.reference_data.read")
-        registration.query(ResolveReferenceValueByExternalId, self._resolve_by_external_id, permission="foundation.reference_data.read")
+        registration.query(
+            GetReferenceSet, self._get_set, permission="foundation.reference_data.read"
+        )
+        registration.query(
+            ListReferenceSets, self._list_sets, permission="foundation.reference_data.read"
+        )
+        registration.query(
+            GetReferenceValue, self._get_value, permission="foundation.reference_data.read"
+        )
+        registration.query(
+            ListReferenceValues, self._list_values, permission="foundation.reference_data.read"
+        )
+        registration.query(
+            ResolveReferenceValueByExternalId,
+            self._resolve_by_external_id,
+            permission="foundation.reference_data.read",
+        )
 
     async def start(self) -> None:
         return None
@@ -140,7 +168,9 @@ class ReferenceDataModule:
     async def stop(self) -> None:
         return None
 
-    async def _register_set(self, command: RegisterReferenceSet, context: HandlingContext) -> ReferenceSetRecord:
+    async def _register_set(
+        self, command: RegisterReferenceSet, context: HandlingContext
+    ) -> ReferenceSetRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         set_id = uuid4()
         await context.unit_of_work.persistence.execute(
@@ -172,11 +202,14 @@ class ReferenceDataModule:
             created_at=datetime.now(),
         )
 
-    async def _create_value(self, command: CreateReferenceValue, context: HandlingContext) -> ReferenceValueRecord:
+    async def _create_value(
+        self, command: CreateReferenceValue, context: HandlingContext
+    ) -> ReferenceValueRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         val_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
-            insert(REFERENCE_VALUES).values(
+            insert(REFERENCE_VALUES)
+            .values(
                 id=val_id,
                 tenant_id=tenant.tenant_id,
                 set_code=command.set_code,
@@ -191,7 +224,8 @@ class ReferenceDataModule:
                 effective_until=command.effective_until,
                 is_active=True,
                 properties=command.properties,
-            ).returning(REFERENCE_VALUES.c.created_at)
+            )
+            .returning(REFERENCE_VALUES.c.created_at)
         )
         row = res.first()
         created_at = row[0] if row else datetime.now()
@@ -221,7 +255,9 @@ class ReferenceDataModule:
             created_at=created_at,
         )
 
-    async def _configure_sequence(self, command: ConfigureNumberSequence, context: HandlingContext) -> NumberSequenceRecord:
+    async def _configure_sequence(
+        self, command: ConfigureNumberSequence, context: HandlingContext
+    ) -> NumberSequenceRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         seq_id = uuid4()
         stmt = select(NUMBER_SEQUENCES).where(
@@ -281,12 +317,18 @@ class ReferenceDataModule:
             is_active=True,
         )
 
-    async def _generate_number(self, command: GenerateNextNumber, context: HandlingContext) -> GeneratedNumberRecord:
+    async def _generate_number(
+        self, command: GenerateNextNumber, context: HandlingContext
+    ) -> GeneratedNumberRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
-        stmt = select(NUMBER_SEQUENCES).where(
-            NUMBER_SEQUENCES.c.tenant_id == tenant.tenant_id,
-            NUMBER_SEQUENCES.c.code == command.code,
-        ).with_for_update()
+        stmt = (
+            select(NUMBER_SEQUENCES)
+            .where(
+                NUMBER_SEQUENCES.c.tenant_id == tenant.tenant_id,
+                NUMBER_SEQUENCES.c.code == command.code,
+            )
+            .with_for_update()
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         row = result.first()
         if not row:
@@ -331,7 +373,9 @@ class ReferenceDataModule:
             numeric_value=current_val,
         )
 
-    async def _get_set(self, query: GetReferenceSet, context: HandlingContext) -> ReferenceSetRecord | None:
+    async def _get_set(
+        self, query: GetReferenceSet, context: HandlingContext
+    ) -> ReferenceSetRecord | None:
         tenant = _require_tenant(context.request, query.tenant_id)
         stmt = select(REFERENCE_SETS).where(
             REFERENCE_SETS.c.tenant_id == tenant.tenant_id,
@@ -353,7 +397,9 @@ class ReferenceDataModule:
             created_at=row.created_at,
         )
 
-    async def _list_sets(self, query: ListReferenceSets, context: HandlingContext) -> list[ReferenceSetRecord]:
+    async def _list_sets(
+        self, query: ListReferenceSets, context: HandlingContext
+    ) -> list[ReferenceSetRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
         stmt = select(REFERENCE_SETS).where(REFERENCE_SETS.c.tenant_id == tenant.tenant_id)
         if query.owning_module:
@@ -375,7 +421,9 @@ class ReferenceDataModule:
             for row in result.fetchall()
         ]
 
-    async def _get_value(self, query: GetReferenceValue, context: HandlingContext) -> ReferenceValueRecord | None:
+    async def _get_value(
+        self, query: GetReferenceValue, context: HandlingContext
+    ) -> ReferenceValueRecord | None:
         tenant = _require_tenant(context.request, query.tenant_id)
         stmt = select(REFERENCE_VALUES).where(
             REFERENCE_VALUES.c.tenant_id == tenant.tenant_id,
@@ -403,7 +451,9 @@ class ReferenceDataModule:
             created_at=row.created_at,
         )
 
-    async def _list_values(self, query: ListReferenceValues, context: HandlingContext) -> list[ReferenceValueRecord]:
+    async def _list_values(
+        self, query: ListReferenceValues, context: HandlingContext
+    ) -> list[ReferenceValueRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
         stmt = select(REFERENCE_VALUES).where(
             REFERENCE_VALUES.c.tenant_id == tenant.tenant_id,

@@ -1,4 +1,5 @@
 """Units of measure foundation module registration and handlers."""
+
 import json
 from datetime import datetime
 from decimal import Decimal
@@ -100,16 +101,28 @@ class UomModule:
             PermissionDeclaration(key="foundation.uom.read", description="Read units of measure")
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.uom.manage", description="Manage units of measure")
+            PermissionDeclaration(
+                key="foundation.uom.manage", description="Manage units of measure"
+            )
         )
         registration.contract("foundation.uom.conversion-service.v1", self.conversion_service)
 
-        registration.command(CreateMeasurementCategory, self._create_category, permission="foundation.uom.manage")
-        registration.command(CreateUnitOfMeasure, self._create_unit, permission="foundation.uom.manage")
-        registration.command(ConvertQuantity, self._convert_quantity, permission="foundation.uom.read")
+        registration.command(
+            CreateMeasurementCategory, self._create_category, permission="foundation.uom.manage"
+        )
+        registration.command(
+            CreateUnitOfMeasure, self._create_unit, permission="foundation.uom.manage"
+        )
+        registration.command(
+            ConvertQuantity, self._convert_quantity, permission="foundation.uom.read"
+        )
 
-        registration.query(GetMeasurementCategory, self._get_category, permission="foundation.uom.read")
-        registration.query(ListMeasurementCategories, self._list_categories, permission="foundation.uom.read")
+        registration.query(
+            GetMeasurementCategory, self._get_category, permission="foundation.uom.read"
+        )
+        registration.query(
+            ListMeasurementCategories, self._list_categories, permission="foundation.uom.read"
+        )
         registration.query(GetUnitOfMeasure, self._get_unit, permission="foundation.uom.read")
         registration.query(ListUnitsOfMeasure, self._list_units, permission="foundation.uom.read")
 
@@ -119,7 +132,9 @@ class UomModule:
     async def stop(self) -> None:
         return None
 
-    async def _create_category(self, command: CreateMeasurementCategory, context: HandlingContext) -> MeasurementCategoryRecord:
+    async def _create_category(
+        self, command: CreateMeasurementCategory, context: HandlingContext
+    ) -> MeasurementCategoryRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         cat_id = uuid4()
         await context.unit_of_work.persistence.execute(
@@ -133,9 +148,7 @@ class UomModule:
                 is_active=True,
             )
         )
-        context.emit(
-            UomCategoryCreated(code=command.code, base_unit_code=command.base_unit_code)
-        )
+        context.emit(UomCategoryCreated(code=command.code, base_unit_code=command.base_unit_code))
         return MeasurementCategoryRecord(
             id=cat_id,
             tenant_id=tenant.tenant_id,
@@ -147,11 +160,14 @@ class UomModule:
             created_at=datetime.now(),
         )
 
-    async def _create_unit(self, command: CreateUnitOfMeasure, context: HandlingContext) -> UnitOfMeasureRecord:
+    async def _create_unit(
+        self, command: CreateUnitOfMeasure, context: HandlingContext
+    ) -> UnitOfMeasureRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         unit_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
-            insert(UNITS_OF_MEASURE).values(
+            insert(UNITS_OF_MEASURE)
+            .values(
                 id=unit_id,
                 tenant_id=tenant.tenant_id,
                 category_code=command.category_code,
@@ -164,14 +180,13 @@ class UomModule:
                 precision=command.precision,
                 rounding_mode=command.rounding_mode,
                 is_active=True,
-            ).returning(UNITS_OF_MEASURE.c.created_at)
+            )
+            .returning(UNITS_OF_MEASURE.c.created_at)
         )
         row = res.first()
         created_at = row[0] if row else datetime.now()
 
-        context.emit(
-            UomUnitChanged(unit_code=command.code, category_code=command.category_code)
-        )
+        context.emit(UomUnitChanged(unit_code=command.code, category_code=command.category_code))
         return UnitOfMeasureRecord(
             id=unit_id,
             tenant_id=tenant.tenant_id,
@@ -188,18 +203,28 @@ class UomModule:
             created_at=created_at,
         )
 
-    async def _convert_quantity(self, command: ConvertQuantity, context: HandlingContext) -> ConvertedAmountRecord:
+    async def _convert_quantity(
+        self, command: ConvertQuantity, context: HandlingContext
+    ) -> ConvertedAmountRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
-        u1 = await self._get_unit(GetUnitOfMeasure(tenant_id=tenant.tenant_id, code=command.from_unit_code), context)
+        u1 = await self._get_unit(
+            GetUnitOfMeasure(tenant_id=tenant.tenant_id, code=command.from_unit_code), context
+        )
         if not u1:
-            raise BusinessOSError(f"Source unit not found: {command.from_unit_code}", status_code=404)
-        u2 = await self._get_unit(GetUnitOfMeasure(tenant_id=tenant.tenant_id, code=command.to_unit_code), context)
+            raise BusinessOSError(
+                f"Source unit not found: {command.from_unit_code}", status_code=404
+            )
+        u2 = await self._get_unit(
+            GetUnitOfMeasure(tenant_id=tenant.tenant_id, code=command.to_unit_code), context
+        )
         if not u2:
             raise BusinessOSError(f"Target unit not found: {command.to_unit_code}", status_code=404)
 
         return self.conversion_service.convert(command.amount, u1, u2)
 
-    async def _get_category(self, query: GetMeasurementCategory, context: HandlingContext) -> MeasurementCategoryRecord | None:
+    async def _get_category(
+        self, query: GetMeasurementCategory, context: HandlingContext
+    ) -> MeasurementCategoryRecord | None:
         tenant = _require_tenant(context.request, query.tenant_id)
         stmt = select(MEASUREMENT_CATEGORIES).where(
             MEASUREMENT_CATEGORIES.c.tenant_id == tenant.tenant_id,
@@ -219,9 +244,13 @@ class UomModule:
             created_at=row.created_at,
         )
 
-    async def _list_categories(self, query: ListMeasurementCategories, context: HandlingContext) -> list[MeasurementCategoryRecord]:
+    async def _list_categories(
+        self, query: ListMeasurementCategories, context: HandlingContext
+    ) -> list[MeasurementCategoryRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
-        stmt = select(MEASUREMENT_CATEGORIES).where(MEASUREMENT_CATEGORIES.c.tenant_id == tenant.tenant_id)
+        stmt = select(MEASUREMENT_CATEGORIES).where(
+            MEASUREMENT_CATEGORIES.c.tenant_id == tenant.tenant_id
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             MeasurementCategoryRecord(
@@ -237,7 +266,9 @@ class UomModule:
             for row in result.fetchall()
         ]
 
-    async def _get_unit(self, query: GetUnitOfMeasure, context: HandlingContext) -> UnitOfMeasureRecord | None:
+    async def _get_unit(
+        self, query: GetUnitOfMeasure, context: HandlingContext
+    ) -> UnitOfMeasureRecord | None:
         tenant = _require_tenant(context.request, query.tenant_id)
         stmt = select(UNITS_OF_MEASURE).where(
             UNITS_OF_MEASURE.c.tenant_id == tenant.tenant_id,
@@ -262,7 +293,9 @@ class UomModule:
             created_at=row.created_at,
         )
 
-    async def _list_units(self, query: ListUnitsOfMeasure, context: HandlingContext) -> list[UnitOfMeasureRecord]:
+    async def _list_units(
+        self, query: ListUnitsOfMeasure, context: HandlingContext
+    ) -> list[UnitOfMeasureRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
         stmt = select(UNITS_OF_MEASURE).where(UNITS_OF_MEASURE.c.tenant_id == tenant.tenant_id)
         if query.category_code:

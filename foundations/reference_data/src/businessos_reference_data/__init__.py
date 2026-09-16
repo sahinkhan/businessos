@@ -1,4 +1,5 @@
 """Reference data and number sequence foundation module."""
+
 from .contracts import (
     GeneratedNumberRecord,
     NumberSequenceRecord,

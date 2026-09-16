@@ -3,6 +3,7 @@
 Revision ID: reference_0001
 Revises: geography_0001
 """
+
 from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op

@@ -1,4 +1,5 @@
 """Domain and application contracts for the geography foundation."""
+
 from datetime import datetime
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field

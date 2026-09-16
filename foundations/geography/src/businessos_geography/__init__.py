@@ -1,4 +1,5 @@
 """Geography and address foundation module."""
+
 from .contracts import (
     AddressFormatProviderContract,
     AddressRecord,

@@ -1,4 +1,5 @@
 """Unit tests for Phase 3 foundational modules: UoM, Geography, Reference Data, and Party."""
+
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import uuid4

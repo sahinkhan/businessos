@@ -36,6 +36,9 @@ REQUIRED_OWNERS = {
     "foundation.reference_data",
     "foundation.uom",
     "foundation.party",
+    "foundation.policy",
+    "foundation.audit",
+    "foundation.data_governance",
 }
 
 

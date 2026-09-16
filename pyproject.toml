@@ -89,6 +89,9 @@ mypy_path = [
   "foundations/reference_data/src",
   "foundations/uom/src",
   "foundations/party/src",
+  "foundations/policy/src",
+  "foundations/audit/src",
+  "foundations/data_governance/src",
   "examples/proof_module/src",
 ]
 files = ["platform/src", "foundations", "tests", "examples/proof_module/src"]
@@ -116,4 +119,7 @@ extraPaths = [
   "foundations/reference_data/src",
   "foundations/uom/src",
   "foundations/party/src",
+  "foundations/policy/src",
+  "foundations/audit/src",
+  "foundations/data_governance/src",
 ]

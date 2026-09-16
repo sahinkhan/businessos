@@ -28,6 +28,9 @@ RUN python -m pip wheel --no-deps --wheel-dir /wheels . \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/reference_data \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/uom \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/party \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/policy \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/audit \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/data_governance \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./examples/proof_module
 
 FROM base AS development
@@ -48,6 +51,9 @@ RUN python -m pip install --no-cache-dir \
     -e foundations/reference_data \
     -e foundations/uom \
     -e foundations/party \
+    -e foundations/policy \
+    -e foundations/audit \
+    -e foundations/data_governance \
     -e examples/proof_module
 
 COPY . .
@@ -69,6 +75,9 @@ RUN python -m pip install --no-cache-dir \
     /tmp/wheels/businessos_foundation_reference_data-*.whl \
     /tmp/wheels/businessos_foundation_uom-*.whl \
     /tmp/wheels/businessos_foundation_party-*.whl \
+    /tmp/wheels/businessos_foundation_policy-*.whl \
+    /tmp/wheels/businessos_foundation_audit-*.whl \
+    /tmp/wheels/businessos_foundation_data_governance-*.whl \
     && rm -rf /tmp/wheels /tmp/constraints-py313.txt
 
 USER 65532:65532

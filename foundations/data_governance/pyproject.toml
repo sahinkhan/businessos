@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools==75.8.2", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "businessos-foundation-data-governance"
+version = "0.4.0"
+description = "BusinessOS data classification, retention, legal holds, consent, and privacy governance foundation module"
+requires-python = ">=3.13"
+dependencies = [
+  "businessos>=0.1,<1",
+  "businessos-foundation-tenant>=0.2,<1",
+  "businessos-foundation-policy>=0.4,<1",
+  "businessos-foundation-audit>=0.4,<1",
+  "pydantic>=2.10,<3",
+  "sqlalchemy>=2.0.36,<3",
+]
+
+[project.entry-points."businessos.modules"]
+foundation-data-governance = "businessos_data_governance:DataGovernanceModule"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+businessos_data_governance = ["manifest.json", "migrations/versions/*.py", "py.typed"]

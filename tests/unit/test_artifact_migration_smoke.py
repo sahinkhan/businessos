@@ -4,8 +4,38 @@ from dataclasses import replace
 import pytest
 from scripts import migration_database_smoke as smoke
 
-from businessos.migrations import MigrationPlan
-from businessos.modules import discover_modules
+from businessos.errors import ConfigurationError
+from businessos.migrations import MigrationCoordinator, MigrationPlan
+from businessos.modules import (
+    BusinessOSModule,
+    ModuleManifest,
+    ModuleRegistration,
+    ModuleRegistry,
+    discover_modules,
+)
+from businessos.version import runtime_version
+
+PHASE3_MIGRATION_PARENTS = {
+    "foundation.geography": "foundation.organization",
+    "foundation.reference_data": "foundation.geography",
+    "foundation.uom": "foundation.reference_data",
+    "foundation.party": "foundation.uom",
+}
+
+
+class _ManifestOverrideModule:
+    def __init__(self, module: BusinessOSModule, manifest: ModuleManifest) -> None:
+        self._module = module
+        self.manifest = manifest
+
+    async def register(self, registration: ModuleRegistration) -> None:
+        await self._module.register(registration)
+
+    async def start(self) -> None:
+        await self._module.start()
+
+    async def stop(self) -> None:
+        await self._module.stop()
 
 
 def _inventory(plan: MigrationPlan) -> list[tuple[object, ...]]:
@@ -27,7 +57,7 @@ def _plan_json(plan: MigrationPlan) -> str:
 def test_artifact_graph_preserves_phase1_and_phase2_branches() -> None:
     plan = smoke._expected_plan()
     assert {source.owner for source in plan.sources} == smoke.REQUIRED_OWNERS
-    assert plan.heads == ("organization_0001", "proof_0003")
+    assert plan.heads == ("party_0001", "proof_0003")
     parents = {revision.revision: revision.down_revisions for revision in plan.revisions}
     assert parents["proof_0001"] == ("0001_phase1_kernel",)
     assert parents["proof_0002"] == ("proof_0001",)
@@ -35,8 +65,54 @@ def test_artifact_graph_preserves_phase1_and_phase2_branches() -> None:
     assert parents["tenant_0001"] == ("0005_durable_event_subscribers",)
     assert parents["identity_0001"] == ("tenant_0001",)
     assert parents["organization_0001"] == ("identity_0001",)
+    assert parents["geography_0001"] == ("organization_0001",)
+    assert parents["reference_0001"] == ("geography_0001",)
+    assert parents["uom_0001"] == ("reference_0001",)
+    assert parents["party_0001"] == ("uom_0001",)
     smoke._verify_installed_plan(_plan_json(plan), plan)
     smoke._verify_state(set(plan.heads), _inventory(plan), plan)
+
+
+def test_cross_module_migration_parents_are_declared_dependencies() -> None:
+    plan = smoke._expected_plan()
+    owners = {revision.revision: revision.owner for revision in plan.revisions}
+    allowed = {source.owner: source.allowed_dependencies for source in plan.sources}
+
+    for revision in plan.revisions:
+        for parent in revision.down_revisions:
+            parent_owner = owners[parent]
+            if parent_owner != revision.owner:
+                assert parent_owner in allowed[revision.owner]
+
+
+@pytest.mark.parametrize(("module_id", "parent_module"), PHASE3_MIGRATION_PARENTS.items())
+def test_phase3_migration_parent_requires_declared_dependency(
+    module_id: str, parent_module: str
+) -> None:
+    modules = list(discover_modules())
+    target = next(module for module in modules if module.manifest.module_id == module_id)
+    manifest = target.manifest.model_copy(
+        update={
+            "dependencies": tuple(
+                dependency
+                for dependency in target.manifest.dependencies
+                if dependency.module_id != parent_module
+            )
+        }
+    )
+    modules = [
+        _ManifestOverrideModule(module, manifest) if module is target else module
+        for module in modules
+    ]
+    registry = ModuleRegistry(platform_version=runtime_version(), sdk_version="0.1.0")
+    for module in modules:
+        registry.add(module)
+
+    with pytest.raises(
+        ConfigurationError,
+        match=f"owned by '{module_id}' depends on undeclared module '{parent_module}'",
+    ):
+        MigrationCoordinator(registry).plan()
 
 
 @pytest.mark.parametrize("change", ["missing_revision", "rogue_revision", "rewritten_revision"])
@@ -59,9 +135,7 @@ def test_artifact_discovery_rejects_missing_required_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     modules = [
-        module
-        for module in discover_modules()
-        if module.manifest.module_id != "foundation.organization"
+        module for module in discover_modules() if module.manifest.module_id != "foundation.party"
     ]
     monkeypatch.setattr(smoke, "discover_modules", lambda: modules)
     with pytest.raises(RuntimeError, match="missing required migration sources"):
@@ -91,7 +165,7 @@ def test_database_heads_must_equal_all_expected_heads(change: str) -> None:
     plan = smoke._expected_plan()
     heads = set(plan.heads)
     if change == "missing":
-        heads.remove("organization_0001")
+        heads.remove("party_0001")
     elif change == "rogue":
         heads.add("rogue_0001")
     else:

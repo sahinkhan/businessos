@@ -1,4 +1,5 @@
 """SQLAlchemy models owned by the party foundation."""
+
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -40,7 +41,13 @@ PERSON_PROFILES = Table(
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
-    Column("party_id", UUID(as_uuid=True), ForeignKey("platform_party.parties.id"), nullable=False, unique=True),
+    Column(
+        "party_id",
+        UUID(as_uuid=True),
+        ForeignKey("platform_party.parties.id"),
+        nullable=False,
+        unique=True,
+    ),
     Column("first_name", String(100), nullable=False),
     Column("middle_name", String(100), nullable=True),
     Column("last_name", String(100), nullable=False),
@@ -56,7 +63,13 @@ ORGANIZATION_PROFILES = Table(
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
-    Column("party_id", UUID(as_uuid=True), ForeignKey("platform_party.parties.id"), nullable=False, unique=True),
+    Column(
+        "party_id",
+        UUID(as_uuid=True),
+        ForeignKey("platform_party.parties.id"),
+        nullable=False,
+        unique=True,
+    ),
     Column("legal_name", String(255), nullable=False),
     Column("trade_name", String(255), nullable=True),
     Column("tax_identifier", String(100), nullable=True),
@@ -71,8 +84,12 @@ PARTY_RELATIONSHIPS = Table(
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
-    Column("from_party_id", UUID(as_uuid=True), ForeignKey("platform_party.parties.id"), nullable=False),
-    Column("to_party_id", UUID(as_uuid=True), ForeignKey("platform_party.parties.id"), nullable=False),
+    Column(
+        "from_party_id", UUID(as_uuid=True), ForeignKey("platform_party.parties.id"), nullable=False
+    ),
+    Column(
+        "to_party_id", UUID(as_uuid=True), ForeignKey("platform_party.parties.id"), nullable=False
+    ),
     Column("relationship_type", String(50), nullable=False),
     Column("start_date", Date(), nullable=True),
     Column("end_date", Date(), nullable=True),
@@ -92,7 +109,9 @@ CONTACT_POINTS = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("party_id", UUID(as_uuid=True), ForeignKey("platform_party.parties.id"), nullable=False),
-    Column("channel_type", String(30), nullable=False),  # email, phone, mobile, fax, website, social
+    Column(
+        "channel_type", String(30), nullable=False
+    ),  # email, phone, mobile, fax, website, social
     Column("value", String(255), nullable=False),
     Column("purpose", String(50), nullable=False, server_default="primary"),
     Column("is_primary", Boolean(), nullable=False, server_default="false"),
@@ -107,7 +126,9 @@ PARTY_ADDRESS_ASSIGNMENTS = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("party_id", UUID(as_uuid=True), ForeignKey("platform_party.parties.id"), nullable=False),
-    Column("address_id", UUID(as_uuid=True), ForeignKey("platform_geo.addresses.id"), nullable=False),
+    Column(
+        "address_id", UUID(as_uuid=True), ForeignKey("platform_geo.addresses.id"), nullable=False
+    ),
     Column("purpose", String(50), nullable=False, server_default="billing"),
     Column("is_primary", Boolean(), nullable=False, server_default="false"),
     Column("is_active", Boolean(), nullable=False, server_default="true"),
@@ -125,6 +146,8 @@ EXTERNAL_IDENTIFIERS = Table(
     Column("identifier_value", String(200), nullable=False),
     Column("is_sensitive", Boolean(), nullable=False, server_default="false"),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
-    UniqueConstraint("tenant_id", "provider", "identifier_value", name="uq_party_tenant_provider_identifier"),
+    UniqueConstraint(
+        "tenant_id", "provider", "identifier_value", name="uq_party_tenant_provider_identifier"
+    ),
     schema="platform_party",
 )

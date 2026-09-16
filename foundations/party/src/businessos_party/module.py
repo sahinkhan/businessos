@@ -1,11 +1,14 @@
 """Party, contacts, and relationship foundation module registration and handlers."""
+
 import json
 from datetime import date, datetime
 from importlib.resources import files
 from typing import ClassVar
 from uuid import UUID, uuid4
+
 from pydantic import Field
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import insert, or_, select, update
+
 from businessos.sdk import (
     BusinessOSError,
     Command,
@@ -18,6 +21,7 @@ from businessos.sdk import (
     RequestContext,
     TenantContext,
 )
+
 from .contracts import (
     ContactPointRecord,
     ExternalIdentifierRecord,
@@ -168,25 +172,47 @@ class PartyModule:
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.permission(
-            PermissionDeclaration(key="foundation.party.read", description="Read party and profile records")
+            PermissionDeclaration(
+                key="foundation.party.read", description="Read party and profile records"
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.party.manage", description="Manage party and profile records")
+            PermissionDeclaration(
+                key="foundation.party.manage", description="Manage party and profile records"
+            )
         )
 
-        registration.command(CreatePersonParty, self._create_person, permission="foundation.party.manage")
-        registration.command(CreateOrganizationParty, self._create_organization, permission="foundation.party.manage")
+        registration.command(
+            CreatePersonParty, self._create_person, permission="foundation.party.manage"
+        )
+        registration.command(
+            CreateOrganizationParty, self._create_organization, permission="foundation.party.manage"
+        )
         registration.command(UpdateParty, self._update_party, permission="foundation.party.manage")
-        registration.command(AddPartyRelationship, self._add_relationship, permission="foundation.party.manage")
-        registration.command(AddContactPoint, self._add_contact, permission="foundation.party.manage")
-        registration.command(AssignPartyAddress, self._assign_address, permission="foundation.party.manage")
-        registration.command(AddExternalIdentifier, self._add_identifier, permission="foundation.party.manage")
+        registration.command(
+            AddPartyRelationship, self._add_relationship, permission="foundation.party.manage"
+        )
+        registration.command(
+            AddContactPoint, self._add_contact, permission="foundation.party.manage"
+        )
+        registration.command(
+            AssignPartyAddress, self._assign_address, permission="foundation.party.manage"
+        )
+        registration.command(
+            AddExternalIdentifier, self._add_identifier, permission="foundation.party.manage"
+        )
 
         registration.query(GetParty, self._get_party, permission="foundation.party.read")
         registration.query(GetFullParty, self._get_full_party, permission="foundation.party.read")
         registration.query(SearchParties, self._search_parties, permission="foundation.party.read")
-        registration.query(ResolvePartyByExternalId, self._resolve_by_external_id, permission="foundation.party.read")
-        registration.query(ListPartyRelationships, self._list_relationships, permission="foundation.party.read")
+        registration.query(
+            ResolvePartyByExternalId,
+            self._resolve_by_external_id,
+            permission="foundation.party.read",
+        )
+        registration.query(
+            ListPartyRelationships, self._list_relationships, permission="foundation.party.read"
+        )
 
     async def start(self) -> None:
         return None
@@ -194,14 +220,17 @@ class PartyModule:
     async def stop(self) -> None:
         return None
 
-    async def _create_person(self, command: CreatePersonParty, context: HandlingContext) -> PartyRecord:
+    async def _create_person(
+        self, command: CreatePersonParty, context: HandlingContext
+    ) -> PartyRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         party_id = uuid4()
         party_num = f"PRT-{party_id.hex[:8].upper()}"
         display_name = f"{command.first_name} {command.last_name}"
 
         res = await context.unit_of_work.persistence.execute(
-            insert(PARTIES).values(
+            insert(PARTIES)
+            .values(
                 id=party_id,
                 tenant_id=tenant.tenant_id,
                 party_number=party_num,
@@ -211,7 +240,8 @@ class PartyModule:
                 preferred_timezone=command.preferred_timezone,
                 preferred_currency=command.preferred_currency,
                 is_active=True,
-            ).returning(PARTIES.c.created_at, PARTIES.c.updated_at)
+            )
+            .returning(PARTIES.c.created_at, PARTIES.c.updated_at)
         )
         row = res.first()
         created_at = row[0] if row else datetime.now()
@@ -234,6 +264,8 @@ class PartyModule:
 
         context.emit(
             PartyCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 party_id=party_id,
                 party_number=party_num,
                 party_type="person",
@@ -254,14 +286,17 @@ class PartyModule:
             updated_at=updated_at,
         )
 
-    async def _create_organization(self, command: CreateOrganizationParty, context: HandlingContext) -> PartyRecord:
+    async def _create_organization(
+        self, command: CreateOrganizationParty, context: HandlingContext
+    ) -> PartyRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         party_id = uuid4()
         party_num = f"PRT-{party_id.hex[:8].upper()}"
         display_name = command.legal_name
 
         res = await context.unit_of_work.persistence.execute(
-            insert(PARTIES).values(
+            insert(PARTIES)
+            .values(
                 id=party_id,
                 tenant_id=tenant.tenant_id,
                 party_number=party_num,
@@ -271,7 +306,8 @@ class PartyModule:
                 preferred_timezone=command.preferred_timezone,
                 preferred_currency=command.preferred_currency,
                 is_active=True,
-            ).returning(PARTIES.c.created_at, PARTIES.c.updated_at)
+            )
+            .returning(PARTIES.c.created_at, PARTIES.c.updated_at)
         )
         row = res.first()
         created_at = row[0] if row else datetime.now()
@@ -293,6 +329,8 @@ class PartyModule:
 
         context.emit(
             PartyCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 party_id=party_id,
                 party_number=party_num,
                 party_type="organization",
@@ -336,24 +374,44 @@ class PartyModule:
             .values(**values)
         )
 
-        party = await self._get_party(GetParty(tenant_id=tenant.tenant_id, party_id=command.party_id), context)
+        party = await self._get_party(
+            GetParty(tenant_id=tenant.tenant_id, party_id=command.party_id), context
+        )
         if not party:
-            raise BusinessOSError("party not found", status_code=404)
+            raise BusinessOSError("not_found", "Party not found", status_code=404)
 
-        context.emit(PartyUpdated(party_id=party.id, display_name=party.display_name))
+        context.emit(
+            PartyUpdated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                party_id=party.id,
+                display_name=party.display_name,
+            )
+        )
         return party
 
-    async def _add_relationship(self, command: AddPartyRelationship, context: HandlingContext) -> PartyRelationshipRecord:
+    async def _add_relationship(
+        self, command: AddPartyRelationship, context: HandlingContext
+    ) -> PartyRelationshipRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         # Verify both parties belong to active tenant
-        from_p = await self._get_party(GetParty(tenant_id=tenant.tenant_id, party_id=command.from_party_id), context)
-        to_p = await self._get_party(GetParty(tenant_id=tenant.tenant_id, party_id=command.to_party_id), context)
+        from_p = await self._get_party(
+            GetParty(tenant_id=tenant.tenant_id, party_id=command.from_party_id), context
+        )
+        to_p = await self._get_party(
+            GetParty(tenant_id=tenant.tenant_id, party_id=command.to_party_id), context
+        )
         if not from_p or not to_p:
-            raise BusinessOSError("both parties must exist in the tenant boundary", status_code=404)
+            raise BusinessOSError(
+                "not_found",
+                "Both parties must exist in the tenant boundary",
+                status_code=404,
+            )
 
         rel_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
-            insert(PARTY_RELATIONSHIPS).values(
+            insert(PARTY_RELATIONSHIPS)
+            .values(
                 id=rel_id,
                 tenant_id=tenant.tenant_id,
                 from_party_id=command.from_party_id,
@@ -363,13 +421,16 @@ class PartyModule:
                 end_date=command.end_date,
                 notes=command.notes,
                 is_active=True,
-            ).returning(PARTY_RELATIONSHIPS.c.created_at)
+            )
+            .returning(PARTY_RELATIONSHIPS.c.created_at)
         )
         row = res.first()
         created_at = row[0] if row else datetime.now()
 
         context.emit(
             PartyRelationshipCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 relationship_id=rel_id,
                 from_party_id=command.from_party_id,
                 to_party_id=command.to_party_id,
@@ -389,11 +450,14 @@ class PartyModule:
             created_at=created_at,
         )
 
-    async def _add_contact(self, command: AddContactPoint, context: HandlingContext) -> ContactPointRecord:
+    async def _add_contact(
+        self, command: AddContactPoint, context: HandlingContext
+    ) -> ContactPointRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         cid = uuid4()
         res = await context.unit_of_work.persistence.execute(
-            insert(CONTACT_POINTS).values(
+            insert(CONTACT_POINTS)
+            .values(
                 id=cid,
                 tenant_id=tenant.tenant_id,
                 party_id=command.party_id,
@@ -402,7 +466,8 @@ class PartyModule:
                 purpose=command.purpose,
                 is_primary=command.is_primary,
                 is_verified=command.is_verified,
-            ).returning(CONTACT_POINTS.c.created_at)
+            )
+            .returning(CONTACT_POINTS.c.created_at)
         )
         row = res.first()
         created_at = row[0] if row else datetime.now()
@@ -418,11 +483,14 @@ class PartyModule:
             created_at=created_at,
         )
 
-    async def _assign_address(self, command: AssignPartyAddress, context: HandlingContext) -> PartyAddressAssignmentRecord:
+    async def _assign_address(
+        self, command: AssignPartyAddress, context: HandlingContext
+    ) -> PartyAddressAssignmentRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         aid = uuid4()
         res = await context.unit_of_work.persistence.execute(
-            insert(PARTY_ADDRESS_ASSIGNMENTS).values(
+            insert(PARTY_ADDRESS_ASSIGNMENTS)
+            .values(
                 id=aid,
                 tenant_id=tenant.tenant_id,
                 party_id=command.party_id,
@@ -430,7 +498,8 @@ class PartyModule:
                 purpose=command.purpose,
                 is_primary=command.is_primary,
                 is_active=True,
-            ).returning(PARTY_ADDRESS_ASSIGNMENTS.c.created_at)
+            )
+            .returning(PARTY_ADDRESS_ASSIGNMENTS.c.created_at)
         )
         row = res.first()
         created_at = row[0] if row else datetime.now()
@@ -445,18 +514,22 @@ class PartyModule:
             created_at=created_at,
         )
 
-    async def _add_identifier(self, command: AddExternalIdentifier, context: HandlingContext) -> ExternalIdentifierRecord:
+    async def _add_identifier(
+        self, command: AddExternalIdentifier, context: HandlingContext
+    ) -> ExternalIdentifierRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         eid = uuid4()
         res = await context.unit_of_work.persistence.execute(
-            insert(EXTERNAL_IDENTIFIERS).values(
+            insert(EXTERNAL_IDENTIFIERS)
+            .values(
                 id=eid,
                 tenant_id=tenant.tenant_id,
                 party_id=command.party_id,
                 provider=command.provider,
                 identifier_value=command.identifier_value,
                 is_sensitive=command.is_sensitive,
-            ).returning(EXTERNAL_IDENTIFIERS.c.created_at)
+            )
+            .returning(EXTERNAL_IDENTIFIERS.c.created_at)
         )
         row = res.first()
         created_at = row[0] if row else datetime.now()
@@ -493,8 +566,12 @@ class PartyModule:
             updated_at=row.updated_at,
         )
 
-    async def _get_full_party(self, query: GetFullParty, context: HandlingContext) -> FullPartyRecord | None:
-        party = await self._get_party(GetParty(tenant_id=query.tenant_id, party_id=query.party_id), context)
+    async def _get_full_party(
+        self, query: GetFullParty, context: HandlingContext
+    ) -> FullPartyRecord | None:
+        party = await self._get_party(
+            GetParty(tenant_id=query.tenant_id, party_id=query.party_id), context
+        )
         if not party:
             return None
 
@@ -611,7 +688,9 @@ class PartyModule:
             identifiers=identifiers,
         )
 
-    async def _search_parties(self, query: SearchParties, context: HandlingContext) -> list[PartyRecord]:
+    async def _search_parties(
+        self, query: SearchParties, context: HandlingContext
+    ) -> list[PartyRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
         stmt = select(PARTIES).where(
             PARTIES.c.tenant_id == tenant.tenant_id,
@@ -701,7 +780,15 @@ class PartyModule:
 
 def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> TenantContext:
     if request is None or request.tenant is None:
-        raise BusinessOSError("tenant context is required", status_code=400)
+        raise BusinessOSError(
+            "tenant_context_required",
+            "Tenant context is required",
+            status_code=400,
+        )
     if request.tenant.tenant_id != target_tenant_id:
-        raise BusinessOSError("target tenant does not match active boundary", status_code=403)
+        raise BusinessOSError(
+            "tenant_scope_mismatch",
+            "Target tenant does not match active boundary",
+            status_code=403,
+        )
     return request.tenant

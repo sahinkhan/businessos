@@ -1,4 +1,5 @@
 """SQLAlchemy models owned by the reference data foundation."""
+
 from sqlalchemy import (
     BigInteger,
     Boolean,

@@ -9,7 +9,8 @@
   "execution_type": "in_process",
   "entry_point": "businessos_geography:GeographyModule",
   "dependencies": [
-    {"module_id": "foundation.tenant", "version": ">=0.2,<1"}
+    {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
+    {"module_id": "foundation.organization", "version": ">=0.2,<1"}
   ],
   "capabilities": [],
   "permissions": [

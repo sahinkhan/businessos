@@ -1,4 +1,5 @@
 """Party, contacts, and relationship foundation module."""
+
 from .contracts import (
     ContactPointRecord,
     ExternalIdentifierRecord,

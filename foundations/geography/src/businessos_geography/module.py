@@ -1,10 +1,13 @@
 """Geography and address foundation module registration and handlers."""
+
 import json
 from importlib.resources import files
 from typing import ClassVar
 from uuid import UUID, uuid4
+
 from pydantic import Field
 from sqlalchemy import insert, select
+
 from businessos.sdk import (
     BusinessOSError,
     Command,
@@ -17,6 +20,7 @@ from businessos.sdk import (
     RequestContext,
     TenantContext,
 )
+
 from .contracts import (
     AddressFormatProviderContract,
     AddressRecord,
@@ -107,22 +111,43 @@ class GeographyModule:
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.permission(
-            PermissionDeclaration(key="foundation.geography.read", description="Read geography and address data")
+            PermissionDeclaration(
+                key="foundation.geography.read", description="Read geography and address data"
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.geography.manage", description="Manage geography records and addresses")
+            PermissionDeclaration(
+                key="foundation.geography.manage",
+                description="Manage geography records and addresses",
+            )
         )
         registration.contract("foundation.geography.address-formatter.v1", self.address_formatter)
 
-        registration.command(RegisterCountry, self._register_country, permission="foundation.geography.manage")
-        registration.command(RegisterSubdivision, self._register_subdivision, permission="foundation.geography.manage")
-        registration.command(RegisterCity, self._register_city, permission="foundation.geography.manage")
-        registration.command(CreateAddress, self._create_address, permission="foundation.geography.manage")
+        registration.command(
+            RegisterCountry, self._register_country, permission="foundation.geography.manage"
+        )
+        registration.command(
+            RegisterSubdivision,
+            self._register_subdivision,
+            permission="foundation.geography.manage",
+        )
+        registration.command(
+            RegisterCity, self._register_city, permission="foundation.geography.manage"
+        )
+        registration.command(
+            CreateAddress, self._create_address, permission="foundation.geography.manage"
+        )
 
         registration.query(GetCountry, self._get_country, permission="foundation.geography.read")
-        registration.query(ListCountries, self._list_countries, permission="foundation.geography.read")
-        registration.query(GetSubdivision, self._get_subdivision, permission="foundation.geography.read")
-        registration.query(ListSubdivisions, self._list_subdivisions, permission="foundation.geography.read")
+        registration.query(
+            ListCountries, self._list_countries, permission="foundation.geography.read"
+        )
+        registration.query(
+            GetSubdivision, self._get_subdivision, permission="foundation.geography.read"
+        )
+        registration.query(
+            ListSubdivisions, self._list_subdivisions, permission="foundation.geography.read"
+        )
         registration.query(GetAddress, self._get_address, permission="foundation.geography.read")
 
     async def start(self) -> None:
@@ -131,7 +156,10 @@ class GeographyModule:
     async def stop(self) -> None:
         return None
 
-    async def _register_country(self, command: RegisterCountry, context: HandlingContext) -> CountryRecord:
+    async def _register_country(
+        self, command: RegisterCountry, context: HandlingContext
+    ) -> CountryRecord:
+        tenant = _require_active_tenant(context.request)
         country_id = uuid4()
         await context.unit_of_work.persistence.execute(
             insert(COUNTRIES).values(
@@ -147,7 +175,12 @@ class GeographyModule:
             )
         )
         context.emit(
-            CountryRegistered(country_code=command.code, country_name=command.name)
+            CountryRegistered(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                country_code=command.code,
+                country_name=command.name,
+            )
         )
         return CountryRecord(
             id=country_id,
@@ -161,7 +194,9 @@ class GeographyModule:
             is_active=True,
         )
 
-    async def _register_subdivision(self, command: RegisterSubdivision, context: HandlingContext) -> SubdivisionRecord:
+    async def _register_subdivision(
+        self, command: RegisterSubdivision, context: HandlingContext
+    ) -> SubdivisionRecord:
         sub_id = uuid4()
         await context.unit_of_work.persistence.execute(
             insert(SUBDIVISIONS).values(
@@ -203,7 +238,9 @@ class GeographyModule:
             is_active=True,
         )
 
-    async def _create_address(self, command: CreateAddress, context: HandlingContext) -> AddressRecord:
+    async def _create_address(
+        self, command: CreateAddress, context: HandlingContext
+    ) -> AddressRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         formatted = self.address_formatter.format(
             street_line1=command.street_line1,
@@ -215,7 +252,8 @@ class GeographyModule:
         )
         addr_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
-            insert(ADDRESSES).values(
+            insert(ADDRESSES)
+            .values(
                 id=addr_id,
                 tenant_id=tenant.tenant_id,
                 country_code=command.country_code,
@@ -227,13 +265,18 @@ class GeographyModule:
                 formatted_address=formatted,
                 coordinates=command.coordinates,
                 metadata=command.metadata,
-            ).returning(ADDRESSES.c.created_at)
+            )
+            .returning(ADDRESSES.c.created_at)
         )
         row = res.first()
-        created_at = row[0] if row else None
+        if row is None:
+            raise RuntimeError("Address insert did not return its database timestamp")
+        created_at = row[0]
 
         context.emit(
             AddressCreated(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
                 address_id=addr_id,
                 country_code=command.country_code,
                 city=command.city,
@@ -254,7 +297,9 @@ class GeographyModule:
             created_at=created_at,
         )
 
-    async def _get_country(self, query: GetCountry, context: HandlingContext) -> CountryRecord | None:
+    async def _get_country(
+        self, query: GetCountry, context: HandlingContext
+    ) -> CountryRecord | None:
         stmt = select(COUNTRIES).where(COUNTRIES.c.code == query.code)
         result = await context.unit_of_work.persistence.execute(stmt)
         row = result.first()
@@ -272,7 +317,9 @@ class GeographyModule:
             is_active=row.is_active,
         )
 
-    async def _list_countries(self, query: ListCountries, context: HandlingContext) -> list[CountryRecord]:
+    async def _list_countries(
+        self, query: ListCountries, context: HandlingContext
+    ) -> list[CountryRecord]:
         stmt = select(COUNTRIES)
         if query.active_only:
             stmt = stmt.where(COUNTRIES.c.is_active.is_(True))
@@ -292,7 +339,9 @@ class GeographyModule:
             for row in result.fetchall()
         ]
 
-    async def _get_subdivision(self, query: GetSubdivision, context: HandlingContext) -> SubdivisionRecord | None:
+    async def _get_subdivision(
+        self, query: GetSubdivision, context: HandlingContext
+    ) -> SubdivisionRecord | None:
         stmt = select(SUBDIVISIONS).where(
             SUBDIVISIONS.c.country_code == query.country_code,
             SUBDIVISIONS.c.code == query.code,
@@ -310,7 +359,9 @@ class GeographyModule:
             is_active=row.is_active,
         )
 
-    async def _list_subdivisions(self, query: ListSubdivisions, context: HandlingContext) -> list[SubdivisionRecord]:
+    async def _list_subdivisions(
+        self, query: ListSubdivisions, context: HandlingContext
+    ) -> list[SubdivisionRecord]:
         stmt = select(SUBDIVISIONS).where(SUBDIVISIONS.c.country_code == query.country_code)
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
@@ -325,7 +376,9 @@ class GeographyModule:
             for row in result.fetchall()
         ]
 
-    async def _get_address(self, query: GetAddress, context: HandlingContext) -> AddressRecord | None:
+    async def _get_address(
+        self, query: GetAddress, context: HandlingContext
+    ) -> AddressRecord | None:
         stmt = select(ADDRESSES).where(ADDRESSES.c.id == query.address_id)
         result = await context.unit_of_work.persistence.execute(stmt)
         row = result.first()
@@ -348,8 +401,21 @@ class GeographyModule:
 
 
 def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> TenantContext:
+    tenant = _require_active_tenant(request)
+    if tenant.tenant_id != target_tenant_id:
+        raise BusinessOSError(
+            "tenant_scope_mismatch",
+            "Target tenant does not match active boundary",
+            status_code=403,
+        )
+    return tenant
+
+
+def _require_active_tenant(request: RequestContext | None) -> TenantContext:
     if request is None or request.tenant is None:
-        raise BusinessOSError("tenant context is required", status_code=400)
-    if request.tenant.tenant_id != target_tenant_id:
-        raise BusinessOSError("target tenant does not match active boundary", status_code=403)
+        raise BusinessOSError(
+            "tenant_context_required",
+            "Tenant context is required",
+            status_code=400,
+        )
     return request.tenant

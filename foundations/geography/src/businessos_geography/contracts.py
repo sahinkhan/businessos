@@ -1,6 +1,8 @@
 """Domain and application contracts for the geography foundation."""
+
 from datetime import datetime
 from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -59,6 +61,8 @@ class AddressRecord(BaseModel):
 
 class AddressFormatProviderContract:
     """Format an address based on country-specific rules."""
+
+    version: str = "1.0"
 
     def format(
         self,

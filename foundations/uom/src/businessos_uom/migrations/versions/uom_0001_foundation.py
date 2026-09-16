@@ -3,7 +3,9 @@
 Revision ID: uom_0001
 Revises: reference_0001
 """
+
 from collections.abc import Sequence
+
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
@@ -78,7 +80,9 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("precision", sa.Integer(), server_default="2", nullable=False),
-        sa.Column("rounding_mode", sa.String(length=50), server_default="ROUND_HALF_UP", nullable=False),
+        sa.Column(
+            "rounding_mode", sa.String(length=50), server_default="ROUND_HALF_UP", nullable=False
+        ),
         sa.Column("is_active", sa.Boolean(), server_default="true", nullable=False),
         sa.Column(
             "created_at",

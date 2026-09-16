@@ -12,7 +12,8 @@
     {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
     {"module_id": "foundation.identity", "version": ">=0.2,<1"},
     {"module_id": "foundation.geography", "version": ">=0.3,<1"},
-    {"module_id": "foundation.reference_data", "version": ">=0.3,<1"}
+    {"module_id": "foundation.reference_data", "version": ">=0.3,<1"},
+    {"module_id": "foundation.uom", "version": ">=0.3,<1"}
   ],
   "capabilities": [],
   "permissions": [

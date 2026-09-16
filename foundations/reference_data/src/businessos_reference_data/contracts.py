@@ -1,6 +1,8 @@
 """Domain and application contracts for the reference data foundation."""
+
 from datetime import datetime
 from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict, Field
 
 

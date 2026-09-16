@@ -1,4 +1,5 @@
 """Units of measure foundation module."""
+
 from .contracts import (
     ConvertedAmountRecord,
     MeasurementCategoryRecord,
@@ -31,10 +32,10 @@ __all__ = [
     "ListMeasurementCategories",
     "ListUnitsOfMeasure",
     "MeasurementCategoryRecord",
+    "UnitOfMeasureRecord",
     "UomCategoryCreated",
     "UomConversionService",
     "UomModule",
     "UomUnitChanged",
-    "UnitOfMeasureRecord",
     "metadata",
 ]

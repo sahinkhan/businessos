@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
   "businessos>=0.1,<1",
   "businessos-foundation-tenant>=0.2,<1",
+  "businessos-foundation-reference-data>=0.3,<1",
   "pydantic>=2.10,<3",
   "sqlalchemy>=2.0.36,<3",
 ]

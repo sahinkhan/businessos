@@ -1,0 +1,26 @@
+{
+  "module_id": "foundation.data_governance",
+  "name": "Data Governance and Privacy",
+  "publisher": "BusinessOS",
+  "version": "0.4.0",
+  "platform": ">=0.1,<1",
+  "sdk": ">=0.1,<1",
+  "python": ">=3.13",
+  "execution_type": "in_process",
+  "entry_point": "businessos_data_governance:DataGovernanceModule",
+  "dependencies": [
+    {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
+    {"module_id": "foundation.policy", "version": ">=0.4,<1"},
+    {"module_id": "foundation.audit", "version": ">=0.4,<1"}
+  ],
+  "capabilities": [],
+  "permissions": [
+    "foundation.governance.read",
+    "foundation.governance.manage",
+    "foundation.governance.hold",
+    "foundation.governance.erase"
+  ],
+  "migrations": ["python://businessos_data_governance/migrations/versions"],
+  "migration_namespace": "foundation_data_governance",
+  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+}

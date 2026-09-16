@@ -44,6 +44,9 @@ jobs:
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/reference_data
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/uom
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/party
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/policy
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/audit
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/data_governance
           python -m pip install --constraint requirements/constraints-py313.txt -e examples/proof_module
 
       - name: Ruff formatting

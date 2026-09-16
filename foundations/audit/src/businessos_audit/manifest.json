@@ -1,0 +1,24 @@
+{
+  "module_id": "foundation.audit",
+  "name": "Audit and Evidence",
+  "publisher": "BusinessOS",
+  "version": "0.4.0",
+  "platform": ">=0.1,<1",
+  "sdk": ">=0.1,<1",
+  "python": ">=3.13",
+  "execution_type": "in_process",
+  "entry_point": "businessos_audit:AuditModule",
+  "dependencies": [
+    {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
+    {"module_id": "foundation.identity", "version": ">=0.2,<1"}
+  ],
+  "capabilities": [],
+  "permissions": [
+    "foundation.audit.read",
+    "foundation.audit.write",
+    "foundation.audit.export"
+  ],
+  "migrations": ["python://businessos_audit/migrations/versions"],
+  "migration_namespace": "foundation_audit",
+  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+}

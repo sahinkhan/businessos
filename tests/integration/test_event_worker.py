@@ -1,8 +1,11 @@
 import asyncio
 import json
 import os
-from typing import ClassVar
-from uuid import uuid4
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from time import monotonic
+from typing import ClassVar, Protocol
+from uuid import UUID, uuid4
 
 import boto3
 import psycopg
@@ -33,6 +36,86 @@ def _required_env(name: str) -> str:
     if value is None:
         pytest.skip(f"{name} is not configured")
     return value
+
+
+class _WorkerLifecycle(Protocol):
+    async def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
+
+
+@asynccontextmanager
+async def _running_worker(worker: _WorkerLifecycle) -> AsyncGenerator[None]:
+    await worker.start()
+    try:
+        yield
+    finally:
+        await worker.stop()
+
+
+async def _inbox_receipts(
+    factory: SQLAlchemyUnitOfWorkFactory,
+    tenant: TenantContext,
+    event_id: UUID,
+) -> list[InboxReceipt]:
+    async with factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
+        return list(
+            (
+                await unit_of_work.session.scalars(
+                    select(InboxReceipt).where(InboxReceipt.event_id == event_id)
+                )
+            ).all()
+        )
+
+
+async def _wait_for_inbox_receipt_count(
+    factory: SQLAlchemyUnitOfWorkFactory,
+    tenant: TenantContext,
+    event_id: UUID,
+    *,
+    expected: int,
+    timeout_seconds: float = 10.0,
+    poll_interval: float = 0.02,
+) -> list[InboxReceipt]:
+    deadline = monotonic() + timeout_seconds
+    while True:
+        receipts = await _inbox_receipts(factory, tenant, event_id)
+        actual = len(receipts)
+        if actual == expected:
+            return receipts
+        if actual > expected:
+            raise AssertionError(
+                f"inbox receipt count exceeded expected state: expected={expected}, actual={actual}"
+            )
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise AssertionError(
+                "timed out waiting for committed inbox receipts: "
+                f"event_id={event_id}, expected={expected}, actual={actual}"
+            )
+        await asyncio.sleep(min(poll_interval, remaining))
+
+
+@pytest.mark.asyncio
+async def test_running_worker_stops_when_test_body_raises() -> None:
+    class LifecycleProbe:
+        def __init__(self) -> None:
+            self.started = 0
+            self.stopped = 0
+
+        async def start(self) -> None:
+            self.started += 1
+
+        async def stop(self) -> None:
+            self.stopped += 1
+
+    worker = LifecycleProbe()
+    with pytest.raises(AssertionError, match="forced test-body failure"):
+        async with _running_worker(worker):
+            assert worker.started == 1
+            raise AssertionError("forced test-body failure")
+    assert worker.stopped == 1
 
 
 class _RetryingProofModule(ProofModule):
@@ -277,105 +360,112 @@ async def test_subscriber_obligations_survive_worker_recreation(
 ) -> None:
     migrations = MigrationCoordinator(ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0"))
     await migrations.upgrade_async(postgres_database.migration_url)
-    tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="test")
-    durable_name = f"businessos-obligations-{uuid4().hex}"
-    settings = EventWorkerSettings(
-        runtime_database_url=postgres_database.runtime_url,
-        operations_database_url=postgres_database.operations_url,
-        nats_url=_required_env("BOS_TEST_NATS_URL"),
-        installation_id=tenant.installation_id,
-        principal_id=tenant.principal_id,
-        durable_name=durable_name,
-        publish_interval_seconds=0.02,
-    )
-    calls: list[str] = []
-    completed = asyncio.Event()
+    inspection: Database | None = None
+    runtime_inspection: Database | None = None
+    try:
+        tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="test")
+        durable_name = f"businessos-obligations-{uuid4().hex}"
+        settings = EventWorkerSettings(
+            runtime_database_url=postgres_database.runtime_url,
+            operations_database_url=postgres_database.operations_url,
+            nats_url=_required_env("BOS_TEST_NATS_URL"),
+            installation_id=tenant.installation_id,
+            principal_id=tenant.principal_id,
+            durable_name=durable_name,
+            publish_interval_seconds=0.02,
+        )
+        calls: list[str] = []
+        completed = asyncio.Event()
 
-    first_worker = create_event_worker(
-        settings,
-        modules=(
-            _SubscriberModule("example.obligation-a", calls, completed),
-            _SubscriberModule("example.obligation-b", calls, completed),
-        ),
-        broker=NatsJetStreamPublisher((settings.nats_url,)),
-    )
-    await first_worker.start()
-    await first_worker.stop()
+        first_worker = create_event_worker(
+            settings,
+            modules=(
+                _SubscriberModule("example.obligation-a", calls, completed),
+                _SubscriberModule("example.obligation-b", calls, completed),
+            ),
+            broker=NatsJetStreamPublisher((settings.nats_url,)),
+        )
+        async with _running_worker(first_worker):
+            pass
 
-    second_broker = NatsJetStreamPublisher((settings.nats_url,))
-    second_worker = create_event_worker(
-        settings,
-        modules=(_SubscriberModule("example.obligation-a", calls, completed),),
-        broker=second_broker,
-    )
-    await second_worker.start()
-    assert second_worker.application.runtime is not None
-    event = _ObligationEvent(
-        tenant_id=tenant.tenant_id,
-        correlation_id="durable-obligation-restart",
-    )
-    with pytest.raises(DeliveryUnavailableError):
-        second_worker.application.runtime.events.delivery_subscribers(event)
-    await second_broker.publish(
-        f"businessos.events.tenant.{tenant.tenant_id}.{event.event_type}",
-        event.model_dump_json().encode(),
-        {
+        second_broker = NatsJetStreamPublisher((settings.nats_url,))
+        second_worker = create_event_worker(
+            settings,
+            modules=(_SubscriberModule("example.obligation-a", calls, completed),),
+            broker=second_broker,
+        )
+        event = _ObligationEvent(
+            tenant_id=tenant.tenant_id,
+            correlation_id="durable-obligation-restart",
+        )
+        subject = f"businessos.events.tenant.{tenant.tenant_id}.{event.event_type}"
+        headers = {
             "event-id": str(event.event_id),
             "event-type": event.event_type,
             "tenant-id": str(event.tenant_id),
             "schema-version": str(event.schema_version),
             "correlation-id": event.correlation_id,
-        },
-    )
-    await asyncio.sleep(0.3)
-    assert calls == []
-    await second_worker.stop()
+        }
+        async with _running_worker(second_worker):
+            assert second_worker.application.runtime is not None
+            with pytest.raises(DeliveryUnavailableError):
+                second_worker.application.runtime.events.delivery_subscribers(event)
+            await second_broker.publish(subject, event.model_dump_json().encode(), headers)
+            await asyncio.sleep(0.3)
+            assert calls == []
 
-    third_worker = create_event_worker(
-        settings,
-        modules=(
-            _SubscriberModule("example.obligation-a", calls, completed),
-            _SubscriberModule("example.obligation-b", calls, completed),
-        ),
-        broker=NatsJetStreamPublisher((settings.nats_url,)),
-    )
-    await third_worker.start()
-    await asyncio.wait_for(completed.wait(), timeout=10.0)
-    assert calls == ["example.obligation-a", "example.obligation-b"]
+        inspection = Database(Settings(database_url=postgres_database.operations_url))
+        inspection_factory = SQLAlchemyUnitOfWorkFactory(
+            inspection.sessions,
+            system_sessions=inspection.sessions,
+        )
+        runtime_inspection = Database(Settings(database_url=postgres_database.runtime_url))
+        runtime_factory = SQLAlchemyUnitOfWorkFactory(runtime_inspection.sessions)
+        third_broker = NatsJetStreamPublisher((settings.nats_url,))
+        third_worker = create_event_worker(
+            settings,
+            modules=(
+                _SubscriberModule("example.obligation-a", calls, completed),
+                _SubscriberModule("example.obligation-b", calls, completed),
+            ),
+            broker=third_broker,
+        )
+        async with _running_worker(third_worker):
+            await asyncio.wait_for(completed.wait(), timeout=10.0)
+            assert calls == ["example.obligation-a", "example.obligation-b"]
 
-    inspection = Database(Settings(database_url=postgres_database.operations_url))
-    inspection_factory = SQLAlchemyUnitOfWorkFactory(
-        inspection.sessions,
-        system_sessions=inspection.sessions,
-    )
-    async with inspection_factory.system() as unit_of_work:
-        assert unit_of_work.session is not None
-        obligations = (
-            await unit_of_work.session.scalars(
-                select(EventSubscriberObligation).where(
-                    EventSubscriberObligation.event_type == event.event_type
-                )
+            async with inspection_factory.system() as unit_of_work:
+                assert unit_of_work.session is not None
+                obligations = (
+                    await unit_of_work.session.scalars(
+                        select(EventSubscriberObligation).where(
+                            EventSubscriberObligation.event_type == event.event_type
+                        )
+                    )
+                ).all()
+                obligation_identities = {(item.subscriber, item.owner) for item in obligations}
+            assert obligation_identities == {
+                ("example.obligation-a.projection", "example.obligation-a"),
+                ("example.obligation-b.projection", "example.obligation-b"),
+            }
+
+            receipts = await _wait_for_inbox_receipt_count(
+                runtime_factory,
+                tenant,
+                event.event_id,
+                expected=2,
             )
-        ).all()
-        obligation_identities = {(item.subscriber, item.owner) for item in obligations}
-    assert obligation_identities == {
-        ("example.obligation-a.projection", "example.obligation-a"),
-        ("example.obligation-b.projection", "example.obligation-b"),
-    }
-    runtime_inspection = Database(Settings(database_url=postgres_database.runtime_url))
-    runtime_factory = SQLAlchemyUnitOfWorkFactory(runtime_inspection.sessions)
-    async with runtime_factory.for_tenant(tenant) as unit_of_work:
-        assert unit_of_work.session is not None
-        receipts = (
-            await unit_of_work.session.scalars(
-                select(InboxReceipt).where(InboxReceipt.event_id == event.event_id)
-            )
-        ).all()
-    assert len(receipts) == 2
-    await third_worker.stop()
-    await inspection.close()
-    await runtime_inspection.close()
-    await migrations.downgrade_async(postgres_database.migration_url)
+            assert len(receipts) == 2
+            await third_broker.publish(subject, event.model_dump_json().encode(), headers)
+
+        assert calls == ["example.obligation-a", "example.obligation-b"]
+        assert len(await _inbox_receipts(runtime_factory, tenant, event.event_id)) == 2
+    finally:
+        if runtime_inspection is not None:
+            await runtime_inspection.close()
+        if inspection is not None:
+            await inspection.close()
+        await migrations.downgrade_async(postgres_database.migration_url)
 
 
 @pytest.mark.integration

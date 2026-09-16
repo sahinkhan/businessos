@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools==75.8.2", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "businessos-foundation-tenant"
+version = "0.2.0"
+description = "BusinessOS tenant-management foundation module"
+requires-python = ">=3.13"
+dependencies = [
+  "businessos>=0.1,<1",
+  "pydantic>=2.10,<3",
+  "sqlalchemy>=2.0.36,<3",
+]
+
+[project.entry-points."businessos.modules"]
+foundation-tenant = "businessos_tenant:TenantModule"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+businessos_tenant = ["manifest.json", "migrations/versions/*.py", "py.typed"]

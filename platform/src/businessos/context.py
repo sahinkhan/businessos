@@ -15,6 +15,19 @@ class TenantContext:
     principal_id: UUID
     active_company_id: UUID | None = None
     authentication_strength: str = "unspecified"
+    enterprise_group_id: UUID | None = None
+    legal_entity_id: UUID | None = None
+    business_unit_id: UUID | None = None
+    division_id: UUID | None = None
+    department_id: UUID | None = None
+    team_id: UUID | None = None
+    region_id: UUID | None = None
+    operating_site_id: UUID | None = None
+    warehouse_id: UUID | None = None
+    cost_center_id: UUID | None = None
+    profit_center_id: UUID | None = None
+    project_id: UUID | None = None
+    delegation_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)

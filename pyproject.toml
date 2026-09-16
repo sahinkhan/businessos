@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "businessos"
-version = "0.1.0"
-description = "BusinessOS protected Python framework and runtime"
+version = "0.2.0"
+description = "BusinessOS protected runtime for modular enterprise foundations"
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "Proprietary" }
@@ -67,7 +67,7 @@ markers = [
 [tool.ruff]
 target-version = "py313"
 line-length = 100
-src = ["platform/src", "tests", "examples"]
+src = ["platform/src", "foundations", "tests", "examples"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
@@ -80,8 +80,14 @@ python_version = "3.13"
 strict = true
 explicit_package_bases = true
 plugins = ["pydantic.mypy"]
-mypy_path = ["platform/src", "examples/proof_module/src"]
-files = ["platform/src", "tests", "examples/proof_module/src"]
+mypy_path = [
+  "platform/src",
+  "foundations/tenant/src",
+  "foundations/identity/src",
+  "foundations/organization/src",
+  "examples/proof_module/src",
+]
+files = ["platform/src", "foundations", "tests", "examples/proof_module/src"]
 
 [[tool.mypy.overrides]]
 module = ["boto3.*", "nats.*", "redis.*"]
@@ -90,5 +96,16 @@ ignore_missing_imports = true
 [tool.pyright]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
-include = ["platform/src", "tests/unit", "tests/conformance", "examples/proof_module/src"]
-extraPaths = ["platform/src"]
+include = [
+  "platform/src",
+  "foundations",
+  "tests/unit",
+  "tests/conformance",
+  "examples/proof_module/src",
+]
+extraPaths = [
+  "platform/src",
+  "foundations/tenant/src",
+  "foundations/identity/src",
+  "foundations/organization/src",
+]

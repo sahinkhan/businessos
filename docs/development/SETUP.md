@@ -1,10 +1,13 @@
 # BusinessOS Python Development Setup
 
-The Phase 1 runtime requires Python 3.13 or newer. Docker Compose is the supported path when the host Python version is older or when PostgreSQL, Redis, NATS JetStream and S3-compatible storage should run together.
+The Phase 2 runtime requires Python 3.13 or newer. Docker Compose is the supported path when the host Python version is older or when PostgreSQL, Redis, NATS JetStream and S3-compatible storage should run together.
 
 ## Repository Boundaries
 
 - `platform/src/businessos/` contains the protected custom ASGI framework.
+- `foundations/tenant/` contains the installable tenant-management module.
+- `foundations/identity/` contains the installable identity/membership and OIDC module.
+- `foundations/organization/` contains the installable multinational organization module.
 - `platform/src/businessos/migration_assets/` contains packaged protected-kernel Alembic
   configuration, templates and revisions.
 - `examples/proof_module/` is an external package that consumes the public module SDK.
@@ -78,6 +81,9 @@ curl --fail http://localhost:8000/diagnostics/modules
 python3.13 -m venv .venv
 . .venv/bin/activate
 python -m pip install --constraint requirements/constraints-py313.txt -e '.[dev,providers]'
+python -m pip install --constraint requirements/constraints-py313.txt -e foundations/tenant
+python -m pip install --constraint requirements/constraints-py313.txt -e foundations/identity
+python -m pip install --constraint requirements/constraints-py313.txt -e foundations/organization
 python -m pip install --constraint requirements/constraints-py313.txt -e examples/proof_module
 ```
 
@@ -116,9 +122,9 @@ administrator and target-role passwords through deployment secrets in non-develo
 With the Compose infrastructure running:
 
 ```bash
-ruff format --check platform/src examples tests
-ruff check platform/src examples tests
-mypy platform/src tests examples/proof_module/src
+ruff format --check platform/src foundations examples tests
+ruff check platform/src foundations examples tests
+mypy platform/src foundations tests examples/proof_module/src
 pytest --collect-only -q tests
 pytest -q tests/unit
 BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_admin:businessos-administration@localhost:5432/postgres \
@@ -137,7 +143,7 @@ git diff --check
 Pyright is configured as an approved secondary checker:
 
 ```bash
-pyright platform/src examples/proof_module/src
+pyright platform/src foundations examples/proof_module/src
 ```
 
 HTTP ingress extracts W3C trace context and creates a server span. Command, query, event-consumer
@@ -162,7 +168,25 @@ BOS_TEST_S3_SECRET_KEY=businessos-development
 
 Production schemas change only through reviewed Alembic revisions. Never call SQLAlchemy metadata `create_all` as an upgrade mechanism.
 
-The framework migration coordinator combines protected revisions with module-owned revision locations in validated module dependency order. The proof module demonstrates a v1-to-v2 module migration without placing its revisions in the protected platform directory.
+The framework migration coordinator combines protected revisions with module-owned revision locations in validated module dependency order. The proof module demonstrates a v1-to-v2 module migration without placing its revisions in the protected platform directory. Phase 2 adds packaged `tenant_0001`, `identity_0001` and `organization_0001` chains owned by their respective foundation distributions.
+
+## Phase 2 identity and organization boundary
+
+The web runtime still receives only `businessos_app` credentials. Tenant provisioning executes as a
+permission-protected command inside a transaction locally scoped to the target tenant, so the tenant
+row, lifecycle history and `tenant.created.v1` outbox event commit together. Cross-tenant headers do
+not select this scope.
+
+OIDC integration uses `OIDCTokenVerifier` with an explicit asymmetric algorithm allowlist and a
+trusted HTTPS JWK-set configuration. `OIDCContextResolver` accepts the signed tenant claim only after
+the tenant is active and the issuer/subject maps to an active, effective membership under that
+tenant's RLS policy. SAML and local break-glass credential verification remain replaceable adapter
+boundaries; credentials are represented only by secret references.
+
+Organization scope selection checks tenant ownership, hierarchy consistency, effective assignment
+or time-bounded delegation before returning a new immutable `TenantContext`. Legal Entity and
+Company are distinct. Warehouse/Location in Phase 2 are organization identities only; inventory
+behavior remains deferred to Phase 13.
 
 Protected and module-owned migrations are loaded from installed package resources. Every owner
 declares a unique migration namespace, and graph preflight rejects revision or branch-label

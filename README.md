@@ -68,6 +68,7 @@ Codex and developers should start with these documents:
 
 - [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) - architecture baseline
 - [`docs/architecture/TENANCY.md`](docs/architecture/TENANCY.md) - tenancy and organization model
+- [`docs/architecture/IDENTITY-ORGANIZATION.md`](docs/architecture/IDENTITY-ORGANIZATION.md) - implemented Phase 2 trust, lifecycle and scope contract
 - [`docs/architecture/DATABASE.md`](docs/architecture/DATABASE.md) - PostgreSQL rules
 - [`docs/architecture/MODULES.md`](docs/architecture/MODULES.md) - module/extension model
 - [`docs/architecture/EVENTS.md`](docs/architecture/EVENTS.md) - event/job model
@@ -83,6 +84,7 @@ Codex and developers should start with these documents:
 
 - [`docs/roadmap/FULL-SYSTEM.md`](docs/roadmap/FULL-SYSTEM.md) - authoritative complete system roadmap
 - [`docs/roadmap/PHASE-1.md`](docs/roadmap/PHASE-1.md) - detailed protected-kernel sub-roadmap
+- [`docs/roadmap/PHASES-02-40-DETAILED.md`](docs/roadmap/PHASES-02-40-DETAILED.md) - detailed specifications for foundation, business and ecosystem phases
 
 `PHASE-1.md` is not the complete product scope. It is the detailed first implementation stage of the full roadmap.
 
@@ -146,7 +148,23 @@ businessos/
 
 ## Current Status
 
-Phase 0's Python/ASGI documentation cutover is complete. Phase 1 now provides the protected custom ASGI framework foundation, PostgreSQL/Alembic runtime and an external SDK proof module. No business modules or later roadmap foundations are implemented.
+Phase 0's Python/ASGI cutover and Phase 1's protected runtime are complete. Phase 2 provides the
+first three installable foundation modules: `foundation.tenant`, `foundation.identity` and
+`foundation.organization`. No shared business module or Phase 3+ master data has been introduced.
+
+The tenant foundation owns lifecycle state/history, deployment and residency metadata,
+configuration defaults, entitlements, quotas and export/delete/restore hook contracts. The identity
+foundation owns tenant-scoped users, external identities, memberships, service accounts, devices,
+session strength, OIDC verification, the SAML adapter boundary, MFA policy and local break-glass
+identity representation. The organization foundation owns Enterprise Group, Legal Entity, Company,
+Business Unit, Division, Department, Team, Region, Operating Site/site types, financial dimensions,
+Warehouse/Location identity, effective assignments, relationships and delegated scope.
+
+Every Phase 2 table is migration-owned, tenant-keyed, protected by forced PostgreSQL RLS and accessed
+through the runtime application role. Organization parent references are tenant-consistent at both
+the database and application boundary. A signed OIDC tenant claim becomes trusted only after issuer,
+audience, algorithm, signature, active-tenant and active-membership checks succeed; client tenant
+headers are not authoritative.
 
 The external proof module demonstrates discovery, installation, tenant-aware API operation,
 module-owned migrations, metadata, permissions, commands/queries, transactional outbox publication,

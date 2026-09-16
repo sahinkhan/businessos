@@ -8,4 +8,4 @@ def runtime_version() -> str:
     try:
         return version("businessos")
     except PackageNotFoundError:
-        return "0.1.0+source"
+        return "0.2.0+source"

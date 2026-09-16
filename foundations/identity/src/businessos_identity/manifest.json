@@ -1,0 +1,21 @@
+{
+  "module_id": "foundation.identity",
+  "name": "Identity and Membership",
+  "publisher": "BusinessOS",
+  "version": "0.2.0",
+  "platform": ">=0.1,<1",
+  "sdk": ">=0.1,<1",
+  "python": ">=3.13",
+  "execution_type": "in_process",
+  "entry_point": "businessos_identity:IdentityModule",
+  "dependencies": [{"module_id": "foundation.tenant", "version": ">=0.2,<1"}],
+  "capabilities": [],
+  "permissions": [
+    "foundation.identity.read",
+    "foundation.identity.manage",
+    "foundation.identity.membership.manage"
+  ],
+  "migrations": ["python://businessos_identity/migrations/versions"],
+  "migration_namespace": "foundation_identity",
+  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+}

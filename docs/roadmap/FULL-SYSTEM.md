@@ -126,6 +126,47 @@ Deliver:
 
 Gate: policy engine covers tenant/company/site/record/field/action scope and privileged access is auditable.
 
+## Phase 4.5 - Enterprise UI Foundation v1
+
+Authoritative detailed specification: `docs/roadmap/PHASE-4.5-UI-FOUNDATION.md`.
+
+Deliver:
+
+- React + TypeScript + React Router + Vite authenticated backoffice bootstrap
+- enterprise application shell
+- design tokens
+- light/dark/system theme foundation
+- shared accessible component primitives
+- reusable form foundation
+- reusable enterprise data-table foundation
+- filtering/search/sort/pagination primitives
+- standard list/detail/edit/settings/dashboard page layouts
+- module navigation and route contribution contracts
+- authentication/session presentation shell
+- active tenant/company/site scope presentation and switching through supported backend contracts
+- permission-aware presentation helpers consuming Phase 4 decisions without duplicating backend authorization
+- loading/error/empty/forbidden/not-found standards
+- translation/i18n and RTL infrastructure
+- accessibility conventions
+- responsive shell/component behavior
+- typed API/data-access and server-state conventions
+- notification and command-palette shell surfaces
+- frontend telemetry/diagnostic hooks
+- extension-slot base contracts
+- frontend formatting/lint/typecheck/test/production-build CI baseline
+- performance/bundle measurement baseline
+
+Non-goals:
+
+- metadata registry
+- custom fields/entities
+- dynamic form/list/detail rendering
+- Studio
+- metadata-driven menu/action persistence
+- hardcoded Sales/Procurement/Inventory/Accounting/HR workflow forms
+
+Gate: Phase 5 may start only after the UI Foundation contracts required by the metadata runtime are intentionally accepted and frozen, or an explicit architecture decision documents a narrower dependency.
+
 ## Phase 5 - Metadata, Studio and Dynamic UI
 
 Deliver:
@@ -136,12 +177,12 @@ Deliver:
 - list/form/detail/kanban/calendar/dashboard definitions
 - menus/actions
 - validation rules
-- UI extension slots
-- theme/design tokens
+- metadata-driven UI extension slots and resolution
 - metadata versioning
 - safe customization upgrade model
+- UI schema resolution/rendering that consumes the certified Phase 4.5 shell, design system, forms, tables and layout primitives
 
-Gate: a customer can customize ordinary records/forms/workflows without modifying source code.
+Gate: a customer can customize ordinary records/forms/workflows without modifying source code, and the metadata runtime extends the certified UI Foundation rather than replacing it with a parallel private component framework.
 
 ## Phase 6 - Workflow, Rules, Resource and Scheduling
 

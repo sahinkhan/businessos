@@ -12,55 +12,80 @@ RUN apt-get update \
 WORKDIR /app
 
 FROM base AS wheel-builder
+
 COPY pyproject.toml README.md ./
 COPY requirements/constraints-py313.txt /build/constraints-py313.txt
 COPY platform ./platform
 COPY foundations ./foundations
 COPY examples/proof_module ./examples/proof_module
+
 ENV PIP_CONSTRAINT=/build/constraints-py313.txt
 RUN python -m pip wheel --no-deps --wheel-dir /wheels . \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/tenant \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/identity \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/organization \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/geography \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/reference_data \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/uom \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/party \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./examples/proof_module
 
 FROM base AS development
+
 COPY pyproject.toml README.md ./
 COPY requirements ./requirements
 COPY platform ./platform
 COPY foundations ./foundations
 COPY examples/proof_module ./examples/proof_module
+
 RUN python -m pip install --no-cache-dir \
     --constraint requirements/constraints-py313.txt \
     -e '.[dev,providers]' \
     -e foundations/tenant \
     -e foundations/identity \
     -e foundations/organization \
+    -e foundations/geography \
+    -e foundations/reference_data \
+    -e foundations/uom \
+    -e foundations/party \
     -e examples/proof_module
+
 COPY . .
+
 CMD ["uvicorn", "businessos.asgi:application", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 FROM base AS production
+
 COPY requirements/constraints-py313.txt /tmp/constraints-py313.txt
 COPY --from=wheel-builder /wheels/*.whl /tmp/wheels/
+
 RUN python -m pip install --no-cache-dir \
     --constraint /tmp/constraints-py313.txt \
     '/tmp/wheels/businessos-0.2.0-py3-none-any.whl[providers]' \
     /tmp/wheels/businessos_foundation_tenant-*.whl \
     /tmp/wheels/businessos_foundation_identity-*.whl \
     /tmp/wheels/businessos_foundation_organization-*.whl \
+    /tmp/wheels/businessos_foundation_geography-*.whl \
+    /tmp/wheels/businessos_foundation_reference_data-*.whl \
+    /tmp/wheels/businessos_foundation_uom-*.whl \
+    /tmp/wheels/businessos_foundation_party-*.whl \
     && rm -rf /tmp/wheels /tmp/constraints-py313.txt
+
 USER 65532:65532
 WORKDIR /srv/businessos
+
 CMD ["uvicorn", "businessos.asgi:application", "--host", "0.0.0.0", "--port", "8000"]
 
 FROM production AS migration-smoke
+
 USER root
 COPY --from=wheel-builder /wheels/businessos_phase1_proof-*.whl /tmp/wheels/
 RUN python -m pip install --no-cache-dir --no-deps /tmp/wheels/businessos_phase1_proof-*.whl \
     && rm -rf /tmp/wheels \
     && mkdir -p /tmp/businessos-migration-smoke \
     && chown 65532:65532 /tmp/businessos-migration-smoke
+
 USER 65532:65532
 WORKDIR /tmp/businessos-migration-smoke
+
 RUN businessos migrate plan

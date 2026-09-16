@@ -1,0 +1,22 @@
+{
+  "module_id": "foundation.reference_data",
+  "name": "Reference Data and Sequences",
+  "publisher": "BusinessOS",
+  "version": "0.3.0",
+  "platform": ">=0.1,<1",
+  "sdk": ">=0.1,<1",
+  "python": ">=3.13",
+  "execution_type": "in_process",
+  "entry_point": "businessos_reference_data:ReferenceDataModule",
+  "dependencies": [
+    {"module_id": "foundation.tenant", "version": ">=0.2,<1"}
+  ],
+  "capabilities": [],
+  "permissions": [
+    "foundation.reference_data.read",
+    "foundation.reference_data.manage"
+  ],
+  "migrations": ["python://businessos_reference_data/migrations/versions"],
+  "migration_namespace": "foundation_reference_data",
+  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+}

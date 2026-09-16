@@ -1,5 +1,4 @@
 """Run real installed-artifact migrations against a disposable PostgreSQL database."""
-
 from __future__ import annotations
 
 import argparse
@@ -33,6 +32,10 @@ REQUIRED_OWNERS = {
     "foundation.tenant",
     "foundation.identity",
     "foundation.organization",
+    "foundation.geography",
+    "foundation.reference_data",
+    "foundation.uom",
+    "foundation.party",
 }
 
 
@@ -212,6 +215,7 @@ def main() -> None:
     parser.add_argument("--docker-network", default="host")
     parser.add_argument("--container-host", default="127.0.0.1")
     arguments = parser.parse_args()
+
     plan = _expected_plan()
     if arguments.write_graph:
         arguments.write_graph.write_text(_graph_snapshot(plan), encoding="utf-8")
@@ -224,6 +228,7 @@ def main() -> None:
     database_name = f"businessos_artifact_smoke_{uuid4().hex}"
     host_admin_url = _url(administrator_base, database_name, sqlalchemy=False)
     host_migration_url = _url(migration_base, database_name, sqlalchemy=True)
+
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment.update(
@@ -238,6 +243,7 @@ def main() -> None:
 
     with psycopg.connect(administrator_base, autocommit=True) as connection:
         connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name)))
+
     try:
         with tempfile.TemporaryDirectory() as temporary:
             workdir = Path(temporary)
@@ -277,6 +283,7 @@ def main() -> None:
                     )
 
                 run = image_runner
+
             _verify_installed_plan(run(("migrate", "plan")), plan)
             run(("database", "transition-roles"))
             run(("migrate", "upgrade", "heads"))

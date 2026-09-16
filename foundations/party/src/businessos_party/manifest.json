@@ -1,0 +1,25 @@
+{
+  "module_id": "foundation.party",
+  "name": "Party and Contacts",
+  "publisher": "BusinessOS",
+  "version": "0.3.0",
+  "platform": ">=0.1,<1",
+  "sdk": ">=0.1,<1",
+  "python": ">=3.13",
+  "execution_type": "in_process",
+  "entry_point": "businessos_party:PartyModule",
+  "dependencies": [
+    {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
+    {"module_id": "foundation.identity", "version": ">=0.2,<1"},
+    {"module_id": "foundation.geography", "version": ">=0.3,<1"},
+    {"module_id": "foundation.reference_data", "version": ">=0.3,<1"}
+  ],
+  "capabilities": [],
+  "permissions": [
+    "foundation.party.read",
+    "foundation.party.manage"
+  ],
+  "migrations": ["python://businessos_party/migrations/versions"],
+  "migration_namespace": "foundation_party",
+  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+}

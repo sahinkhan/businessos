@@ -1,8 +1,9 @@
 """SQLAlchemy and Pydantic boundary models for data governance, retention, and privacy."""
+
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -41,9 +42,16 @@ RETENTION_POLICIES = Table(
     Column("code", String(100), nullable=False),
     Column("name", String(200), nullable=False),
     Column("entity_type", String(100), nullable=False),
-    Column("classification_code", String(50), ForeignKey("platform_gov.data_classifications.code", ondelete="RESTRICT"), nullable=False),
+    Column(
+        "classification_code",
+        String(50),
+        ForeignKey("platform_gov.data_classifications.code", ondelete="RESTRICT"),
+        nullable=False,
+    ),
     Column("retention_period_days", Integer(), nullable=False),
-    Column("action_on_expiry", String(50), nullable=False, server_default="archive"),  # "archive", "anonymize", "purge"
+    Column(
+        "action_on_expiry", String(50), nullable=False, server_default="archive"
+    ),  # "archive", "anonymize", "purge"
     Column("is_active", Boolean(), nullable=False, server_default="true"),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -91,15 +99,22 @@ SENSITIVE_FIELD_TAGS = Table(
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("entity_type", String(100), nullable=False),
     Column("field_name", String(100), nullable=False),
-    Column("classification_code", String(50), ForeignKey("platform_gov.data_classifications.code", ondelete="RESTRICT"), nullable=False),
+    Column(
+        "classification_code",
+        String(50),
+        ForeignKey("platform_gov.data_classifications.code", ondelete="RESTRICT"),
+        nullable=False,
+    ),
     Column("is_masked_by_default", Boolean(), nullable=False, server_default="false"),
     Column("description", Text(), nullable=False, server_default=""),
-    UniqueConstraint("tenant_id", "entity_type", "field_name", name="uq_field_tag_tenant_entity_field"),
+    UniqueConstraint(
+        "tenant_id", "entity_type", "field_name", name="uq_field_tag_tenant_entity_field"
+    ),
     schema="platform_gov",
 )
 
 
-class ExpiryAction(str, Enum):
+class ExpiryAction(StrEnum):
     ARCHIVE = "archive"
     ANONYMIZE = "anonymize"
     PURGE = "purge"

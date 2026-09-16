@@ -11,13 +11,15 @@
   "dependencies": [
     {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
     {"module_id": "foundation.identity", "version": ">=0.2,<1"},
-    {"module_id": "foundation.organization", "version": ">=0.2,<1"}
+    {"module_id": "foundation.organization", "version": ">=0.2,<1"},
+    {"module_id": "foundation.party", "version": ">=0.3,<1"}
   ],
   "capabilities": [],
   "permissions": [
     "foundation.policy.read",
     "foundation.policy.manage",
-    "foundation.policy.authorize"
+    "foundation.policy.authorize",
+    "foundation.policy.support_access"
   ],
   "migrations": ["python://businessos_policy/migrations/versions"],
   "migration_namespace": "foundation_policy",

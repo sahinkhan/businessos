@@ -1,4 +1,5 @@
 """Audit and immutable evidence foundation module."""
+
 from .contracts import AuditEventRecorded
 from .models import (
     AUDIT_LOGS,

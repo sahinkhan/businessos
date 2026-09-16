@@ -12,6 +12,7 @@ dependencies = [
   "businessos-foundation-tenant>=0.2,<1",
   "businessos-foundation-identity>=0.2,<1",
   "businessos-foundation-organization>=0.2,<1",
+  "businessos-foundation-party>=0.3,<1",
   "pydantic>=2.10,<3",
   "sqlalchemy>=2.0.36,<3",
 ]

@@ -1,8 +1,10 @@
 """Data governance, retention, and privacy foundation module."""
+
 from .contracts import (
     AnonymizationHook,
     ConsentRecorded,
     ConsentRevoked,
+    DataGovernanceHooks,
     LegalHoldPlaced,
     LegalHoldReleased,
     RetentionPolicyChanged,
@@ -52,6 +54,7 @@ __all__ = [
     "ConsentVerificationResult",
     "CreateRetentionPolicyCommand",
     "DataClassificationRecord",
+    "DataGovernanceHooks",
     "DataGovernanceModule",
     "ExpiryAction",
     "GetSensitiveFieldTagsQuery",

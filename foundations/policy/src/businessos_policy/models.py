@@ -1,9 +1,10 @@
 """SQLAlchemy and Pydantic boundary models for authorization policies."""
+
 from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
@@ -56,10 +57,22 @@ ROLE_PERMISSIONS = Table(
     metadata,
     Column("id", PG_UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=False),
-    Column("permission_code", String(100), ForeignKey("platform_policy.permissions.code", ondelete="CASCADE"), nullable=False),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "permission_code",
+        String(100),
+        ForeignKey("platform_policy.permissions.code", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
-    UniqueConstraint("tenant_id", "role_id", "permission_code", name="uq_role_permissions_assignment"),
+    UniqueConstraint(
+        "tenant_id", "role_id", "permission_code", name="uq_role_permissions_assignment"
+    ),
     schema="platform_policy",
 )
 
@@ -69,7 +82,12 @@ SUBJECT_ROLE_ASSIGNMENTS = Table(
     Column("id", PG_UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("subject_id", PG_UUID(as_uuid=True), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("scope_type", String(50), nullable=False, server_default="tenant"),
     Column("scope_id", PG_UUID(as_uuid=True), nullable=True),
     Column("valid_from", DateTime(timezone=True), nullable=True),
@@ -85,9 +103,32 @@ FIELD_POLICIES = Table(
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("resource_type", String(100), nullable=False),
     Column("field_name", String(100), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=True),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
     Column("access_type", String(30), nullable=False, server_default="read"),
     Column("mask_pattern", String(100), nullable=True),
+    Column("condition_expression", Text(), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="platform_policy",
+)
+
+RECORD_POLICIES = Table(
+    "record_policies",
+    metadata,
+    Column("id", PG_UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
+    Column("resource_type", String(100), nullable=False),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    Column("access_scope", String(30), nullable=False, server_default="organization"),
     Column("condition_expression", Text(), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     schema="platform_policy",
@@ -101,7 +142,12 @@ APPROVAL_LIMITS = Table(
     Column("action_type", String(100), nullable=False),
     Column("currency", String(3), nullable=False),
     Column("amount_limit", Numeric(18, 4), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=True),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
     Column("subject_id", PG_UUID(as_uuid=True), nullable=True),
     Column("valid_from", DateTime(timezone=True), nullable=True),
     Column("valid_to", DateTime(timezone=True), nullable=True),
@@ -132,7 +178,12 @@ DELEGATIONS = Table(
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("delegator_id", PG_UUID(as_uuid=True), nullable=False),
     Column("delegatee_id", PG_UUID(as_uuid=True), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("scope_type", String(50), nullable=False, server_default="tenant"),
     Column("scope_id", PG_UUID(as_uuid=True), nullable=True),
     Column("valid_from", DateTime(timezone=True), nullable=False),
@@ -143,23 +194,46 @@ DELEGATIONS = Table(
     schema="platform_policy",
 )
 
+SUPPORT_ACCESS_GRANTS = Table(
+    "support_access_grants",
+    metadata,
+    Column("id", PG_UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
+    Column("support_principal_id", PG_UUID(as_uuid=True), nullable=False),
+    Column("approved_by", PG_UUID(as_uuid=True), nullable=False),
+    Column("reason", Text(), nullable=False),
+    Column("valid_from", DateTime(timezone=True), nullable=False),
+    Column("valid_to", DateTime(timezone=True), nullable=False),
+    Column("revoked_at", DateTime(timezone=True), nullable=True),
+    Column("revocation_reason", Text(), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="platform_policy",
+)
 
-class ScopeType(str, Enum):
-    GLOBAL = "global"
+
+class ScopeType(StrEnum):
     TENANT = "tenant"
+    COMPANY = "company"
     LEGAL_ENTITY = "legal_entity"
     OPERATING_SITE = "operating_site"
     BUSINESS_UNIT = "business_unit"
 
 
-class FieldAccessType(str, Enum):
+class FieldAccessType(StrEnum):
     READ = "read"
     WRITE = "write"
     MASK = "mask"
     DENY = "deny"
 
 
-class SoDSeverity(str, Enum):
+class RecordAccessScope(StrEnum):
+    ALL = "all"
+    OWNED = "owned"
+    ORGANIZATION = "organization"
+    DENY = "deny"
+
+
+class SoDSeverity(StrEnum):
     PREVENTATIVE = "preventative"
     DETECTIVE = "detective"
 
@@ -225,6 +299,18 @@ class FieldPolicyRecord(BaseModel):
     created_at: datetime
 
 
+class RecordPolicyRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    tenant_id: UUID
+    resource_type: str
+    role_id: UUID | None = None
+    access_scope: RecordAccessScope = RecordAccessScope.ORGANIZATION
+    condition_expression: str | None = None
+    created_at: datetime
+
+
 class ApprovalLimitRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -267,6 +353,21 @@ class DelegationGrantRecord(BaseModel):
     valid_from: datetime
     valid_to: datetime
     is_revoked: bool = False
+    revocation_reason: str | None = None
+    created_at: datetime
+
+
+class SupportAccessGrantRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    tenant_id: UUID
+    support_principal_id: UUID
+    approved_by: UUID
+    reason: str
+    valid_from: datetime
+    valid_to: datetime
+    revoked_at: datetime | None = None
     revocation_reason: str | None = None
     created_at: datetime
 
@@ -314,6 +415,14 @@ class CreateFieldPolicy(BaseModel):
     condition_expression: str | None = None
 
 
+class CreateRecordPolicy(BaseModel):
+    tenant_id: UUID
+    resource_type: str = Field(min_length=1, max_length=100)
+    role_id: UUID | None = None
+    access_scope: RecordAccessScope = RecordAccessScope.ORGANIZATION
+    condition_expression: str | None = None
+
+
 class CreateApprovalLimit(BaseModel):
     tenant_id: UUID
     action_type: str = Field(min_length=1, max_length=100)
@@ -356,9 +465,13 @@ class RevokeDelegation(BaseModel):
 class PolicyContext(BaseModel):
     tenant_id: UUID
     subject_id: UUID
+    company_id: UUID | None = None
     legal_entity_id: UUID | None = None
     operating_site_id: UUID | None = None
     business_unit_id: UUID | None = None
+    record_owner_id: UUID | None = None
+    record_scope_type: ScopeType | None = None
+    record_scope_id: UUID | None = None
     client_ip: str | None = None
     timestamp: datetime = Field(default_factory=datetime.now)
     attributes: dict[str, Any] = Field(default_factory=dict)

@@ -1,4 +1,5 @@
 """Public contracts, domain events, and extension hooks for data governance."""
+
 from __future__ import annotations
 
 from typing import Any, ClassVar, Protocol
@@ -51,12 +52,40 @@ class ConsentRevoked(DomainEvent):
 class TenantExportHook(Protocol):
     """Extension hook called during tenant data extraction / portability flows."""
 
-    async def export_tenant_data(self, tenant_id: UUID) -> dict[str, Any]:
-        ...
+    async def export_tenant_data(self, tenant_id: UUID) -> dict[str, Any]: ...
 
 
 class AnonymizationHook(Protocol):
     """Extension hook called when subject erasure or record anonymization executes."""
 
+    async def anonymize_subject(self, tenant_id: UUID, subject_id: UUID) -> None: ...
+
+
+class DataGovernanceHooks:
+    """Ordered public extension hooks for tenant export and subject anonymization."""
+
+    version: str = "1"
+
+    def __init__(self) -> None:
+        self._export_hooks: dict[str, TenantExportHook] = {}
+        self._anonymization_hooks: dict[str, AnonymizationHook] = {}
+
+    def register_export_hook(self, owner: str, hook: TenantExportHook) -> None:
+        if owner in self._export_hooks:
+            raise ValueError(f"Export hook already registered for {owner}")
+        self._export_hooks[owner] = hook
+
+    def register_anonymization_hook(self, owner: str, hook: AnonymizationHook) -> None:
+        if owner in self._anonymization_hooks:
+            raise ValueError(f"Anonymization hook already registered for {owner}")
+        self._anonymization_hooks[owner] = hook
+
+    async def export_tenant_data(self, tenant_id: UUID) -> dict[str, dict[str, Any]]:
+        return {
+            owner: await hook.export_tenant_data(tenant_id)
+            for owner, hook in sorted(self._export_hooks.items())
+        }
+
     async def anonymize_subject(self, tenant_id: UUID, subject_id: UUID) -> None:
-        ...
+        for _owner, hook in sorted(self._anonymization_hooks.items()):
+            await hook.anonymize_subject(tenant_id, subject_id)

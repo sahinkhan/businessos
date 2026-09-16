@@ -164,6 +164,45 @@ BOS_TEST_S3_ACCESS_KEY=businessos
 BOS_TEST_S3_SECRET_KEY=businessos-development
 ```
 
+## Enterprise Web Application (Phase 4.5 UI Foundation)
+
+The authenticated enterprise web interface lives under `apps/web` and is built with React 18, TypeScript, React Router, and Vite.
+
+### Prerequisites & Installation
+
+Node.js 20+ (recommended 22+) and npm are required.
+
+```bash
+cd apps/web
+npm ci
+```
+
+### Local Development
+
+Start the Vite development server with hot reloading:
+
+```bash
+cd apps/web
+npm run dev
+```
+
+The dev server binds to `http://localhost:3000`.
+
+### Required Frontend Validation
+
+All frontend code must satisfy the Phase 4.5 quality gates:
+
+```bash
+cd apps/web
+npm run typecheck       # Strict TypeScript type check
+npm run lint            # ESLint code quality & hooks rules
+npm run format:check    # Prettier formatting compliance
+npm test                # Unit and component integration tests (Vitest)
+npm run test:a11y       # Automated WCAG AA accessibility tests (axe-core)
+npm run build           # Production build
+npm run bundle:check    # Production bundle size budget audit
+```
+
 ## Migration Rules
 
 Production schemas change only through reviewed Alembic revisions. Never call SQLAlchemy metadata `create_all` as an upgrade mechanism.

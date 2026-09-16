@@ -21,6 +21,12 @@ PHASE3_MIGRATION_PARENTS = {
     "foundation.uom": "foundation.reference_data",
     "foundation.party": "foundation.uom",
 }
+PHASE4_MIGRATION_PARENTS = {
+    "foundation.policy": "foundation.party",
+    "foundation.audit": "foundation.policy",
+    "foundation.data_governance": "foundation.audit",
+}
+MIGRATION_PARENTS = PHASE3_MIGRATION_PARENTS | PHASE4_MIGRATION_PARENTS
 
 
 class _ManifestOverrideModule:
@@ -54,10 +60,10 @@ def _plan_json(plan: MigrationPlan) -> str:
     )
 
 
-def test_artifact_graph_preserves_phase1_and_phase2_branches() -> None:
+def test_artifact_graph_preserves_all_certified_branches() -> None:
     plan = smoke._expected_plan()
     assert {source.owner for source in plan.sources} == smoke.REQUIRED_OWNERS
-    assert plan.heads == ("party_0001", "proof_0003")
+    assert plan.heads == ("audit_0002", "gov_0002", "policy_0002", "proof_0003")
     parents = {revision.revision: revision.down_revisions for revision in plan.revisions}
     assert parents["proof_0001"] == ("0001_phase1_kernel",)
     assert parents["proof_0002"] == ("proof_0001",)
@@ -69,6 +75,12 @@ def test_artifact_graph_preserves_phase1_and_phase2_branches() -> None:
     assert parents["reference_0001"] == ("geography_0001",)
     assert parents["uom_0001"] == ("reference_0001",)
     assert parents["party_0001"] == ("uom_0001",)
+    assert parents["policy_0001"] == ("party_0001",)
+    assert parents["policy_0002"] == ("policy_0001",)
+    assert parents["audit_0001"] == ("policy_0001",)
+    assert parents["audit_0002"] == ("audit_0001",)
+    assert parents["gov_0001"] == ("audit_0001",)
+    assert parents["gov_0002"] == ("gov_0001",)
     smoke._verify_installed_plan(_plan_json(plan), plan)
     smoke._verify_state(set(plan.heads), _inventory(plan), plan)
 
@@ -85,8 +97,8 @@ def test_cross_module_migration_parents_are_declared_dependencies() -> None:
                 assert parent_owner in allowed[revision.owner]
 
 
-@pytest.mark.parametrize(("module_id", "parent_module"), PHASE3_MIGRATION_PARENTS.items())
-def test_phase3_migration_parent_requires_declared_dependency(
+@pytest.mark.parametrize(("module_id", "parent_module"), MIGRATION_PARENTS.items())
+def test_cross_owner_migration_parent_requires_declared_dependency(
     module_id: str, parent_module: str
 ) -> None:
     modules = list(discover_modules())
@@ -135,7 +147,9 @@ def test_artifact_discovery_rejects_missing_required_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     modules = [
-        module for module in discover_modules() if module.manifest.module_id != "foundation.party"
+        module
+        for module in discover_modules()
+        if module.manifest.module_id != "foundation.data_governance"
     ]
     monkeypatch.setattr(smoke, "discover_modules", lambda: modules)
     with pytest.raises(RuntimeError, match="missing required migration sources"):
@@ -165,7 +179,7 @@ def test_database_heads_must_equal_all_expected_heads(change: str) -> None:
     plan = smoke._expected_plan()
     heads = set(plan.heads)
     if change == "missing":
-        heads.remove("party_0001")
+        heads.remove("audit_0002")
     elif change == "rogue":
         heads.add("rogue_0001")
     else:

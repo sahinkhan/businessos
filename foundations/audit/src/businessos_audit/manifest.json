@@ -10,7 +10,8 @@
   "entry_point": "businessos_audit:AuditModule",
   "dependencies": [
     {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
-    {"module_id": "foundation.identity", "version": ">=0.2,<1"}
+    {"module_id": "foundation.identity", "version": ">=0.2,<1"},
+    {"module_id": "foundation.policy", "version": ">=0.4,<1"}
   ],
   "capabilities": [],
   "permissions": [

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -114,7 +114,7 @@ SENSITIVE_FIELD_TAGS = Table(
 )
 
 
-class ExpiryAction(str, Enum):
+class ExpiryAction(StrEnum):
     ARCHIVE = "archive"
     ANONYMIZE = "anonymize"
     PURGE = "purge"

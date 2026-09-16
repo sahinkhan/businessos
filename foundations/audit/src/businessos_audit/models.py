@@ -16,10 +16,10 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
-    Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 metadata = MetaData()
 
@@ -42,7 +42,10 @@ AUDIT_LOGS = Table(
     Column("client_ip", String(50), nullable=True),
     Column("user_agent", String(255), nullable=True),
     Column("decision_metadata", JSONB, nullable=True),
+    Column("trace_id", String(100), nullable=True),
     Column("status", String(30), nullable=False, server_default="success"),
+    Column("previous_checksum", String(64), nullable=False, server_default=""),
+    Column("integrity_version", String(10), nullable=False, server_default="2"),
     Column("checksum", String(64), nullable=False),
     Index("ix_audit_tenant_occurred", "tenant_id", "occurred_at"),
     Index("ix_audit_tenant_resource", "tenant_id", "resource_type", "resource_id"),
@@ -60,8 +63,42 @@ def compute_audit_checksum(
     resource_id: str | None,
     status: str,
     previous_checksum: str = "",
+    *,
+    actor_type: str = "user",
+    scope_type: str | None = None,
+    scope_id: UUID | None = None,
+    before_state: dict[str, Any] | None = None,
+    after_state: dict[str, Any] | None = None,
+    correlation_id: str | None = None,
+    trace_id: str | None = None,
+    decision_metadata: dict[str, Any] | None = None,
+    integrity_version: str = "1",
 ) -> str:
-    raw = f"{previous_checksum}|{tenant_id}|{occurred_at.isoformat()}|{actor_id}|{action}|{resource_type}|{resource_id or ''}|{status}"
+    if integrity_version == "1":
+        raw = (
+            f"{previous_checksum}|{tenant_id}|{occurred_at.isoformat()}|{actor_id}|"
+            f"{action}|{resource_type}|{resource_id or ''}|{status}"
+        )
+    else:
+        payload = {
+            "action": action,
+            "actor_id": actor_id,
+            "actor_type": actor_type,
+            "after_state": after_state,
+            "before_state": before_state,
+            "correlation_id": correlation_id,
+            "decision_metadata": decision_metadata,
+            "occurred_at": occurred_at.isoformat(),
+            "previous_checksum": previous_checksum,
+            "resource_id": resource_id,
+            "resource_type": resource_type,
+            "scope_id": str(scope_id) if scope_id else None,
+            "scope_type": scope_type,
+            "status": status,
+            "tenant_id": str(tenant_id),
+            "trace_id": trace_id,
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -84,7 +121,10 @@ class AuditRecord(BaseModel):
     client_ip: str | None = None
     user_agent: str | None = None
     decision_metadata: dict[str, Any] | None = None
+    trace_id: str | None = None
     status: str = "success"
+    previous_checksum: str = ""
+    integrity_version: str = "2"
     checksum: str
 
 
@@ -111,4 +151,4 @@ class AuditVerificationResult(BaseModel):
 
     total_records: int
     is_valid: bool
-    tampered_ids: list[UUID] = Field(default_factory=list)
+    tampered_ids: list[UUID] = Field(default_factory=lambda: list[UUID]())

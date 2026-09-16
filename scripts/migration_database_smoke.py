@@ -15,7 +15,13 @@ import psycopg
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-EXPECTED_HEADS = {"0005_durable_event_subscribers", "proof_0003"}
+EXPECTED_HEADS = {"organization_0001", "proof_0003"}
+EXPECTED_MODULE_REVISIONS = {
+    "example.phase1-proof": ["proof_0001", "proof_0002", "proof_0003"],
+    "foundation.tenant": ["tenant_0001"],
+    "foundation.identity": ["identity_0001"],
+    "foundation.organization": ["organization_0001"],
+}
 
 
 def _required(name: str) -> str:
@@ -80,20 +86,26 @@ def _run_image(
 def _verify(database_url: str) -> None:
     with psycopg.connect(database_url) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
-        inventory = connection.execute(
+        rows = connection.execute(
             "SELECT module_id, inventory_format, revision_ids, revision_manifest "
             "FROM platform_module.installed_module_migrations"
         ).fetchall()
+        inventory = {row[0]: row for row in rows}
+
     if heads != EXPECTED_HEADS:
         raise RuntimeError(f"unexpected migration heads: {sorted(heads)}")
-    if len(inventory) != 1 or inventory[0][0:2] != ("example.phase1-proof", 2):
-        raise RuntimeError("proof migration inventory was not persisted")
-    revision_ids = inventory[0][2]
-    manifest = inventory[0][3]
-    if revision_ids != ["proof_0001", "proof_0002", "proof_0003"]:
-        raise RuntimeError("proof revision IDs are incomplete")
-    if [item["revision"] for item in manifest] != revision_ids:
-        raise RuntimeError("proof immutable revision manifest is incomplete")
+    if set(inventory.keys()) != set(EXPECTED_MODULE_REVISIONS.keys()):
+        raise RuntimeError(f"unexpected module inventory: {sorted(inventory.keys())}")
+    for module_id, expected_revisions in EXPECTED_MODULE_REVISIONS.items():
+        record = inventory[module_id]
+        if record[1] != 2:
+            raise RuntimeError(f"{module_id} inventory format must be 2")
+        revision_ids = record[2]
+        manifest = record[3]
+        if revision_ids != expected_revisions:
+            raise RuntimeError(f"{module_id} revision IDs are incomplete: {revision_ids}")
+        if [item["revision"] for item in manifest] != revision_ids:
+            raise RuntimeError(f"{module_id} immutable revision manifest is incomplete")
 
 
 def main() -> None:

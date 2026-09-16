@@ -1,4 +1,5 @@
 """SQLAlchemy and Pydantic boundary models for authorization policies."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -56,10 +57,22 @@ ROLE_PERMISSIONS = Table(
     metadata,
     Column("id", PG_UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=False),
-    Column("permission_code", String(100), ForeignKey("platform_policy.permissions.code", ondelete="CASCADE"), nullable=False),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "permission_code",
+        String(100),
+        ForeignKey("platform_policy.permissions.code", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
-    UniqueConstraint("tenant_id", "role_id", "permission_code", name="uq_role_permissions_assignment"),
+    UniqueConstraint(
+        "tenant_id", "role_id", "permission_code", name="uq_role_permissions_assignment"
+    ),
     schema="platform_policy",
 )
 
@@ -69,7 +82,12 @@ SUBJECT_ROLE_ASSIGNMENTS = Table(
     Column("id", PG_UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("subject_id", PG_UUID(as_uuid=True), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("scope_type", String(50), nullable=False, server_default="tenant"),
     Column("scope_id", PG_UUID(as_uuid=True), nullable=True),
     Column("valid_from", DateTime(timezone=True), nullable=True),
@@ -85,7 +103,12 @@ FIELD_POLICIES = Table(
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("resource_type", String(100), nullable=False),
     Column("field_name", String(100), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=True),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
     Column("access_type", String(30), nullable=False, server_default="read"),
     Column("mask_pattern", String(100), nullable=True),
     Column("condition_expression", Text(), nullable=True),
@@ -101,7 +124,12 @@ APPROVAL_LIMITS = Table(
     Column("action_type", String(100), nullable=False),
     Column("currency", String(3), nullable=False),
     Column("amount_limit", Numeric(18, 4), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=True),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
     Column("subject_id", PG_UUID(as_uuid=True), nullable=True),
     Column("valid_from", DateTime(timezone=True), nullable=True),
     Column("valid_to", DateTime(timezone=True), nullable=True),
@@ -132,7 +160,12 @@ DELEGATIONS = Table(
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("delegator_id", PG_UUID(as_uuid=True), nullable=False),
     Column("delegatee_id", PG_UUID(as_uuid=True), nullable=False),
-    Column("role_id", PG_UUID(as_uuid=True), ForeignKey("platform_policy.roles.id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "role_id",
+        PG_UUID(as_uuid=True),
+        ForeignKey("platform_policy.roles.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("scope_type", String(50), nullable=False, server_default="tenant"),
     Column("scope_id", PG_UUID(as_uuid=True), nullable=True),
     Column("valid_from", DateTime(timezone=True), nullable=False),

@@ -42,7 +42,9 @@ def upgrade() -> None:
         "audit_logs",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "occurred_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("actor_id", sa.String(length=100), nullable=False),
         sa.Column("actor_type", sa.String(length=50), nullable=False, server_default="user"),
         sa.Column("action", sa.String(length=100), nullable=False),

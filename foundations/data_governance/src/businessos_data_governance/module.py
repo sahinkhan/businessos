@@ -1,4 +1,5 @@
 """Data governance, retention, and privacy module registration and handlers."""
+
 from __future__ import annotations
 
 import json
@@ -118,45 +119,100 @@ class GetSensitiveFieldTagsQuery(Query):
 class DataGovernanceModule:
     def __init__(self) -> None:
         data = json.loads(
-            files("businessos_data_governance").joinpath("manifest.json").read_text(encoding="utf-8")
+            files("businessos_data_governance")
+            .joinpath("manifest.json")
+            .read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.permission(
-            PermissionDeclaration(key="foundation.governance.read", description="Read governance rules and classifications")
+            PermissionDeclaration(
+                key="foundation.governance.read",
+                description="Read governance rules and classifications",
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.governance.manage", description="Manage retention policies and field tags")
+            PermissionDeclaration(
+                key="foundation.governance.manage",
+                description="Manage retention policies and field tags",
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.governance.hold", description="Place and release legal holds")
+            PermissionDeclaration(
+                key="foundation.governance.hold", description="Place and release legal holds"
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.governance.erase", description="Authorize and execute subject data erasure")
+            PermissionDeclaration(
+                key="foundation.governance.erase",
+                description="Authorize and execute subject data erasure",
+            )
         )
 
-        registration.command(RegisterDataClassificationCommand, self._register_classification, permission="foundation.governance.manage")
-        registration.command(CreateRetentionPolicyCommand, self._create_retention_policy, permission="foundation.governance.manage")
-        registration.command(PlaceLegalHoldCommand, self._place_legal_hold, permission="foundation.governance.hold")
-        registration.command(ReleaseLegalHoldCommand, self._release_legal_hold, permission="foundation.governance.hold")
-        registration.command(RecordConsentCommand, self._record_consent, permission="foundation.governance.manage")
-        registration.command(RevokeConsentCommand, self._revoke_consent, permission="foundation.governance.manage")
-        registration.command(TagSensitiveFieldCommand, self._tag_sensitive_field, permission="foundation.governance.manage")
+        registration.command(
+            RegisterDataClassificationCommand,
+            self._register_classification,
+            permission="foundation.governance.manage",
+        )
+        registration.command(
+            CreateRetentionPolicyCommand,
+            self._create_retention_policy,
+            permission="foundation.governance.manage",
+        )
+        registration.command(
+            PlaceLegalHoldCommand, self._place_legal_hold, permission="foundation.governance.hold"
+        )
+        registration.command(
+            ReleaseLegalHoldCommand,
+            self._release_legal_hold,
+            permission="foundation.governance.hold",
+        )
+        registration.command(
+            RecordConsentCommand, self._record_consent, permission="foundation.governance.manage"
+        )
+        registration.command(
+            RevokeConsentCommand, self._revoke_consent, permission="foundation.governance.manage"
+        )
+        registration.command(
+            TagSensitiveFieldCommand,
+            self._tag_sensitive_field,
+            permission="foundation.governance.manage",
+        )
 
-        registration.query(CheckPurgeEligibilityQuery, self._check_purge_eligibility, permission="foundation.governance.read")
-        registration.query(VerifyConsentQuery, self._verify_consent, permission="foundation.governance.read")
-        registration.query(GetSensitiveFieldTagsQuery, self._get_sensitive_fields, permission="foundation.governance.read")
+        registration.query(
+            CheckPurgeEligibilityQuery,
+            self._check_purge_eligibility,
+            permission="foundation.governance.read",
+        )
+        registration.query(
+            VerifyConsentQuery, self._verify_consent, permission="foundation.governance.read"
+        )
+        registration.query(
+            GetSensitiveFieldTagsQuery,
+            self._get_sensitive_fields,
+            permission="foundation.governance.read",
+        )
 
-    async def _register_classification(self, cmd: RegisterDataClassificationCommand, ctx: HandlingContext) -> DataClassificationRecord:
-        stmt = insert(DATA_CLASSIFICATIONS).values(
-            code=cmd.code,
-            name=cmd.name,
-            sensitivity_level=cmd.sensitivity_level,
-            description=cmd.description,
-        ).on_conflict_do_update(
-            index_elements=[DATA_CLASSIFICATIONS.c.code],
-            set_=dict(name=cmd.name, sensitivity_level=cmd.sensitivity_level, description=cmd.description),
+    async def _register_classification(
+        self, cmd: RegisterDataClassificationCommand, ctx: HandlingContext
+    ) -> DataClassificationRecord:
+        stmt = (
+            insert(DATA_CLASSIFICATIONS)
+            .values(
+                code=cmd.code,
+                name=cmd.name,
+                sensitivity_level=cmd.sensitivity_level,
+                description=cmd.description,
+            )
+            .on_conflict_do_update(
+                index_elements=[DATA_CLASSIFICATIONS.c.code],
+                set_=dict(
+                    name=cmd.name,
+                    sensitivity_level=cmd.sensitivity_level,
+                    description=cmd.description,
+                ),
+            )
         )
         await ctx.session.execute(stmt)
         return DataClassificationRecord(
@@ -166,7 +222,9 @@ class DataGovernanceModule:
             description=cmd.description,
         )
 
-    async def _create_retention_policy(self, cmd: CreateRetentionPolicyCommand, ctx: HandlingContext) -> RetentionPolicyRecord:
+    async def _create_retention_policy(
+        self, cmd: CreateRetentionPolicyCommand, ctx: HandlingContext
+    ) -> RetentionPolicyRecord:
         now = datetime.now(timezone.utc)
         policy_id = uuid4()
         stmt = insert(RETENTION_POLICIES).values(
@@ -197,7 +255,9 @@ class DataGovernanceModule:
             updated_at=now,
         )
 
-    async def _place_legal_hold(self, cmd: PlaceLegalHoldCommand, ctx: HandlingContext) -> LegalHoldRecord:
+    async def _place_legal_hold(
+        self, cmd: PlaceLegalHoldCommand, ctx: HandlingContext
+    ) -> LegalHoldRecord:
         now = datetime.now(timezone.utc)
         hold_id = uuid4()
         stmt = insert(LEGAL_HOLDS).values(
@@ -238,7 +298,9 @@ class DataGovernanceModule:
         if res.rowcount == 0:
             raise BusinessOSError(f"Legal hold {cmd.hold_id} not found")
 
-    async def _record_consent(self, cmd: RecordConsentCommand, ctx: HandlingContext) -> ConsentRecordModel:
+    async def _record_consent(
+        self, cmd: RecordConsentCommand, ctx: HandlingContext
+    ) -> ConsentRecordModel:
         now = datetime.now(timezone.utc)
         consent_id = uuid4()
         stmt = insert(CONSENT_RECORDS).values(
@@ -273,19 +335,33 @@ class DataGovernanceModule:
         if res.rowcount == 0:
             raise BusinessOSError(f"Consent record {cmd.consent_id} not found")
 
-    async def _tag_sensitive_field(self, cmd: TagSensitiveFieldCommand, ctx: HandlingContext) -> SensitiveFieldTagRecord:
+    async def _tag_sensitive_field(
+        self, cmd: TagSensitiveFieldCommand, ctx: HandlingContext
+    ) -> SensitiveFieldTagRecord:
         tag_id = uuid4()
-        stmt = insert(SENSITIVE_FIELD_TAGS).values(
-            id=tag_id,
-            tenant_id=cmd.tenant_id,
-            entity_type=cmd.entity_type,
-            field_name=cmd.field_name,
-            classification_code=cmd.classification_code,
-            is_masked_by_default=cmd.is_masked_by_default,
-            description=cmd.description,
-        ).on_conflict_do_update(
-            index_elements=[SENSITIVE_FIELD_TAGS.c.tenant_id, SENSITIVE_FIELD_TAGS.c.entity_type, SENSITIVE_FIELD_TAGS.c.field_name],
-            set_=dict(classification_code=cmd.classification_code, is_masked_by_default=cmd.is_masked_by_default, description=cmd.description),
+        stmt = (
+            insert(SENSITIVE_FIELD_TAGS)
+            .values(
+                id=tag_id,
+                tenant_id=cmd.tenant_id,
+                entity_type=cmd.entity_type,
+                field_name=cmd.field_name,
+                classification_code=cmd.classification_code,
+                is_masked_by_default=cmd.is_masked_by_default,
+                description=cmd.description,
+            )
+            .on_conflict_do_update(
+                index_elements=[
+                    SENSITIVE_FIELD_TAGS.c.tenant_id,
+                    SENSITIVE_FIELD_TAGS.c.entity_type,
+                    SENSITIVE_FIELD_TAGS.c.field_name,
+                ],
+                set_=dict(
+                    classification_code=cmd.classification_code,
+                    is_masked_by_default=cmd.is_masked_by_default,
+                    description=cmd.description,
+                ),
+            )
         )
         await ctx.session.execute(stmt)
         return SensitiveFieldTagRecord(
@@ -298,7 +374,9 @@ class DataGovernanceModule:
             description=cmd.description,
         )
 
-    async def _check_purge_eligibility(self, query: CheckPurgeEligibilityQuery, ctx: HandlingContext) -> PurgeEligibilityResult:
+    async def _check_purge_eligibility(
+        self, query: CheckPurgeEligibilityQuery, ctx: HandlingContext
+    ) -> PurgeEligibilityResult:
         # First check active legal holds
         holds_stmt = (
             select(LEGAL_HOLDS)
@@ -345,7 +423,9 @@ class DataGovernanceModule:
             active_holds=[],
         )
 
-    async def _verify_consent(self, query: VerifyConsentQuery, ctx: HandlingContext) -> ConsentVerificationResult:
+    async def _verify_consent(
+        self, query: VerifyConsentQuery, ctx: HandlingContext
+    ) -> ConsentVerificationResult:
         now = datetime.now(timezone.utc)
         stmt = (
             select(CONSENT_RECORDS)
@@ -357,14 +437,18 @@ class DataGovernanceModule:
         res = await ctx.session.execute(stmt)
         row = res.first()
         if not row:
-            return ConsentVerificationResult(has_consent=False, reason="No active consent record for subject and purpose")
+            return ConsentVerificationResult(
+                has_consent=False, reason="No active consent record for subject and purpose"
+            )
 
         if row.expires_at and row.expires_at < now:
             return ConsentVerificationResult(has_consent=False, reason="Consent has expired")
 
         return ConsentVerificationResult(has_consent=True, reason="Valid active consent verified")
 
-    async def _get_sensitive_fields(self, query: GetSensitiveFieldTagsQuery, ctx: HandlingContext) -> list[SensitiveFieldTagRecord]:
+    async def _get_sensitive_fields(
+        self, query: GetSensitiveFieldTagsQuery, ctx: HandlingContext
+    ) -> list[SensitiveFieldTagRecord]:
         stmt = (
             select(SENSITIVE_FIELD_TAGS)
             .where(SENSITIVE_FIELD_TAGS.c.tenant_id == query.tenant_id)

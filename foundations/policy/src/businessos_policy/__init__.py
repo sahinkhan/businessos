@@ -1,4 +1,5 @@
 """Policy, authorization, and governance foundation module."""
+
 from .contracts import (
     DelegationGranted,
     DelegationRevoked,

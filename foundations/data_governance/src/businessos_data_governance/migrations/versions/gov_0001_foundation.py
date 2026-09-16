@@ -62,11 +62,19 @@ def upgrade() -> None:
         sa.Column("entity_type", sa.String(length=100), nullable=False),
         sa.Column("classification_code", sa.String(length=50), nullable=False),
         sa.Column("retention_period_days", sa.Integer(), nullable=False),
-        sa.Column("action_on_expiry", sa.String(length=50), nullable=False, server_default="archive"),
+        sa.Column(
+            "action_on_expiry", sa.String(length=50), nullable=False, server_default="archive"
+        ),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.ForeignKeyConstraint(["classification_code"], [f"{SCHEMA}.data_classifications.code"], ondelete="RESTRICT"),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.ForeignKeyConstraint(
+            ["classification_code"], [f"{SCHEMA}.data_classifications.code"], ondelete="RESTRICT"
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("tenant_id", "code", name="uq_retention_tenant_code"),
         schema=SCHEMA,
@@ -82,7 +90,9 @@ def upgrade() -> None:
         sa.Column("entity_type", sa.String(length=100), nullable=False),
         sa.Column("entity_id", sa.String(length=255), nullable=True),
         sa.Column("placed_by", sa.String(length=100), nullable=False),
-        sa.Column("placed_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "placed_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("released_by", sa.String(length=100), nullable=True),
         sa.Column("released_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
@@ -97,7 +107,9 @@ def upgrade() -> None:
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("subject_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("purpose_code", sa.String(length=100), nullable=False),
-        sa.Column("granted_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "granted_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
@@ -114,9 +126,13 @@ def upgrade() -> None:
         sa.Column("classification_code", sa.String(length=50), nullable=False),
         sa.Column("is_masked_by_default", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("description", sa.Text(), nullable=False, server_default=""),
-        sa.ForeignKeyConstraint(["classification_code"], [f"{SCHEMA}.data_classifications.code"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(
+            ["classification_code"], [f"{SCHEMA}.data_classifications.code"], ondelete="RESTRICT"
+        ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("tenant_id", "entity_type", "field_name", name="uq_field_tag_tenant_entity_field"),
+        sa.UniqueConstraint(
+            "tenant_id", "entity_type", "field_name", name="uq_field_tag_tenant_entity_field"
+        ),
         schema=SCHEMA,
     )
 

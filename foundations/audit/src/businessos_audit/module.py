@@ -1,4 +1,5 @@
 """Audit foundation module registration, commands, and query handlers."""
+
 from __future__ import annotations
 
 import json
@@ -70,20 +71,34 @@ class AuditModule:
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.permission(
-            PermissionDeclaration(key="foundation.audit.read", description="Read audit logs and verify integrity")
+            PermissionDeclaration(
+                key="foundation.audit.read", description="Read audit logs and verify integrity"
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.audit.write", description="Append audit log events")
+            PermissionDeclaration(
+                key="foundation.audit.write", description="Append audit log events"
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.audit.export", description="Export tenant audit logs")
+            PermissionDeclaration(
+                key="foundation.audit.export", description="Export tenant audit logs"
+            )
         )
 
-        registration.command(RecordAuditLogCommand, self._record_audit_log, permission="foundation.audit.write")
-        registration.query(QueryAuditLogsQuery, self._query_audit_logs, permission="foundation.audit.read")
-        registration.query(VerifyAuditIntegrityQuery, self._verify_integrity, permission="foundation.audit.read")
+        registration.command(
+            RecordAuditLogCommand, self._record_audit_log, permission="foundation.audit.write"
+        )
+        registration.query(
+            QueryAuditLogsQuery, self._query_audit_logs, permission="foundation.audit.read"
+        )
+        registration.query(
+            VerifyAuditIntegrityQuery, self._verify_integrity, permission="foundation.audit.read"
+        )
 
-    async def _record_audit_log(self, cmd: RecordAuditLogCommand, ctx: HandlingContext) -> AuditRecord:
+    async def _record_audit_log(
+        self, cmd: RecordAuditLogCommand, ctx: HandlingContext
+    ) -> AuditRecord:
         audit_id = uuid4()
         occurred_at = datetime.now(timezone.utc)
 
@@ -153,7 +168,9 @@ class AuditModule:
 
         return record
 
-    async def _query_audit_logs(self, query: QueryAuditLogsQuery, ctx: HandlingContext) -> list[AuditRecord]:
+    async def _query_audit_logs(
+        self, query: QueryAuditLogsQuery, ctx: HandlingContext
+    ) -> list[AuditRecord]:
         stmt = select(AUDIT_LOGS).where(AUDIT_LOGS.c.tenant_id == query.tenant_id)
         if query.actor_id:
             stmt = stmt.where(AUDIT_LOGS.c.actor_id == query.actor_id)
@@ -166,11 +183,15 @@ class AuditModule:
         if query.correlation_id:
             stmt = stmt.where(AUDIT_LOGS.c.correlation_id == query.correlation_id)
 
-        stmt = stmt.order_by(AUDIT_LOGS.c.occurred_at.desc()).limit(query.limit).offset(query.offset)
+        stmt = (
+            stmt.order_by(AUDIT_LOGS.c.occurred_at.desc()).limit(query.limit).offset(query.offset)
+        )
         res = await ctx.session.execute(stmt)
         return [AuditRecord.model_validate(dict(r._mapping)) for r in res]
 
-    async def _verify_integrity(self, query: VerifyAuditIntegrityQuery, ctx: HandlingContext) -> AuditVerificationResult:
+    async def _verify_integrity(
+        self, query: VerifyAuditIntegrityQuery, ctx: HandlingContext
+    ) -> AuditVerificationResult:
         stmt = (
             select(AUDIT_LOGS)
             .where(AUDIT_LOGS.c.tenant_id == query.tenant_id)

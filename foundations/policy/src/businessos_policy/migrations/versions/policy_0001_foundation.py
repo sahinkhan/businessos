@@ -65,8 +65,12 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=False, server_default=""),
         sa.Column("is_system", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("parent_role_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("tenant_id", "code", name="uq_roles_tenant_code"),
         schema=SCHEMA,
@@ -78,11 +82,17 @@ def upgrade() -> None:
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("role_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("permission_code", sa.String(length=100), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.ForeignKeyConstraint(["role_id"], [f"{SCHEMA}.roles.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["permission_code"], [f"{SCHEMA}.permissions.code"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["permission_code"], [f"{SCHEMA}.permissions.code"], ondelete="CASCADE"
+        ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("tenant_id", "role_id", "permission_code", name="uq_role_permissions_assignment"),
+        sa.UniqueConstraint(
+            "tenant_id", "role_id", "permission_code", name="uq_role_permissions_assignment"
+        ),
         schema=SCHEMA,
     )
 
@@ -96,7 +106,9 @@ def upgrade() -> None:
         sa.Column("scope_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("valid_from", sa.DateTime(timezone=True), nullable=True),
         sa.Column("valid_to", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.ForeignKeyConstraint(["role_id"], [f"{SCHEMA}.roles.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         schema=SCHEMA,
@@ -112,7 +124,9 @@ def upgrade() -> None:
         sa.Column("access_type", sa.String(length=30), nullable=False, server_default="read"),
         sa.Column("mask_pattern", sa.String(length=100), nullable=True),
         sa.Column("condition_expression", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.ForeignKeyConstraint(["role_id"], [f"{SCHEMA}.roles.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         schema=SCHEMA,
@@ -129,7 +143,9 @@ def upgrade() -> None:
         sa.Column("subject_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("valid_from", sa.DateTime(timezone=True), nullable=True),
         sa.Column("valid_to", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.ForeignKeyConstraint(["role_id"], [f"{SCHEMA}.roles.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         schema=SCHEMA,
@@ -145,7 +161,9 @@ def upgrade() -> None:
         sa.Column("permission_b", sa.String(length=100), nullable=False),
         sa.Column("severity", sa.String(length=30), nullable=False, server_default="preventative"),
         sa.Column("description", sa.Text(), nullable=False, server_default=""),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("tenant_id", "code", name="uq_sod_rules_tenant_code"),
         schema=SCHEMA,
@@ -164,7 +182,9 @@ def upgrade() -> None:
         sa.Column("valid_to", sa.DateTime(timezone=True), nullable=False),
         sa.Column("is_revoked", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("revocation_reason", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.ForeignKeyConstraint(["role_id"], [f"{SCHEMA}.roles.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         schema=SCHEMA,

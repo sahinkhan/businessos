@@ -1,4 +1,5 @@
 """Policy and authorization foundation module registration, commands, and query handlers."""
+
 from __future__ import annotations
 
 import json
@@ -192,39 +193,87 @@ class PolicyModule:
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.permission(
-            PermissionDeclaration(key="foundation.policy.read", description="Read roles, permissions, and policy rules")
+            PermissionDeclaration(
+                key="foundation.policy.read",
+                description="Read roles, permissions, and policy rules",
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.policy.manage", description="Manage roles, permissions, and policy rules")
+            PermissionDeclaration(
+                key="foundation.policy.manage",
+                description="Manage roles, permissions, and policy rules",
+            )
         )
         registration.permission(
-            PermissionDeclaration(key="foundation.policy.authorize", description="Evaluate authorization decisions")
+            PermissionDeclaration(
+                key="foundation.policy.authorize", description="Evaluate authorization decisions"
+            )
         )
 
-        registration.command(RegisterPermissionCommand, self._register_permission, permission="foundation.policy.manage")
-        registration.command(CreateRoleCommand, self._create_role, permission="foundation.policy.manage")
-        registration.command(AssignPermissionToRoleCommand, self._assign_permission, permission="foundation.policy.manage")
-        registration.command(AssignRoleToSubjectCommand, self._assign_role, permission="foundation.policy.manage")
-        registration.command(SetFieldPolicyCommand, self._set_field_policy, permission="foundation.policy.manage")
-        registration.command(SetApprovalLimitCommand, self._set_approval_limit, permission="foundation.policy.manage")
-        registration.command(CreateSoDRuleCommand, self._create_sod_rule, permission="foundation.policy.manage")
-        registration.command(CreateDelegationCommand, self._create_delegation, permission="foundation.policy.manage")
-        registration.command(RevokeDelegationCommand, self._revoke_delegation, permission="foundation.policy.manage")
+        registration.command(
+            RegisterPermissionCommand,
+            self._register_permission,
+            permission="foundation.policy.manage",
+        )
+        registration.command(
+            CreateRoleCommand, self._create_role, permission="foundation.policy.manage"
+        )
+        registration.command(
+            AssignPermissionToRoleCommand,
+            self._assign_permission,
+            permission="foundation.policy.manage",
+        )
+        registration.command(
+            AssignRoleToSubjectCommand, self._assign_role, permission="foundation.policy.manage"
+        )
+        registration.command(
+            SetFieldPolicyCommand, self._set_field_policy, permission="foundation.policy.manage"
+        )
+        registration.command(
+            SetApprovalLimitCommand, self._set_approval_limit, permission="foundation.policy.manage"
+        )
+        registration.command(
+            CreateSoDRuleCommand, self._create_sod_rule, permission="foundation.policy.manage"
+        )
+        registration.command(
+            CreateDelegationCommand, self._create_delegation, permission="foundation.policy.manage"
+        )
+        registration.command(
+            RevokeDelegationCommand, self._revoke_delegation, permission="foundation.policy.manage"
+        )
 
-        registration.query(AuthorizeActionQuery, self._authorize_action, permission="foundation.policy.authorize")
-        registration.query(EvaluateFieldAccessQuery, self._evaluate_field_access, permission="foundation.policy.authorize")
-        registration.query(EvaluateApprovalLimitQuery, self._evaluate_approval_limit, permission="foundation.policy.authorize")
-        registration.query(CheckSoDConflictQuery, self._check_sod_conflict, permission="foundation.policy.read")
+        registration.query(
+            AuthorizeActionQuery, self._authorize_action, permission="foundation.policy.authorize"
+        )
+        registration.query(
+            EvaluateFieldAccessQuery,
+            self._evaluate_field_access,
+            permission="foundation.policy.authorize",
+        )
+        registration.query(
+            EvaluateApprovalLimitQuery,
+            self._evaluate_approval_limit,
+            permission="foundation.policy.authorize",
+        )
+        registration.query(
+            CheckSoDConflictQuery, self._check_sod_conflict, permission="foundation.policy.read"
+        )
 
-    async def _register_permission(self, cmd: RegisterPermissionCommand, ctx: HandlingContext) -> PermissionRecord:
-        stmt = insert(PERMISSIONS).values(
-            code=cmd.code,
-            name=cmd.name,
-            category=cmd.category,
-            description=cmd.description,
-        ).on_conflict_do_update(
-            index_elements=[PERMISSIONS.c.code],
-            set_=dict(name=cmd.name, category=cmd.category, description=cmd.description),
+    async def _register_permission(
+        self, cmd: RegisterPermissionCommand, ctx: HandlingContext
+    ) -> PermissionRecord:
+        stmt = (
+            insert(PERMISSIONS)
+            .values(
+                code=cmd.code,
+                name=cmd.name,
+                category=cmd.category,
+                description=cmd.description,
+            )
+            .on_conflict_do_update(
+                index_elements=[PERMISSIONS.c.code],
+                set_=dict(name=cmd.name, category=cmd.category, description=cmd.description),
+            )
         )
         await ctx.session.execute(stmt)
         return PermissionRecord(
@@ -261,7 +310,9 @@ class PolicyModule:
             updated_at=now,
         )
 
-    async def _assign_permission(self, cmd: AssignPermissionToRoleCommand, ctx: HandlingContext) -> RolePermissionRecord:
+    async def _assign_permission(
+        self, cmd: AssignPermissionToRoleCommand, ctx: HandlingContext
+    ) -> RolePermissionRecord:
         now = datetime.now(timezone.utc)
         rp_id = uuid4()
         stmt = insert(ROLE_PERMISSIONS).values(
@@ -280,7 +331,9 @@ class PolicyModule:
             created_at=now,
         )
 
-    async def _assign_role(self, cmd: AssignRoleToSubjectCommand, ctx: HandlingContext) -> SubjectRoleAssignmentRecord:
+    async def _assign_role(
+        self, cmd: AssignRoleToSubjectCommand, ctx: HandlingContext
+    ) -> SubjectRoleAssignmentRecord:
         now = datetime.now(timezone.utc)
         assignment_id = uuid4()
         stmt = insert(SUBJECT_ROLE_ASSIGNMENTS).values(
@@ -307,7 +360,9 @@ class PolicyModule:
             created_at=now,
         )
 
-    async def _set_field_policy(self, cmd: SetFieldPolicyCommand, ctx: HandlingContext) -> FieldPolicyRecord:
+    async def _set_field_policy(
+        self, cmd: SetFieldPolicyCommand, ctx: HandlingContext
+    ) -> FieldPolicyRecord:
         now = datetime.now(timezone.utc)
         fp_id = uuid4()
         stmt = insert(FIELD_POLICIES).values(
@@ -334,7 +389,9 @@ class PolicyModule:
             created_at=now,
         )
 
-    async def _set_approval_limit(self, cmd: SetApprovalLimitCommand, ctx: HandlingContext) -> ApprovalLimitRecord:
+    async def _set_approval_limit(
+        self, cmd: SetApprovalLimitCommand, ctx: HandlingContext
+    ) -> ApprovalLimitRecord:
         now = datetime.now(timezone.utc)
         limit_id = uuid4()
         stmt = insert(APPROVAL_LIMITS).values(
@@ -363,7 +420,9 @@ class PolicyModule:
             created_at=now,
         )
 
-    async def _create_sod_rule(self, cmd: CreateSoDRuleCommand, ctx: HandlingContext) -> SegregationOfDutiesRuleRecord:
+    async def _create_sod_rule(
+        self, cmd: CreateSoDRuleCommand, ctx: HandlingContext
+    ) -> SegregationOfDutiesRuleRecord:
         now = datetime.now(timezone.utc)
         rule_id = uuid4()
         stmt = insert(SOD_RULES).values(
@@ -390,7 +449,9 @@ class PolicyModule:
             created_at=now,
         )
 
-    async def _create_delegation(self, cmd: CreateDelegationCommand, ctx: HandlingContext) -> DelegationGrantRecord:
+    async def _create_delegation(
+        self, cmd: CreateDelegationCommand, ctx: HandlingContext
+    ) -> DelegationGrantRecord:
         now = datetime.now(timezone.utc)
         del_id = uuid4()
         stmt = insert(DELEGATIONS).values(
@@ -433,9 +494,13 @@ class PolicyModule:
         if res.rowcount == 0:
             raise BusinessOSError(f"Delegation grant {cmd.delegation_id} not found")
 
-    async def _authorize_action(self, query: AuthorizeActionQuery, ctx: HandlingContext) -> AuthorizationDecision:
+    async def _authorize_action(
+        self, query: AuthorizeActionQuery, ctx: HandlingContext
+    ) -> AuthorizationDecision:
         # Query roles, permissions, assignments, delegations
-        roles_res = await ctx.session.execute(select(ROLES).where(ROLES.c.tenant_id == query.tenant_id))
+        roles_res = await ctx.session.execute(
+            select(ROLES).where(ROLES.c.tenant_id == query.tenant_id)
+        )
         roles = [RoleRecord.model_validate(dict(r._mapping)) for r in roles_res]
 
         assign_res = await ctx.session.execute(
@@ -443,7 +508,9 @@ class PolicyModule:
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == query.tenant_id)
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == query.subject_id)
         )
-        assignments = [SubjectRoleAssignmentRecord.model_validate(dict(r._mapping)) for r in assign_res]
+        assignments = [
+            SubjectRoleAssignmentRecord.model_validate(dict(r._mapping)) for r in assign_res
+        ]
 
         rp_res = await ctx.session.execute(
             select(ROLE_PERMISSIONS).where(ROLE_PERMISSIONS.c.tenant_id == query.tenant_id)
@@ -479,7 +546,9 @@ class PolicyModule:
             delegations=delegations,
         )
 
-    async def _evaluate_field_access(self, query: EvaluateFieldAccessQuery, ctx: HandlingContext) -> FieldAccessDecision:
+    async def _evaluate_field_access(
+        self, query: EvaluateFieldAccessQuery, ctx: HandlingContext
+    ) -> FieldAccessDecision:
         assign_res = await ctx.session.execute(
             select(SUBJECT_ROLE_ASSIGNMENTS)
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == query.tenant_id)
@@ -504,7 +573,9 @@ class PolicyModule:
             active_role_ids=role_ids,
         )
 
-    async def _evaluate_approval_limit(self, query: EvaluateApprovalLimitQuery, ctx: HandlingContext) -> ApprovalAuthorityDecision:
+    async def _evaluate_approval_limit(
+        self, query: EvaluateApprovalLimitQuery, ctx: HandlingContext
+    ) -> ApprovalAuthorityDecision:
         assign_res = await ctx.session.execute(
             select(SUBJECT_ROLE_ASSIGNMENTS)
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == query.tenant_id)
@@ -529,7 +600,9 @@ class PolicyModule:
             active_role_ids=role_ids,
         )
 
-    async def _check_sod_conflict(self, query: CheckSoDConflictQuery, ctx: HandlingContext) -> SoDConflictResult:
+    async def _check_sod_conflict(
+        self, query: CheckSoDConflictQuery, ctx: HandlingContext
+    ) -> SoDConflictResult:
         rules_res = await ctx.session.execute(
             select(SOD_RULES).where(SOD_RULES.c.tenant_id == query.tenant_id)
         )

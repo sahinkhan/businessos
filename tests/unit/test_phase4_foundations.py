@@ -1,4 +1,5 @@
 """Unit tests for Phase 4 foundational modules: Policy, Audit, and Data Governance."""
+
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
@@ -99,7 +100,9 @@ def test_authorization_positive_and_negative_matrix_and_inheritance() -> None:
     assert dec_read.allowed is True
 
     # Negative test on ungranted permission (deny by default)
-    dec_delete = service.authorize("order.delete", "order", ctx, roles, role_permissions, assignments)
+    dec_delete = service.authorize(
+        "order.delete", "order", ctx, roles, role_permissions, assignments
+    )
     assert dec_delete.allowed is False
     assert "Deny by default" in dec_delete.reason
 
@@ -156,7 +159,9 @@ def test_cross_company_and_site_scope_enforcement() -> None:
         operating_site_id=site_alpha,
         timestamp=now,
     )
-    dec_allowed = service.authorize("inventory.manage", "inventory", ctx_allowed, roles, role_permissions, assignments)
+    dec_allowed = service.authorize(
+        "inventory.manage", "inventory", ctx_allowed, roles, role_permissions, assignments
+    )
     assert dec_allowed.allowed is True
 
     # Non-matching site context -> Denied
@@ -166,7 +171,9 @@ def test_cross_company_and_site_scope_enforcement() -> None:
         operating_site_id=site_beta,
         timestamp=now,
     )
-    dec_denied = service.authorize("inventory.manage", "inventory", ctx_denied, roles, role_permissions, assignments)
+    dec_denied = service.authorize(
+        "inventory.manage", "inventory", ctx_denied, roles, role_permissions, assignments
+    )
     assert dec_denied.allowed is False
 
 
@@ -213,7 +220,9 @@ def test_field_level_security_policies() -> None:
     ctx = PolicyContext(tenant_id=tenant_id, subject_id=subject_id)
 
     # Admin access -> full read
-    admin_dec = service.evaluate_field_access("tax_identifier", "party", ctx, policies, {role_admin})
+    admin_dec = service.evaluate_field_access(
+        "tax_identifier", "party", ctx, policies, {role_admin}
+    )
     assert admin_dec.allowed is True
     assert admin_dec.access_type == FieldAccessType.READ
     assert admin_dec.mask_pattern is None
@@ -253,7 +262,9 @@ def test_segregation_of_duties_conflict_detection() -> None:
     assert res_clean.has_conflict is False
 
     # Subject attempting to hold both -> Conflict
-    res_conflict = service.check_sod_conflict({"procurement.po.create", "procurement.po.approve"}, rules)
+    res_conflict = service.check_sod_conflict(
+        {"procurement.po.create", "procurement.po.approve"}, rules
+    )
     assert res_conflict.has_conflict is True
     assert len(res_conflict.conflicting_rules) == 1
     assert "SOD-001" in res_conflict.conflicting_rules[0]
@@ -302,12 +313,18 @@ def test_delegated_authority_and_time_limits() -> None:
     )
 
     ctx_during = PolicyContext(tenant_id=tenant_id, subject_id=delegatee_id, timestamp=now)
-    dec = service.authorize("finance.invoice.approve", "finance", ctx_during, roles, role_permissions, (), [delegation])
+    dec = service.authorize(
+        "finance.invoice.approve", "finance", ctx_during, roles, role_permissions, (), [delegation]
+    )
     assert dec.allowed is True
 
     # After expiry -> Denied
-    ctx_expired = PolicyContext(tenant_id=tenant_id, subject_id=delegatee_id, timestamp=now + timedelta(days=5))
-    dec_expired = service.authorize("finance.invoice.approve", "finance", ctx_expired, roles, role_permissions, (), [delegation])
+    ctx_expired = PolicyContext(
+        tenant_id=tenant_id, subject_id=delegatee_id, timestamp=now + timedelta(days=5)
+    )
+    dec_expired = service.authorize(
+        "finance.invoice.approve", "finance", ctx_expired, roles, role_permissions, (), [delegation]
+    )
     assert dec_expired.allowed is False
 
     # Revoked delegation -> Denied
@@ -324,7 +341,15 @@ def test_delegated_authority_and_time_limits() -> None:
         revocation_reason="Ended early",
         created_at=now,
     )
-    dec_revoked = service.authorize("finance.invoice.approve", "finance", ctx_during, roles, role_permissions, (), [delegation_revoked])
+    dec_revoked = service.authorize(
+        "finance.invoice.approve",
+        "finance",
+        ctx_during,
+        roles,
+        role_permissions,
+        (),
+        [delegation_revoked],
+    )
     assert dec_revoked.allowed is False
 
 
@@ -350,11 +375,15 @@ def test_approval_limits_evaluation() -> None:
     ctx = PolicyContext(tenant_id=tenant_id, subject_id=subject_id, timestamp=now)
 
     # Within limit -> Authorized
-    auth_ok = service.evaluate_approval_authority("purchase_order_approval", Decimal("25000.00"), "USD", ctx, limits, {role_id})
+    auth_ok = service.evaluate_approval_authority(
+        "purchase_order_approval", Decimal("25000.00"), "USD", ctx, limits, {role_id}
+    )
     assert auth_ok.has_authority is True
 
     # Exceeding limit -> Not authorized
-    auth_over = service.evaluate_approval_authority("purchase_order_approval", Decimal("75000.00"), "USD", ctx, limits, {role_id})
+    auth_over = service.evaluate_approval_authority(
+        "purchase_order_approval", Decimal("75000.00"), "USD", ctx, limits, {role_id}
+    )
     assert auth_over.has_authority is False
 
 

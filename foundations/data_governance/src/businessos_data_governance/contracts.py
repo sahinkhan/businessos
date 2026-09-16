@@ -1,4 +1,5 @@
 """Public contracts, domain events, and extension hooks for data governance."""
+
 from __future__ import annotations
 
 from typing import Any, ClassVar, Protocol
@@ -51,12 +52,10 @@ class ConsentRevoked(DomainEvent):
 class TenantExportHook(Protocol):
     """Extension hook called during tenant data extraction / portability flows."""
 
-    async def export_tenant_data(self, tenant_id: UUID) -> dict[str, Any]:
-        ...
+    async def export_tenant_data(self, tenant_id: UUID) -> dict[str, Any]: ...
 
 
 class AnonymizationHook(Protocol):
     """Extension hook called when subject erasure or record anonymization executes."""
 
-    async def anonymize_subject(self, tenant_id: UUID, subject_id: UUID) -> None:
-        ...
+    async def anonymize_subject(self, tenant_id: UUID, subject_id: UUID) -> None: ...

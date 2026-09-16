@@ -1,4 +1,5 @@
 """Public contracts, domain events, and policy evaluation services."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -104,7 +105,10 @@ class PolicyEvaluationService:
 
         # Direct subject assignments
         for assignment in assignments:
-            if assignment.tenant_id != context.tenant_id or assignment.subject_id != context.subject_id:
+            if (
+                assignment.tenant_id != context.tenant_id
+                or assignment.subject_id != context.subject_id
+            ):
                 continue
             if assignment.valid_from and assignment.valid_from > now:
                 continue
@@ -114,27 +118,48 @@ class PolicyEvaluationService:
             # Check scope match
             if assignment.scope_type == ScopeType.TENANT:
                 active_role_ids.add(assignment.role_id)
-            elif assignment.scope_type == ScopeType.LEGAL_ENTITY and assignment.scope_id == context.legal_entity_id:
+            elif (
+                assignment.scope_type == ScopeType.LEGAL_ENTITY
+                and assignment.scope_id == context.legal_entity_id
+            ):
                 active_role_ids.add(assignment.role_id)
-            elif assignment.scope_type == ScopeType.OPERATING_SITE and assignment.scope_id == context.operating_site_id:
+            elif (
+                assignment.scope_type == ScopeType.OPERATING_SITE
+                and assignment.scope_id == context.operating_site_id
+            ):
                 active_role_ids.add(assignment.role_id)
-            elif assignment.scope_type == ScopeType.BUSINESS_UNIT and assignment.scope_id == context.business_unit_id:
+            elif (
+                assignment.scope_type == ScopeType.BUSINESS_UNIT
+                and assignment.scope_id == context.business_unit_id
+            ):
                 active_role_ids.add(assignment.role_id)
 
         # Delegations
         for delegation in delegations:
-            if delegation.tenant_id != context.tenant_id or delegation.delegatee_id != context.subject_id:
+            if (
+                delegation.tenant_id != context.tenant_id
+                or delegation.delegatee_id != context.subject_id
+            ):
                 continue
             if delegation.is_revoked:
                 continue
             if delegation.valid_from <= now <= delegation.valid_to:
                 if delegation.scope_type == ScopeType.TENANT:
                     active_role_ids.add(delegation.role_id)
-                elif delegation.scope_type == ScopeType.LEGAL_ENTITY and delegation.scope_id == context.legal_entity_id:
+                elif (
+                    delegation.scope_type == ScopeType.LEGAL_ENTITY
+                    and delegation.scope_id == context.legal_entity_id
+                ):
                     active_role_ids.add(delegation.role_id)
-                elif delegation.scope_type == ScopeType.OPERATING_SITE and delegation.scope_id == context.operating_site_id:
+                elif (
+                    delegation.scope_type == ScopeType.OPERATING_SITE
+                    and delegation.scope_id == context.operating_site_id
+                ):
                     active_role_ids.add(delegation.role_id)
-                elif delegation.scope_type == ScopeType.BUSINESS_UNIT and delegation.scope_id == context.business_unit_id:
+                elif (
+                    delegation.scope_type == ScopeType.BUSINESS_UNIT
+                    and delegation.scope_id == context.business_unit_id
+                ):
                     active_role_ids.add(delegation.role_id)
 
         # Role inheritance
@@ -151,7 +176,11 @@ class PolicyEvaluationService:
             if rp.tenant_id != context.tenant_id or rp.role_id not in expanded_role_ids:
                 continue
             # Permission pattern matching (exact or wildcard)
-            if rp.permission_code == action or rp.permission_code == "*" or rp.permission_code == f"{resource}.*":
+            if (
+                rp.permission_code == action
+                or rp.permission_code == "*"
+                or rp.permission_code == f"{resource}.*"
+            ):
                 return AuthorizationDecision(
                     allowed=True,
                     reason=f"Granted by permission '{rp.permission_code}' on active role",
@@ -173,14 +202,17 @@ class PolicyEvaluationService:
         active_role_ids: set[UUID],
     ) -> FieldAccessDecision:
         matching = [
-            p for p in policies
+            p
+            for p in policies
             if p.tenant_id == context.tenant_id
             and p.resource_type == resource_type
             and p.field_name == field_name
         ]
         if not matching:
             # Default is full read access if no specific field policy exists
-            return FieldAccessDecision(allowed=True, access_type=FieldAccessType.READ, mask_pattern=None)
+            return FieldAccessDecision(
+                allowed=True, access_type=FieldAccessType.READ, mask_pattern=None
+            )
 
         # Check role-specific policy first, then wildcard role
         role_policy = next((p for p in matching if p.role_id in active_role_ids), None)
@@ -188,10 +220,14 @@ class PolicyEvaluationService:
             role_policy = next((p for p in matching if p.role_id is None), None)
 
         if not role_policy:
-            return FieldAccessDecision(allowed=True, access_type=FieldAccessType.READ, mask_pattern=None)
+            return FieldAccessDecision(
+                allowed=True, access_type=FieldAccessType.READ, mask_pattern=None
+            )
 
         if role_policy.access_type == FieldAccessType.DENY:
-            return FieldAccessDecision(allowed=False, access_type=FieldAccessType.DENY, mask_pattern=None)
+            return FieldAccessDecision(
+                allowed=False, access_type=FieldAccessType.DENY, mask_pattern=None
+            )
 
         return FieldAccessDecision(
             allowed=True,
@@ -223,7 +259,9 @@ class PolicyEvaluationService:
                 continue
 
             # Check if assigned to subject directly or through active roles
-            if limit.subject_id == context.subject_id or (limit.role_id and limit.role_id in active_role_ids):
+            if limit.subject_id == context.subject_id or (
+                limit.role_id and limit.role_id in active_role_ids
+            ):
                 found = True
                 if limit.amount_limit > max_limit:
                     max_limit = limit.amount_limit
@@ -256,8 +294,13 @@ class PolicyEvaluationService:
     ) -> SoDConflictResult:
         conflicts: list[str] = []
         for rule in sod_rules:
-            if rule.permission_a in candidate_permissions and rule.permission_b in candidate_permissions:
-                conflicts.append(f"SoD Conflict: [{rule.code}] {rule.name} ('{rule.permission_a}' vs '{rule.permission_b}')")
+            if (
+                rule.permission_a in candidate_permissions
+                and rule.permission_b in candidate_permissions
+            ):
+                conflicts.append(
+                    f"SoD Conflict: [{rule.code}] {rule.name} ('{rule.permission_a}' vs '{rule.permission_b}')"
+                )
 
         return SoDConflictResult(
             has_conflict=len(conflicts) > 0,

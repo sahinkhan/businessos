@@ -1,4 +1,5 @@
 """SQLAlchemy and Pydantic boundary models for the audit foundation."""
+
 from __future__ import annotations
 
 import hashlib

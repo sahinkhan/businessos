@@ -1,4 +1,5 @@
 """Data governance, retention, and privacy foundation module."""
+
 from .contracts import (
     AnonymizationHook,
     ConsentRecorded,

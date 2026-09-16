@@ -5,16 +5,17 @@ from businessos.modules import discover_modules
 
 
 def test_phase2_modules_discover_in_dependency_order() -> None:
-    phase2 = {
-        module.manifest.module_id: module
-        for module in discover_modules()
-        if module.manifest.module_id.startswith("foundation.")
-    }
-    assert set(phase2) == {
+    phase2_ids = {
         "foundation.tenant",
         "foundation.identity",
         "foundation.organization",
     }
+    phase2 = {
+        module.manifest.module_id: module
+        for module in discover_modules()
+        if module.manifest.module_id in phase2_ids
+    }
+    assert set(phase2) == phase2_ids
     assert phase2["foundation.identity"].manifest.dependencies[0].module_id == "foundation.tenant"
     assert [item.module_id for item in phase2["foundation.organization"].manifest.dependencies] == [
         "foundation.tenant",
@@ -39,4 +40,5 @@ def test_phase2_production_code_uses_only_public_platform_sdk() -> None:
                 for alias in node.names:
                     if alias.name == "businessos" or alias.name.startswith("businessos."):
                         forbidden.append(f"{path}:{node.lineno}:{alias.name}")
+
     assert forbidden == []

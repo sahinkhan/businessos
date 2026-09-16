@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools==75.8.2", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "businessos-foundation-party"
+version = "0.3.0"
+description = "BusinessOS party, contacts, and relationship foundation module"
+requires-python = ">=3.13"
+dependencies = [
+  "businessos>=0.1,<1",
+  "businessos-foundation-tenant>=0.2,<1",
+  "businessos-foundation-identity>=0.2,<1",
+  "businessos-foundation-geography>=0.3,<1",
+  "businessos-foundation-reference-data>=0.3,<1",
+  "pydantic>=2.10,<3",
+  "sqlalchemy>=2.0.36,<3",
+]
+
+[project.entry-points."businessos.modules"]
+foundation-party = "businessos_party:PartyModule"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+businessos_party = ["manifest.json", "migrations/versions/*.py", "py.typed"]

@@ -1,5 +1,4 @@
 """Run real installed-artifact migrations against a disposable PostgreSQL database."""
-
 from __future__ import annotations
 
 import argparse
@@ -15,12 +14,16 @@ import psycopg
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-EXPECTED_HEADS = {"organization_0001", "proof_0003"}
+EXPECTED_HEADS = {"party_0001", "proof_0003"}
 EXPECTED_MODULE_REVISIONS = {
     "example.phase1-proof": ["proof_0001", "proof_0002", "proof_0003"],
     "foundation.tenant": ["tenant_0001"],
     "foundation.identity": ["identity_0001"],
     "foundation.organization": ["organization_0001"],
+    "foundation.geography": ["geography_0001"],
+    "foundation.reference_data": ["reference_0001"],
+    "foundation.uom": ["uom_0001"],
+    "foundation.party": ["party_0001"],
 }
 
 
@@ -91,7 +94,6 @@ def _verify(database_url: str) -> None:
             "FROM platform_module.installed_module_migrations"
         ).fetchall()
         inventory = {row[0]: row for row in rows}
-
     if heads != EXPECTED_HEADS:
         raise RuntimeError(f"unexpected migration heads: {sorted(heads)}")
     if set(inventory.keys()) != set(EXPECTED_MODULE_REVISIONS.keys()):
@@ -122,6 +124,7 @@ def main() -> None:
     database_name = f"businessos_artifact_smoke_{uuid4().hex}"
     host_admin_url = _url(administrator_base, database_name, sqlalchemy=False)
     host_migration_url = _url(migration_base, database_name, sqlalchemy=True)
+
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     environment.update(
@@ -136,6 +139,7 @@ def main() -> None:
 
     with psycopg.connect(administrator_base, autocommit=True) as connection:
         connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name)))
+
     try:
         with tempfile.TemporaryDirectory() as temporary:
             workdir = Path(temporary)
@@ -175,6 +179,7 @@ def main() -> None:
                     )
 
                 run = image_runner
+
             run(("database", "transition-roles"))
             run(("migrate", "plan"))
             run(("migrate", "upgrade", "heads"))

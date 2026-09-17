@@ -1,9 +1,24 @@
+import hashlib
 import os
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import uuid4
 
 import boto3
 import pytest
+from businessos_identity import (
+    ActiveScope,
+    AuthenticationStrength,
+    AuthorizationTransaction,
+    PrincipalIdentity,
+    RedisAuthorizationTransactionStore,
+    RedisWebSessionStore,
+    WebSession,
+)
+from redis.asyncio import Redis, from_url
 
+from businessos.errors import BusinessOSError
 from businessos.providers import NatsJetStreamPublisher, RedisCacheProvider, S3ObjectStorageProvider
 
 
@@ -29,6 +44,77 @@ async def test_redis_provider_enforces_tenant_key_namespaces() -> None:
     assert await provider.get(first_tenant, "shared") == b"first"
     assert await provider.get(second_tenant, "shared") == b"second"
     await provider.close()
+
+
+@pytest.mark.integration
+@pytest.mark.providers
+@pytest.mark.asyncio
+async def test_redis_web_sessions_rotate_revoke_and_consume_transactions_atomically() -> None:
+    namespace = f"test:web-session:{uuid4().hex}"
+    factory = cast(Callable[..., Redis], from_url)
+    redis = factory(_required_env("BOS_TEST_REDIS_URL"), decode_responses=False)
+    sessions = RedisWebSessionStore(redis, namespace=namespace)
+    transactions = RedisAuthorizationTransactionStore(redis, namespace=f"{namespace}:oidc")
+    now = datetime.now(UTC)
+    tenant_id, principal_id = uuid4(), uuid4()
+    principal = PrincipalIdentity(
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+        principal_type="user",
+        authentication_strength=AuthenticationStrength.MFA,
+    )
+
+    def session(generation: int = 1) -> WebSession:
+        return WebSession(
+            generation=generation,
+            principal=principal,
+            provider_id="test",
+            issued_at=now,
+            last_seen_at=now,
+            idle_expires_at=now + timedelta(minutes=10),
+            absolute_expires_at=now + timedelta(hours=1),
+            csrf_token=uuid4().hex,
+            active_scope=ActiveScope(tenant_id=tenant_id),
+        )
+
+    try:
+        first = await sessions.create(session())
+        second = await sessions.create(session())
+        rotated = await sessions.rotate(first, session(generation=2))
+        assert await sessions.get(first) is None
+        rotated_session = await sessions.get(rotated)
+        assert rotated_session is not None
+        assert rotated_session.generation == 2
+        await sessions.revoke_principal(tenant_id, principal_id, "security-event")
+        assert await sessions.get(rotated) is None
+        assert await sessions.get(second) is None
+
+        assert await transactions.allow_login("browser", 1, 60)
+        assert not await transactions.allow_login("browser", 1, 60)
+
+        transaction = AuthorizationTransaction(
+            state=uuid4().hex,
+            nonce=uuid4().hex,
+            pkce_verifier=uuid4().hex,
+            pkce_challenge=uuid4().hex,
+            browser_binding_digest=hashlib.sha256(b"binding").hexdigest(),
+            provider_id="test",
+            expected_issuer="https://idp.example.test",
+            return_to="/",
+            issued_at=now,
+            expires_at=now + timedelta(minutes=5),
+        )
+        await transactions.create(transaction)
+        consumed = await transactions.consume(transaction.state, "binding")
+        assert consumed.state == transaction.state
+        with pytest.raises(BusinessOSError) as replay:
+            await transactions.consume(transaction.state, "binding")
+        assert replay.value.status_code == 409
+    finally:
+        keys = [key async for key in redis.scan_iter(match=f"{namespace}*")]
+        if keys:
+            await redis.delete(*keys)
+        await redis.aclose()
 
 
 @pytest.mark.integration

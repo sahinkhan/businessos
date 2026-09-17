@@ -92,6 +92,13 @@ class Container:
             raise ConfigurationError("Dependency container is closed")
         return RequestDependencyScope(self)
 
+    def contains(self, key: DependencyKey[object]) -> bool:
+        """Return whether an active registration exists without resolving it."""
+        registration = self._registrations.get(key)
+        return registration is not None and (
+            registration.gate is None or registration.gate.is_active(registration.generation)
+        )
+
     async def close(self) -> None:
         self._closed = True
         flights = tuple(self._singleton_flights.values())

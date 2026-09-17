@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from businessos.config import Settings
 from businessos.context import RequestContext
-from businessos.dependencies import AUTHORIZER
+from businessos.dependencies import AUTHORIZER, TRUSTED_CONTEXT_RESOLVER
 from businessos.di import Container, RequestDependencyScope
 from businessos.errors import BusinessOSError, ClientDisconnectedError
 from businessos.http import Request, Response, Router
@@ -378,7 +378,11 @@ class BusinessOSApplication:
                 correlation_id=headers.get("x-correlation-id", generated_context.correlation_id),
                 trace_id=trace_id,
             )
-            context = await self._context_resolver.resolve(identity)
+            resolver = self._context_resolver
+            if self.container.contains(TRUSTED_CONTEXT_RESOLVER):
+                async with self.container.request_scope() as resolver_scope:
+                    resolver = await resolver_scope.resolve(TRUSTED_CONTEXT_RESOLVER)
+            context = await resolver.resolve(identity)
             response_context = context
             match = self.router.match(scope["method"], scope["path"])
             request = Request(

@@ -29,6 +29,8 @@ class Request:
         self.path = scope["path"]
         self.root_path = scope.get("root_path", "")
         self.scheme = scope.get("scheme", "http")
+        client = scope.get("client")
+        self.client_host = client[0] if client is not None else "unknown"
         self.context = context
         self.path_params = dict(path_params or {})
         self.headers = {

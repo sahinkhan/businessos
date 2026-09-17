@@ -6,7 +6,7 @@ import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from importlib.resources import files
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -14,6 +14,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from businessos.sdk import (
+    MESSAGE_DISPATCHER,
     BusinessOSError,
     Command,
     HandlingContext,
@@ -21,7 +22,10 @@ from businessos.sdk import (
     ModuleRegistration,
     PermissionDeclaration,
     Query,
+    Request,
     RequestContext,
+    RequestDependencyScope,
+    Response,
     TenantContext,
 )
 
@@ -318,6 +322,78 @@ class PolicyModule:
             self._authorize_support_access,
             permission="foundation.policy.authorize",
         )
+        registration.route(
+            "POST", "/api/v1/policy/authorize", self._http_authorize, name="policy-authorize"
+        )
+        registration.route(
+            "POST",
+            "/api/v1/policy/field-access",
+            self._http_field_access,
+            name="policy-field-access",
+        )
+        registration.route(
+            "POST",
+            "/api/v1/policy/approval-limit",
+            self._http_approval_limit,
+            name="policy-approval-limit",
+        )
+
+    @staticmethod
+    async def _http_payload(request: Request) -> tuple[dict[str, object], TenantContext]:
+        tenant = request.context.tenant
+        if tenant is None:
+            raise BusinessOSError("unauthenticated", "Authentication required", status_code=401)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise BusinessOSError("invalid_request", "Request must be an object", status_code=400)
+        return cast(dict[str, object], payload), tenant
+
+    async def _http_authorize(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        payload, tenant = await self._http_payload(request)
+        query = AuthorizeActionQuery.model_validate(
+            {
+                **payload,
+                "tenant_id": tenant.tenant_id,
+                "subject_id": tenant.principal_id,
+                "company_id": tenant.active_company_id,
+                "legal_entity_id": tenant.legal_entity_id,
+                "operating_site_id": tenant.operating_site_id,
+                "business_unit_id": tenant.business_unit_id,
+            }
+        )
+        dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
+        result = await dispatcher.query(query, request.context, dependencies)
+        if not isinstance(result, AuthorizationDecision):
+            raise RuntimeError("Policy authorization contract returned an invalid result")
+        return Response.json(result)
+
+    async def _http_field_access(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        payload, tenant = await self._http_payload(request)
+        query = EvaluateFieldAccessQuery.model_validate(
+            {**payload, "tenant_id": tenant.tenant_id, "subject_id": tenant.principal_id}
+        )
+        dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
+        result = await dispatcher.query(query, request.context, dependencies)
+        if not isinstance(result, FieldAccessDecision):
+            raise RuntimeError("Policy field-access contract returned an invalid result")
+        return Response.json(result)
+
+    async def _http_approval_limit(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        payload, tenant = await self._http_payload(request)
+        query = EvaluateApprovalLimitQuery.model_validate(
+            {**payload, "tenant_id": tenant.tenant_id, "subject_id": tenant.principal_id}
+        )
+        dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
+        result = await dispatcher.query(query, request.context, dependencies)
+        if not isinstance(result, ApprovalAuthorityDecision):
+            raise RuntimeError("Policy approval contract returned an invalid result")
+        return Response.json(result)
 
     async def start(self) -> None:
         return None

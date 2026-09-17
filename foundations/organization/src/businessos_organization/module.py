@@ -7,7 +7,13 @@ from importlib.resources import files
 from typing import ClassVar
 from uuid import UUID, uuid4
 
-from businessos_identity import GetMembership, MembershipRecord
+from businessos_identity import (
+    WEB_SESSION_SERVICE,
+    ActiveScope,
+    GetMembership,
+    MembershipRecord,
+)
+from businessos_identity.web_sessions import SESSION_COOKIE, cookie_value, session_cookie
 from pydantic import Field
 from sqlalchemy import insert, select
 from sqlalchemy.engine import RowMapping
@@ -23,7 +29,10 @@ from businessos.sdk import (
     ModuleRegistration,
     PermissionDeclaration,
     Query,
+    Request,
     RequestContext,
+    RequestDependencyScope,
+    Response,
     TenantContext,
 )
 
@@ -275,6 +284,82 @@ class OrganizationModule:
         registration.query(
             SelectActiveScope, self._select_scope, permission="foundation.organization.read"
         )
+        registration.route(
+            "GET",
+            "/api/v1/organization/hierarchy",
+            self._http_hierarchy,
+            name="organization-hierarchy",
+        )
+        registration.route(
+            "POST",
+            "/api/v1/organization/validate-scope",
+            self._http_validate_scope,
+            name="organization-validate-scope",
+        )
+        registration.route(
+            "POST",
+            "/api/v1/organization/active-scope",
+            self._http_select_scope,
+            name="organization-active-scope",
+        )
+
+    @staticmethod
+    async def _scope_query(request: Request) -> SelectActiveScope:
+        tenant = request.context.tenant
+        if tenant is None:
+            raise BusinessOSError("unauthenticated", "Authentication required", status_code=401)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise BusinessOSError("invalid_request", "Request must be an object", status_code=400)
+        return SelectActiveScope.model_validate({**payload, "tenant_id": tenant.tenant_id})
+
+    async def _http_hierarchy(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        tenant = request.context.tenant
+        if tenant is None:
+            raise BusinessOSError("unauthenticated", "Authentication required", status_code=401)
+        dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
+        result = await dispatcher.query(
+            ReadOrganization(tenant_id=tenant.tenant_id), request.context, dependencies
+        )
+        if not isinstance(result, OrganizationSnapshot):
+            raise RuntimeError("Organization contract returned an invalid result")
+        return Response.json(result)
+
+    async def _http_validate_scope(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        query = await self._scope_query(request)
+        dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
+        result = await dispatcher.query(query, request.context, dependencies)
+        if not isinstance(result, TenantContext):
+            raise RuntimeError("Organization scope contract returned an invalid result")
+        return Response.json({"valid": True, "scope": _active_scope(result)})
+
+    async def _http_select_scope(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        query = await self._scope_query(request)
+        dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
+        result = await dispatcher.query(query, request.context, dependencies)
+        if not isinstance(result, TenantContext):
+            raise RuntimeError("Organization scope contract returned an invalid result")
+        handle = cookie_value(request.headers, SESSION_COOKIE)
+        if handle is None:
+            raise BusinessOSError("unauthenticated", "Authentication required", status_code=401)
+        service = await dependencies.resolve(WEB_SESSION_SERVICE)
+        rotated, session = await service.rotate_scope(handle, _active_scope(result))
+        response = Response.json(
+            {
+                "valid": True,
+                "scope": session.active_scope,
+                "csrf_token": session.csrf_token,
+                "expires_at": min(session.idle_expires_at, session.absolute_expires_at),
+            }
+        )
+        response.append_header("set-cookie", session_cookie(rotated, session.absolute_expires_at))
+        return response
 
     async def start(self) -> None:
         return None
@@ -646,6 +731,26 @@ class OrganizationModule:
             project_id=query.project_id,
             delegation_id=query.delegation_id,
         )
+
+
+def _active_scope(tenant: TenantContext) -> ActiveScope:
+    return ActiveScope(
+        tenant_id=tenant.tenant_id,
+        enterprise_group_id=tenant.enterprise_group_id,
+        legal_entity_id=tenant.legal_entity_id,
+        company_id=tenant.active_company_id,
+        business_unit_id=tenant.business_unit_id,
+        division_id=tenant.division_id,
+        department_id=tenant.department_id,
+        team_id=tenant.team_id,
+        region_id=tenant.region_id,
+        operating_site_id=tenant.operating_site_id,
+        warehouse_id=tenant.warehouse_id,
+        cost_center_id=tenant.cost_center_id,
+        profit_center_id=tenant.profit_center_id,
+        project_id=tenant.project_id,
+        delegation_id=tenant.delegation_id,
+    )
 
 
 def _validate_selected_hierarchy(rows: dict[str, RowMapping]) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from uuid import uuid4
 
 import jwt
@@ -9,6 +10,7 @@ from businessos_identity import (
     ConfigureOIDCProvider,
     CreateUser,
     OIDCConfiguration,
+    OIDCContextResolver,
     OIDCTokenVerifier,
 )
 from businessos_organization import CreateLegalEntity
@@ -60,6 +62,22 @@ async def test_oidc_verifier_requires_signature_issuer_audience_and_tenant() -> 
         await verifier.verify(wrong_audience)
     assert failure.value.code == "invalid_token"
     assert "other" not in str(failure.value)
+
+    resolver = OIDCContextResolver(
+        installation_id=uuid4(),
+        verifier=verifier,
+        unit_of_work_factory=cast(Any, object()),
+        tenant_access=cast(Any, object()),
+    )
+    nonce_token = jwt.encode(
+        {**claims, "nonce": "transaction-nonce"},
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test"},
+    )
+    with pytest.raises(BusinessOSError) as nonce_failure:
+        await resolver.authenticate_token(nonce_token, expected_nonce="replayed-nonce")
+    assert nonce_failure.value.code == "invalid_oidc_nonce"
 
 
 def test_oidc_configuration_rejects_unsafe_transport_and_algorithms() -> None:

@@ -1,6 +1,6 @@
 # ADR-009: Browser Authentication and Web Session Boundary
 
-Status: Proposed
+Status: Accepted
 
 ## Context
 

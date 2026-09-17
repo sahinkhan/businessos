@@ -4,11 +4,12 @@ Audited baseline: `3e551b8922397e03636db8d7ed7cf85d2477db83`.
 
 Remediation baseline: `25c51d497cb3d9bab27e4dc54839248e9ec9fe79` on `fix/phase4.5-certification`.
 
-Status: remediation blocked pending review and acceptance of proposed ADR-009. PR #9 must not be
-merged or certified. Historical tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are
-unchanged, and `v0.4.7-ui-foundation` must not be created.
+Status: ADR-009 accepted; remediation remains blocked pending implementation and certification of
+the web-session boundary and the remaining findings. PR #9 must not be merged or certified.
+Historical tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are unchanged, and
+`v0.4.7-ui-foundation` must not be created.
 
-## Current architecture blocker
+## Accepted architecture boundary and implementation blocker
 
 The certified Identity foundation validates federated OIDC credentials and resolves effective
 membership to a trusted `PrincipalIdentity`/`RequestContext`, but it publishes no browser login,
@@ -16,7 +17,7 @@ session issuance, refresh, logout/revocation, or current-session application con
 React adapter assumes such a contract and therefore cannot be connected by a thin HTTP facade
 without inventing a new authentication security model.
 
-ADR-009 proposes OIDC Authorization Code with PKCE, backend token exchange, an opaque server-side
+ADR-009 establishes OIDC Authorization Code with PKCE, backend token exchange, an opaque server-side
 session, a Secure HttpOnly cookie, and a separately versioned additive
 `foundation.identity.web-session.v1` contract. The accompanying web-session specification defines
 the application, provider, HTTP, cookie, CSRF, lifecycle, and test contracts. No authentication
@@ -55,8 +56,8 @@ implementation is included in this documentation-only change.
 - Mock authentication remains available only through explicit dependency injection, and the
   frontend does not persist bearer credentials in local storage. Those protections do not provide
   a deployable production authentication path.
-- The proposed ADR-009 removes browser-owned bearer credentials in favor of an opaque server-side
-  session and Secure HttpOnly cookie. No implementation is permitted until that ADR is accepted.
+- The accepted ADR-009 removes browser-owned bearer credentials in favor of an opaque server-side
+  session and Secure HttpOnly cookie. That boundary is not implemented or certified yet.
 - The API client already supports `AbortSignal`, typed errors, cryptographic correlation IDs where
   supported, and protected-payload logging restrictions. Request-generation enforcement remains a
   separate open remediation item.
@@ -76,7 +77,7 @@ The current PR head is not a certification candidate. Independent review confirm
 7. **P2** — unsaved-change protection does not block internal React Router navigation.
 
 ADR-009 and `WEB-SESSIONS.md` address contract design for the authentication portion of item 3
-only. All seven findings remain implementation work after architecture acceptance.
+only. All seven findings remain implementation work.
 
 ## Architecture and roadmap audit
 
@@ -88,8 +89,8 @@ only. All seven findings remain implementation work after architecture acceptanc
 6. **PASS** — Browser preferences cannot create scope authority.
 7. **PASS** — Phase 4 backend decisions drive permission and field presentation.
 8. **PASS** — Unknown action and field policy fails closed.
-9. **BLOCKED** — Production browser authentication has no accepted web-session application
-   contract or complete backend HTTP path.
+9. **BLOCKED** — Production browser authentication has an accepted web-session application
+   contract but no complete backend HTTP path.
 10. **PASS** — Production auth, scope, and policy adapters contain no silent mock fallback.
 11. **PASS** — Sensitive credentials are held in memory and are absent from local storage.
 12. **FAIL** — cache keys are security-context scoped, but late requests can still update the
@@ -137,7 +138,7 @@ The Windows-only typing diagnostics are outside this frontend remediation diff. 
 
 Phase 4.5 must not be declared complete, certified, or frozen until:
 
-1. ADR-009 is reviewed and accepted;
+1. implementation conforms to accepted ADR-009 and passes its required security evidence;
 2. the seven known P1/P2 findings are remediated and covered by the required real integration and
    interaction tests;
 3. both PR jobs, `web-quality` and `python-quality`, pass every required step;

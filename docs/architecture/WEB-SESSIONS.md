@@ -1,7 +1,7 @@
 # BusinessOS Web Session Contract
 
-Status: Proposed contract design for ADR-009. No implementation is authorized until the ADR is
-accepted.
+Status: Accepted contract design for ADR-009. Implementation must conform to this contract and
+pass the required security and conformance evidence before Phase 4.5 certification.
 
 ## Scope
 
@@ -259,7 +259,7 @@ Production responses contain no stack traces, tokens, verifier values, secrets, 
 payloads. Authentication and revocation audit records include correlation ID, tenant/principal when
 known, provider, outcome, reason code, and time without credential material.
 
-## Frontend contract after acceptance
+## Frontend contract
 
 The React authentication adapter will expose browser-session operations rather than bearer-token
 operations:

@@ -1,152 +1,84 @@
-import React from 'react';
-import { DashboardOverview } from '../pages/DashboardOverview';
-import { ComponentShowcase } from '../pages/ComponentShowcase';
-import { DataTableDemoPage } from '../pages/DataTableDemoPage';
-import { FormsDemoPage } from '../pages/FormsDemoPage';
-import { LayoutsDemoPage } from '../pages/LayoutsDemoPage';
-import { SettingsPage } from '../pages/SettingsPage';
-import { ForbiddenPage } from '../pages/states/ForbiddenPage';
+import type React from 'react';
 
 export interface ModuleRoutePermissionHint {
   action: string;
   resource: string;
 }
 
+export type ModuleRouteScopeRequirement = 'tenant' | 'company' | 'site';
+
+export interface ModuleRouteModule {
+  default: React.ComponentType;
+}
+
 export interface ModuleRoute {
-  /** Stable unique route identifier */
   id: string;
-  /** Route path relative to shell (e.g. '' for index, 'showcase', 'demo/datatable') */
   path: string;
-  /** Optional module owner identifier (e.g. 'foundation', 'sales', 'inventory') */
-  moduleOwner?: string;
-  /** React element to render */
-  element: React.ReactElement;
-  /** Optional flag indicating an index route */
+  moduleOwner: string;
+  component: () => Promise<ModuleRouteModule>;
   index?: boolean;
-  /** Optional human-readable title or translation key */
   title?: string;
-  /** Optional Phase 4 policy presentation hint */
   requiredPermission?: ModuleRoutePermissionHint;
-  /** Optional capability hint */
   requiredCapability?: string;
-  /** Optional route-level error boundary component */
-  errorBoundary?: React.ComponentType<{ children?: React.ReactNode; error?: Error }>;
-  /** Optional sort/display order */
+  requiredScope?: ModuleRouteScopeRequirement;
+  errorBoundary?: React.ComponentType<{ children: React.ReactNode }>;
   order?: number;
 }
 
+type RegistryListener = () => void;
+
+function normalizePath(path: string): string {
+  return path.replace(/^\/+|\/+$/g, '');
+}
+
 export class RouteRegistry {
-  private routes: Map<string, ModuleRoute> = new Map();
+  private readonly routes = new Map<string, ModuleRoute>();
+  private readonly listeners = new Set<RegistryListener>();
+  private snapshot: readonly ModuleRoute[] = [];
 
-  constructor() {
-    this.registerDefaults();
-  }
-
-  public registerDefaults(): void {
-    this.register({
-      id: 'route_dashboard',
-      path: '',
-      index: true,
-      element: <DashboardOverview />,
-      title: 'Dashboard',
-      order: 1,
-    });
-
-    this.register({
-      id: 'route_showcase',
-      moduleOwner: 'foundation',
-      path: 'showcase',
-      element: <ComponentShowcase />,
-      title: 'UI Components',
-      order: 10,
-    });
-
-    this.register({
-      id: 'route_datatable',
-      moduleOwner: 'foundation',
-      path: 'demo/datatable',
-      element: <DataTableDemoPage />,
-      title: 'DataTable Demo',
-      order: 11,
-    });
-
-    this.register({
-      id: 'route_forms',
-      moduleOwner: 'foundation',
-      path: 'demo/forms',
-      element: <FormsDemoPage />,
-      title: 'Forms & Inputs',
-      order: 12,
-    });
-
-    this.register({
-      id: 'route_layouts',
-      moduleOwner: 'foundation',
-      path: 'demo/layouts',
-      element: <LayoutsDemoPage />,
-      title: 'Page Layouts',
-      order: 13,
-    });
-
-    this.register({
-      id: 'route_settings',
-      moduleOwner: 'foundation',
-      path: 'settings',
-      element: <SettingsPage />,
-      title: 'System Settings',
-      order: 99,
-    });
-
-    this.register({
-      id: 'route_forbidden',
-      moduleOwner: 'foundation',
-      path: 'forbidden',
-      element: <ForbiddenPage />,
-      title: 'Forbidden',
-      order: 100,
-    });
-  }
-
-  /**
-   * Registers a module route contribution with collision detection.
-   */
   public register(route: ModuleRoute): void {
-    if (!route.id || typeof route.id !== 'string') {
-      throw new Error('Route registration failed: Invalid route identifier.');
+    if (!route.id.trim()) throw new Error('Route registration failed: invalid route identifier.');
+    if (!route.moduleOwner.trim()) {
+      throw new Error(`Route registration failed: route "${route.id}" has no module owner.`);
     }
-
+    if (typeof route.component !== 'function') {
+      throw new Error(
+        `Route registration failed: route "${route.id}" has no lazy component loader.`
+      );
+    }
     if (this.routes.has(route.id)) {
       throw new Error(
-        `Route registration collision: Route ID "${route.id}" is already registered.`
+        `Route registration collision: route ID "${route.id}" is already registered.`
       );
     }
 
-    // Path collision detection
-    const normalizedPath = route.path ? route.path.replace(/^\/+|\/+$/g, '') : '';
-    const isIndex = Boolean(route.index || normalizedPath === '');
-
+    if (
+      route.path.includes('\\') ||
+      route.path.startsWith('//') ||
+      /^[a-z][a-z0-9+.-]*:/i.test(route.path)
+    ) {
+      throw new Error(`Route registration failed: route "${route.id}" has an unsafe path.`);
+    }
+    const path = normalizePath(route.path);
+    const isIndex = Boolean(route.index || path === '');
     for (const existing of this.routes.values()) {
-      const existingNormalized = existing.path ? existing.path.replace(/^\/+|\/+$/g, '') : '';
-      const existingIsIndex = Boolean(existing.index || existingNormalized === '');
-
-      if (isIndex && existingIsIndex) {
+      const existingPath = normalizePath(existing.path);
+      const existingIsIndex = Boolean(existing.index || existingPath === '');
+      if ((isIndex && existingIsIndex) || (!isIndex && !existingIsIndex && path === existingPath)) {
         throw new Error(
-          `Route collision: An index route is already registered by "${existing.id}". Cannot register duplicate index route "${route.id}".`
-        );
-      }
-
-      if (!isIndex && !existingIsIndex && normalizedPath === existingNormalized) {
-        throw new Error(
-          `Route collision: Path "${route.path}" is already registered by "${existing.id}". Cannot register duplicate route "${route.id}".`
+          `Route registration collision: path "${route.path}" is already owned by "${existing.id}".`
         );
       }
     }
 
-    this.routes.set(route.id, route);
+    this.routes.set(route.id, { ...route, path, index: isIndex });
+    this.publish();
   }
 
   public unregister(id: string): boolean {
-    return this.routes.delete(id);
+    const removed = this.routes.delete(id);
+    if (removed) this.publish();
+    return removed;
   }
 
   public get(id: string): ModuleRoute | undefined {
@@ -157,12 +89,37 @@ export class RouteRegistry {
     return this.routes.has(id);
   }
 
-  public getAll(): ModuleRoute[] {
-    return Array.from(this.routes.values()).sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+  public getAll(): readonly ModuleRoute[] {
+    return this.snapshot;
+  }
+
+  public getPath(id: string): string | null {
+    const route = this.routes.get(id);
+    if (!route) return null;
+    return route.index ? '/' : `/${route.path}`;
   }
 
   public clear(): void {
+    if (this.routes.size === 0) return;
     this.routes.clear();
+    this.publish();
+  }
+
+  public subscribe = (listener: RegistryListener): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  public getSnapshot = (): readonly ModuleRoute[] => this.snapshot;
+
+  private publish(): void {
+    this.snapshot = Array.from(this.routes.values()).sort(
+      (left, right) =>
+        (left.order ?? 50) - (right.order ?? 50) ||
+        left.moduleOwner.localeCompare(right.moduleOwner) ||
+        left.id.localeCompare(right.id)
+    );
+    this.listeners.forEach((listener) => listener());
   }
 }
 

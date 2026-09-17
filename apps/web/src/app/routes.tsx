@@ -1,5 +1,6 @@
-import React from 'react';
-import { Routes, Route } from 'react-router-dom';
+import React, { Suspense, lazy, useMemo, useSyncExternalStore } from 'react';
+import { Route, Routes } from 'react-router-dom';
+import './coreRouteContributions';
 import { AppShell } from '../shell/AppShell';
 import { ProtectedRoute } from '../auth/ProtectedRoute';
 import { LoginPage } from '../auth/LoginPage';
@@ -7,13 +8,40 @@ import { NotFoundPage } from '../pages/states/NotFoundPage';
 import { ForbiddenPage } from '../pages/states/ForbiddenPage';
 import { routeRegistry, ModuleRoute } from '../navigation/routeRegistry';
 import { PermissionBoundary } from '../permissions/PermissionBoundary';
+import { ErrorBoundary } from '../telemetry/ErrorBoundary';
+import { useScope } from '../scope/ScopeContext';
 
-interface RouteWrapperProps {
-  route: ModuleRoute;
-}
+const RouteLoadingFallback: React.FC = () => (
+  <div role="status" aria-live="polite" style={{ padding: '24px' }}>
+    Loading module…
+  </div>
+);
 
-const RouteWrapper: React.FC<RouteWrapperProps> = ({ route }) => {
-  let content: React.ReactElement = route.element;
+const ScopeBoundary: React.FC<{ route: ModuleRoute; children: React.ReactNode }> = ({
+  route,
+  children,
+}) => {
+  const { scope, status } = useScope();
+  if (!route.requiredScope) return <>{children}</>;
+  if (status !== 'ready' || !scope) return <ForbiddenPage />;
+  if (route.requiredScope === 'company' && !scope.companyId) return <ForbiddenPage />;
+  if (route.requiredScope === 'site' && !scope.siteId) return <ForbiddenPage />;
+  return <>{children}</>;
+};
+
+const RouteRenderer: React.FC<{ route: ModuleRoute }> = ({ route }) => {
+  const LazyComponent = useMemo(() => lazy(route.component), [route.component]);
+  const ModuleBoundary = route.errorBoundary ?? ErrorBoundary;
+
+  let content: React.ReactNode = (
+    <ModuleBoundary>
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <LazyComponent />
+      </Suspense>
+    </ModuleBoundary>
+  );
+
+  content = <ScopeBoundary route={route}>{content}</ScopeBoundary>;
 
   if (route.requiredPermission) {
     content = (
@@ -27,23 +55,19 @@ const RouteWrapper: React.FC<RouteWrapperProps> = ({ route }) => {
     );
   }
 
-  if (route.errorBoundary) {
-    const CustomErrorBoundary = route.errorBoundary;
-    return <CustomErrorBoundary>{content}</CustomErrorBoundary>;
-  }
-
-  return content;
+  return <>{content}</>;
 };
 
 export const AppRoutes: React.FC = () => {
-  const registeredRoutes = routeRegistry.getAll();
+  const registeredRoutes = useSyncExternalStore(
+    routeRegistry.subscribe,
+    routeRegistry.getSnapshot,
+    routeRegistry.getSnapshot
+  );
 
   return (
     <Routes>
-      {/* Public Routes */}
       <Route path="/login" element={<LoginPage />} />
-
-      {/* Protected Routes inside App Shell - dynamically resolved from RouteRegistry */}
       <Route
         path="/"
         element={
@@ -52,11 +76,11 @@ export const AppRoutes: React.FC = () => {
           </ProtectedRoute>
         }
       >
-        {registeredRoutes.map((r) =>
-          r.index ? (
-            <Route key={r.id} index element={<RouteWrapper route={r} />} />
+        {registeredRoutes.map((route) =>
+          route.index ? (
+            <Route key={route.id} index element={<RouteRenderer route={route} />} />
           ) : (
-            <Route key={r.id} path={r.path} element={<RouteWrapper route={r} />} />
+            <Route key={route.id} path={route.path} element={<RouteRenderer route={route} />} />
           )
         )}
         <Route path="*" element={<NotFoundPage />} />

@@ -4,7 +4,23 @@ Audited baseline: `3e551b8922397e03636db8d7ed7cf85d2477db83`.
 
 Remediation baseline: `25c51d497cb3d9bab27e4dc54839248e9ec9fe79` on `fix/phase4.5-certification`.
 
-Status: remediation candidate; independent merge approval, post-merge `main` CI, final audit, and the corrective `v0.4.7-ui-foundation` tag remain pending. Historical tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are unchanged.
+Status: remediation blocked pending review and acceptance of proposed ADR-009. PR #9 must not be
+merged or certified. Historical tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are
+unchanged, and `v0.4.7-ui-foundation` must not be created.
+
+## Current architecture blocker
+
+The certified Identity foundation validates federated OIDC credentials and resolves effective
+membership to a trusted `PrincipalIdentity`/`RequestContext`, but it publishes no browser login,
+session issuance, refresh, logout/revocation, or current-session application contract. The current
+React adapter assumes such a contract and therefore cannot be connected by a thin HTTP facade
+without inventing a new authentication security model.
+
+ADR-009 proposes OIDC Authorization Code with PKCE, backend token exchange, an opaque server-side
+session, a Secure HttpOnly cookie, and a separately versioned additive
+`foundation.identity.web-session.v1` contract. The accompanying web-session specification defines
+the application, provider, HTTP, cookie, CSRF, lifecycle, and test contracts. No authentication
+implementation is included in this documentation-only change.
 
 ## Certification corrections
 
@@ -32,13 +48,35 @@ Status: remediation candidate; independent merge approval, post-merge `main` CI,
 - The policy cache is cleared when the principal or authoritative scope security context changes.
 - Tests cover pending and failed evaluations, exact field-response translation, malformed responses, and cache isolation.
 
-### Production auth and credential storage — PASS
+### Production auth and credential storage — BLOCKED
 
-- The default `HttpAuthAdapter` depends on backend login/session/refresh/logout responses and never manufactures users, credentials, roles, or permissions.
-- Mock authentication is available only through explicit dependency injection.
-- Bearer access credentials follow the accepted Identity architecture and remain in memory. They are not written to local storage or restored from browser persistence.
-- Login, logout, expiry, refresh failure, and HTTP 401 clear principal-bound query state. HTTP 403 remains an authorization denial.
-- The API client supports `AbortSignal`, typed errors, cryptographic correlation IDs where supported, trusted scope headers, and no credential or protected-payload logging.
+- The default `HttpAuthAdapter` assumes backend login/session/refresh/logout responses that do not
+  exist in the certified Identity application contract.
+- Mock authentication remains available only through explicit dependency injection, and the
+  frontend does not persist bearer credentials in local storage. Those protections do not provide
+  a deployable production authentication path.
+- The proposed ADR-009 removes browser-owned bearer credentials in favor of an opaque server-side
+  session and Secure HttpOnly cookie. No implementation is permitted until that ADR is accepted.
+- The API client already supports `AbortSignal`, typed errors, cryptographic correlation IDs where
+  supported, and protected-payload logging restrictions. Request-generation enforcement remains a
+  separate open remediation item.
+
+## Known remaining remediation
+
+The current PR head is not a certification candidate. Independent review confirmed:
+
+1. **P1** — a late query response can update a mounted hook after principal, tenant, legal entity,
+   company, or site context changes;
+2. **P1** — frontend base and adapter paths can compose as `/api/api/v1/...`;
+3. **P1** — browser auth, organization scope, and policy adapters do not yet correspond to a
+   complete real ASGI HTTP surface;
+4. **P2** — modal initial focus, focus trap, and focus restoration are incomplete;
+5. **P2** — the mobile navigation state is not connected to an accessible drawer;
+6. **P2** — official shell strings and pluralization do not yet satisfy the i18n contract; and
+7. **P2** — unsaved-change protection does not block internal React Router navigation.
+
+ADR-009 and `WEB-SESSIONS.md` address contract design for the authentication portion of item 3
+only. All seven findings remain implementation work after architecture acceptance.
 
 ## Architecture and roadmap audit
 
@@ -50,11 +88,14 @@ Status: remediation candidate; independent merge approval, post-merge `main` CI,
 6. **PASS** — Browser preferences cannot create scope authority.
 7. **PASS** — Phase 4 backend decisions drive permission and field presentation.
 8. **PASS** — Unknown action and field policy fails closed.
-9. **PASS** — Production authentication is backend authoritative.
+9. **BLOCKED** — Production browser authentication has no accepted web-session application
+   contract or complete backend HTTP path.
 10. **PASS** — Production auth, scope, and policy adapters contain no silent mock fallback.
 11. **PASS** — Sensitive credentials are held in memory and are absent from local storage.
-12. **PASS** — query and policy cache isolation covers principal, tenant, legal entity/company, and site transitions.
-13. **PASS** — accessibility tests pass; translation-key and RTL foundations remain intact.
+12. **FAIL** — cache keys are security-context scoped, but late requests can still update the
+   current hook instance after a context transition.
+13. **PARTIAL** — existing accessibility tests and RTL foundations pass, while modal focus,
+   responsive navigation, official-string translation, and pluralization acceptance remain open.
 14. **PASS** — large-data table contracts retain server-side pagination, filtering, sorting, and search.
 15. **PASS** — Phase 5 metadata, Studio, and Dynamic UI work has not started.
 16. **PASS** — no business-domain workflow was added.
@@ -94,10 +135,13 @@ The Windows-only typing diagnostics are outside this frontend remediation diff. 
 
 ## Remaining release gates
 
-The remediation is ready for PR validation when the branch diff is committed and pushed. Phase 4.5 must not be declared complete, certified, or frozen until:
+Phase 4.5 must not be declared complete, certified, or frozen until:
 
-1. both PR jobs, `web-quality` and `python-quality`, pass every required step;
-2. the PR is independently approved and merged;
-3. exact post-merge `main` CI passes;
-4. a final independent audit passes; and
-5. `v0.4.7-ui-foundation` is created in the separately authorized certification step.
+1. ADR-009 is reviewed and accepted;
+2. the seven known P1/P2 findings are remediated and covered by the required real integration and
+   interaction tests;
+3. both PR jobs, `web-quality` and `python-quality`, pass every required step;
+4. the PR is independently approved and merged;
+5. exact post-merge `main` CI passes;
+6. a final independent audit passes; and
+7. `v0.4.7-ui-foundation` is created in the separately authorized certification step.

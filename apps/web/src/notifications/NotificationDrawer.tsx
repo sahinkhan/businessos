@@ -4,6 +4,7 @@ import { useNotifications } from './NotificationContext';
 import { NotificationCategory } from './types';
 import { Button } from '../components/actions/Button';
 import { CheckCheck, Trash2, CheckCircle, AlertTriangle, AlertCircle, Info } from 'lucide-react';
+import { useI18n } from '../i18n/I18nContext';
 
 export interface NotificationDrawerProps {
   isOpen: boolean;
@@ -13,6 +14,7 @@ export interface NotificationDrawerProps {
 export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ isOpen, onClose }) => {
   const { notifications, markAsRead, markAllAsRead, clearAll } = useNotifications();
   const [filter, setFilter] = useState<NotificationCategory>('all');
+  const { t } = useI18n();
 
   const filtered = notifications.filter((n) => {
     if (filter === 'unread') return !n.read;
@@ -24,12 +26,13 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ isOpen, 
     <Drawer
       isOpen={isOpen}
       onClose={onClose}
-      title="Notifications"
+      title={t('nav.notifications')}
+      closeLabel={t('notifications.close')}
       width="400px"
       footer={
         <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
           <Button variant="ghost" size="sm" leftIcon={<Trash2 size={14} />} onClick={clearAll}>
-            Clear all
+            {t('notifications.clear_all')}
           </Button>
           <Button
             variant="ghost"
@@ -37,7 +40,7 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ isOpen, 
             leftIcon={<CheckCheck size={14} />}
             onClick={markAllAsRead}
           >
-            Mark all read
+            {t('notifications.mark_all_read')}
           </Button>
         </div>
       }
@@ -62,7 +65,7 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ isOpen, 
               color: filter === cat ? 'white' : 'var(--color-text-primary)',
             }}
           >
-            {cat}
+            {t(`notifications.filter.${cat}`)}
           </button>
         ))}
       </div>
@@ -78,7 +81,7 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({ isOpen, 
               fontSize: '0.875rem',
             }}
           >
-            No notifications in this view.
+            {t('notifications.empty')}
           </div>
         ) : (
           filtered.map((item) => {

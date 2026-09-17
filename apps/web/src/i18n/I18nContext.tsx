@@ -60,6 +60,25 @@ export const I18nProvider: React.FC<{
     [locale]
   );
 
+  const tp = useCallback(
+    (key: string, count: number, params?: Record<string, string | number>): string => {
+      const category = new Intl.PluralRules(locale).select(count);
+      const selectedKey = dictionaries[locale]?.[`${key}.${category}`]
+        ? `${key}.${category}`
+        : `${key}.other`;
+      let value =
+        dictionaries[locale]?.[selectedKey] ??
+        dictionaries.en[selectedKey] ??
+        dictionaries.en[`${key}.other`] ??
+        key;
+      for (const [name, replacement] of Object.entries({ count, ...params })) {
+        value = value.replace(new RegExp(`{${name}}`, 'g'), String(replacement));
+      }
+      return value;
+    },
+    [locale]
+  );
+
   const formatCurrency = useCallback(
     (val: number, currency = 'USD') => {
       return new Intl.NumberFormat(locale, { style: 'currency', currency }).format(val);
@@ -92,12 +111,13 @@ export const I18nProvider: React.FC<{
       direction,
       setLocale,
       t,
+      tp,
       formatNumber,
       formatCurrency,
       formatDate,
       formatDateTime,
     }),
-    [locale, direction, t, formatNumber, formatCurrency, formatDate, formatDateTime]
+    [locale, direction, t, tp, formatNumber, formatCurrency, formatDate, formatDateTime]
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

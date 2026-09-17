@@ -2,9 +2,11 @@ import React from 'react';
 import { HelpCircle } from 'lucide-react';
 import { Button } from '../../components/actions/Button';
 import { useNavigate } from 'react-router-dom';
+import { useI18n } from '../../i18n/I18nContext';
 
 export const NotFoundPage: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useI18n();
 
   return (
     <div
@@ -40,7 +42,7 @@ export const NotFoundPage: React.FC = () => {
           marginBottom: '8px',
         }}
       >
-        404 - Page Not Found
+        {t('errors.not_found_title')}
       </h1>
       <p
         style={{
@@ -50,11 +52,10 @@ export const NotFoundPage: React.FC = () => {
           marginBottom: '24px',
         }}
       >
-        The requested URL was not found on this server. Please check the address or return to the
-        main dashboard.
+        {t('errors.not_found_body')}
       </p>
       <Button variant="primary" onClick={() => navigate('/')}>
-        Return to Dashboard
+        {t('errors.return_dashboard')}
       </Button>
     </div>
   );

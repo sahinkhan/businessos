@@ -1,4 +1,7 @@
 export const ar: Record<string, string> = {
+  'shell.close_navigation': 'إغلاق قائمة التنقل',
+  'shell.main_navigation': 'التنقل الرئيسي',
+  'notifications.close': 'إغلاق الإشعارات',
   'common.search': 'بحث...',
   'common.save': 'حفظ',
   'common.cancel': 'إلغاء',
@@ -18,4 +21,10 @@ export const ar: Record<string, string> = {
   'shell.switch_tenant': 'تبديل المنشأة',
   'errors.not_found': 'الصفحة غير موجودة',
   'errors.forbidden': 'تم رفض الوصول',
+  'auth.session_minutes.zero': 'ستنتهي جلستك النشطة الآن.',
+  'auth.session_minutes.one': 'ستنتهي جلستك النشطة خلال دقيقة واحدة تقريباً.',
+  'auth.session_minutes.two': 'ستنتهي جلستك النشطة خلال دقيقتين تقريباً.',
+  'auth.session_minutes.few': 'ستنتهي جلستك النشطة خلال {count} دقائق تقريباً.',
+  'auth.session_minutes.many': 'ستنتهي جلستك النشطة خلال {count} دقيقة تقريباً.',
+  'auth.session_minutes.other': 'ستنتهي جلستك النشطة خلال {count} دقيقة تقريباً.',
 };

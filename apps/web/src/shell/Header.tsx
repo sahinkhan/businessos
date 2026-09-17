@@ -14,9 +14,9 @@ export interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
-  const { toggleSidebar, setMobileDrawerOpen } = useNavigation();
+  const { toggleSidebar, isMobileDrawerOpen, setMobileDrawerOpen } = useNavigation();
   const { resolvedTheme, toggleTheme } = useTheme();
-  const { locale, setLocale } = useI18n();
+  const { locale, setLocale, t } = useI18n();
   const { unreadCount } = useNotifications();
 
   return (
@@ -39,7 +39,9 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
         <IconButton
           icon={<Menu size={18} />}
-          aria-label="Toggle navigation menu"
+          aria-label={t('shell.toggle_navigation')}
+          aria-expanded={isMobileDrawerOpen}
+          aria-controls="mobile-navigation"
           variant="ghost"
           size="sm"
           onClick={() => {
@@ -86,7 +88,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
           onClick={() => {
             window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
           }}
-          aria-label="Search or run command"
+          aria-label={t('shell.search_label')}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -102,7 +104,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
           }}
         >
           <Search size={14} />
-          <span>Search...</span>
+          <span>{t('common.search')}</span>
           <kbd
             style={{
               padding: '1px 4px',
@@ -121,7 +123,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
         <div style={{ position: 'relative' }}>
           <IconButton
             icon={<Bell size={18} />}
-            aria-label={`Notifications (${unreadCount} unread)`}
+            aria-label={t('shell.notifications_unread', { count: unreadCount })}
             variant="ghost"
             size="sm"
             onClick={onOpenNotifications}
@@ -147,7 +149,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
           trigger={
             <IconButton
               icon={<Globe size={18} />}
-              aria-label="Select Language"
+              aria-label={t('shell.select_language')}
               variant="ghost"
               size="sm"
             />
@@ -174,7 +176,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
         {/* Theme toggle */}
         <IconButton
           icon={resolvedTheme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-          aria-label="Toggle Theme"
+          aria-label={t('shell.toggle_theme')}
           variant="ghost"
           size="sm"
           onClick={toggleTheme}

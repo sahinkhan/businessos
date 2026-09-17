@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 import { IconButton } from '../actions/IconButton';
 
@@ -13,6 +13,7 @@ export interface ModalProps {
   footer?: React.ReactNode;
   size?: ModalSize;
   closeOnBackdrop?: boolean;
+  initialFocusRef?: React.RefObject<HTMLElement>;
 }
 
 const sizeWidths: Record<ModalSize, string> = {
@@ -32,17 +33,51 @@ export const Modal: React.FC<ModalProps> = ({
   footer,
   size = 'md',
   closeOnBackdrop = true,
+  initialFocusRef,
 }) => {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
   useEffect(() => {
     if (!isOpen) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    const focusable = () =>
+      Array.from(
+        dialog?.querySelectorAll<HTMLElement>(
+          'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+        ) ?? []
+      ).filter((element) => !element.hasAttribute('hidden'));
+    (initialFocusRef?.current ?? focusable()[0] ?? dialog)?.focus();
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         onClose();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const elements = focusable();
+        if (elements.length === 0) {
+          e.preventDefault();
+          dialog?.focus();
+          return;
+        }
+        const first = elements[0];
+        const last = elements[elements.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [initialFocusRef, isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -50,7 +85,8 @@ export const Modal: React.FC<ModalProps> = ({
     <div
       role="dialog"
       aria-modal="true"
-      aria-labelledby={title ? 'bos-modal-title' : undefined}
+      aria-labelledby={title ? titleId : undefined}
+      aria-describedby={description ? descriptionId : undefined}
       style={{
         position: 'fixed',
         top: 0,
@@ -72,6 +108,8 @@ export const Modal: React.FC<ModalProps> = ({
       }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         style={{
           backgroundColor: 'var(--color-surface-card)',
           borderRadius: '10px',
@@ -99,7 +137,7 @@ export const Modal: React.FC<ModalProps> = ({
             <div>
               {title && (
                 <h2
-                  id="bos-modal-title"
+                  id={titleId}
                   style={{
                     fontSize: '1.125rem',
                     fontWeight: 600,
@@ -111,6 +149,7 @@ export const Modal: React.FC<ModalProps> = ({
               )}
               {description && (
                 <p
+                  id={descriptionId}
                   style={{
                     fontSize: '0.8125rem',
                     color: 'var(--color-text-secondary)',

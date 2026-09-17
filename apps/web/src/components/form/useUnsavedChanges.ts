@@ -1,26 +1,33 @@
-import { useEffect, useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
+import { useBeforeUnload, useBlocker } from 'react-router-dom';
+import { useI18n } from '../../i18n/I18nContext';
 
-export const useUnsavedChanges = (
-  isDirty: boolean,
-  message = 'You have unsaved changes. Are you sure you want to leave?'
-) => {
-  useEffect(() => {
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (isDirty) {
+export const useUnsavedChanges = (isDirty: boolean, message?: string) => {
+  const { t } = useI18n();
+  const resolvedMessage = message ?? t('forms.unsaved');
+  useBeforeUnload(
+    useCallback(
+      (event: BeforeUnloadEvent) => {
+        if (!isDirty) return;
         event.preventDefault();
-        event.returnValue = message;
-        return message;
-      }
-    };
+        event.returnValue = resolvedMessage;
+      },
+      [isDirty, resolvedMessage]
+    )
+  );
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isDirty, message]);
+  const blocker = useBlocker(isDirty);
 
-  const confirmNavigation = useCallback(() => {
-    if (!isDirty) return true;
-    return window.confirm(message);
-  }, [isDirty, message]);
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    if (window.confirm(resolvedMessage)) blocker.proceed();
+    else blocker.reset();
+  }, [blocker, resolvedMessage]);
+
+  const confirmNavigation = useCallback(
+    () => !isDirty || window.confirm(resolvedMessage),
+    [isDirty, resolvedMessage]
+  );
 
   return { confirmNavigation };
 };

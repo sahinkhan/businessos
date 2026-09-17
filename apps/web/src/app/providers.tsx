@@ -1,5 +1,5 @@
-import React from 'react';
-import { BrowserRouter } from 'react-router-dom';
+import React, { useState } from 'react';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { ThemeProvider } from '../design-system/theme/ThemeContext';
 import { AuthAdapter } from '../auth/authAdapter';
 import { AuthProvider } from '../auth/AuthContext';
@@ -20,6 +20,11 @@ export interface AppProvidersProps {
   policyAdapter?: PolicyPresentationAdapter;
 }
 
+const ApplicationRouter: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [router] = useState(() => createBrowserRouter([{ path: '*', element: <>{children}</> }]));
+  return <RouterProvider router={router} />;
+};
+
 export const AppProviders: React.FC<AppProvidersProps> = ({
   children,
   authAdapter,
@@ -35,7 +40,7 @@ export const AppProviders: React.FC<AppProvidersProps> = ({
               <NotificationProvider>
                 <NavigationProvider>
                   <ToastProvider>
-                    <BrowserRouter>{children}</BrowserRouter>
+                    <ApplicationRouter>{children}</ApplicationRouter>
                   </ToastProvider>
                 </NavigationProvider>
               </NotificationProvider>

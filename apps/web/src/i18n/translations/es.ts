@@ -1,4 +1,7 @@
 export const es: Record<string, string> = {
+  'shell.close_navigation': 'Cerrar menú de navegación',
+  'shell.main_navigation': 'Navegación principal',
+  'notifications.close': 'Cerrar notificaciones',
   'common.search': 'Buscar...',
   'common.save': 'Guardar',
   'common.cancel': 'Cancelar',
@@ -18,4 +21,6 @@ export const es: Record<string, string> = {
   'shell.switch_tenant': 'Cambiar de inquilino',
   'errors.not_found': 'Página no encontrada',
   'errors.forbidden': 'Acceso denegado',
+  'auth.session_minutes.one': 'La sesión activa caducará en aproximadamente {count} minuto.',
+  'auth.session_minutes.other': 'La sesión activa caducará en aproximadamente {count} minutos.',
 };

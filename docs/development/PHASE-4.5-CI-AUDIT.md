@@ -1,111 +1,112 @@
 # Phase 4.5 UI Foundation Certification Audit
 
-Audited baseline: `3e551b8922397e03636db8d7ed7cf85d2477db83`.
+Audited `main` baseline: `3e551b8922397e03636db8d7ed7cf85d2477db83`.
 
-Remediation baseline: `25c51d497cb3d9bab27e4dc54839248e9ec9fe79` on `fix/phase4.5-certification`.
+Accepted architecture checkpoint: `20e2c32d8a25e7959fcf474f70a77f5e8f96646e` on
+`fix/phase4.5-certification`.
 
-Status: ADR-009 accepted; remediation remains blocked pending implementation and certification of
-the web-session boundary and the remaining findings. PR #9 must not be merged or certified.
-Historical tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are unchanged, and
-`v0.4.7-ui-foundation` must not be created.
+Status: implementation remediation complete; exact-head PR CI and independent re-audit pending.
+PR #9 must not be merged or certified yet. Historical tags `v0.4.5-ui-foundation` and
+`v0.4.6-ui-foundation` are unchanged. `v0.4.7-ui-foundation` must not be created in this step.
 
-## Accepted architecture boundary and implementation blocker
+## ADR-009 implementation
 
-The certified Identity foundation validates federated OIDC credentials and resolves effective
-membership to a trusted `PrincipalIdentity`/`RequestContext`, but it publishes no browser login,
-session issuance, refresh, logout/revocation, or current-session application contract. The current
-React adapter assumes such a contract and therefore cannot be connected by a thin HTTP facade
-without inventing a new authentication security model.
+The Identity foundation now publishes the additive
+`foundation.identity.web-session.v1` application contract. It composes the certified tenant,
+membership, and `PrincipalIdentity` behavior without changing `IdentityContract(version="1.0")`.
+No database schema or certified migration changed.
 
-ADR-009 establishes OIDC Authorization Code with PKCE, backend token exchange, an opaque server-side
-session, a Secure HttpOnly cookie, and a separately versioned additive
-`foundation.identity.web-session.v1` contract. The accompanying web-session specification defines
-the application, provider, HTTP, cookie, CSRF, lifecycle, and test contracts. No authentication
-implementation is included in this documentation-only change.
+The boundary provides:
 
-## Certification corrections
+- protocol-neutral session creation from a validated `PrincipalIdentity`;
+- safe current-session projection and trusted `RequestContext` reconstruction;
+- absolute and idle expiry, rotation, logout, individual revocation, and principal-wide revocation;
+- an abstract session store with an in-memory test provider and a Redis production provider;
+- opaque random handles represented in Redis by digest-only keys and maintained principal indexes;
+- atomic Redis create, rotate, transaction creation, transaction consumption, replay marking, and
+  browser-binding cleanup;
+- atomic, bounded login-initiation rate limiting in the authorization-transaction provider;
+- OIDC Authorization Code exchange behind a provider adapter with transaction-specific `state`,
+  `nonce`, verifier, S256 challenge, expected issuer, and short-lived browser binding; and
+- a future SAML seam at the same validated-principal session-creation boundary.
 
-### Lazy module route contribution — PASS
+The exact HTTP facade is registered through the Identity module:
 
-- `RouteRegistry` accepts a stable route ID, path, module owner, typed lazy component loader, optional permission/capability/scope hints, optional error boundary, and deterministic order.
-- Duplicate IDs, duplicate paths, unsafe paths, and duplicate index routes are rejected. Contributions can be registered and unregistered.
-- The root router consumes registry snapshots and uses `React.lazy`, `Suspense`, scope and permission presentation boundaries, and a module error boundary.
-- Core page imports live in a contribution module. Future modules can register routes without editing `app/routes.tsx` or `AppShell`.
-- Tests prove deferred loader execution, collision rejection, unregister behavior, contributed rendering, route-ID navigation, and the generic root-router contract.
+- `GET /api/v1/auth/session`
+- `POST /api/v1/auth/login/start`
+- `GET /api/v1/auth/callback`
+- `POST /api/v1/auth/logout`
 
-### Backend-authoritative scope — PASS
+The callback consumes authorization state once, validates the browser binding, delegates token
+validation (issuer, audience, signature, and nonce) to the certified OIDC resolver, revalidates the
+active tenant/principal/membership, creates a new opaque session, and permits only a sanitized local
+return path. Success and every terminal failure clear transient browser state. Provider tokens never
+enter the session projection or React.
 
-- `HttpScopeAdapter` accepts only backend tenant, selection, and validation responses. Network failures and malformed responses produce an unavailable state.
-- Production scope initialization contains no fixture fallback or browser-side authorization evaluation.
-- Local storage holds identifiers as an untrusted preference. The backend must select and validate a scope before it becomes active.
-- Rejected tenant/company/site selections are not applied. Query state is cleared when authentication or authoritative scope changes.
-- `MockScopeAdapter` requires explicit fixture injection and is never selected automatically by the production bootstrap.
+The `__Host-businessos_session` and transaction cookies are host scoped with `Secure`, `HttpOnly`,
+`SameSite=Lax`, and `Path=/`. Authenticated unsafe methods require the session-bound CSRF value and
+same-origin browser metadata. Session rotation changes both the opaque handle and CSRF value. Logout
+revokes server state before expiring the browser cookie.
 
-### Fail-closed Phase 4 policy presentation — PASS
+## Organization and Policy HTTP contracts
 
-- Action and field evaluation use Phase 4 backend request and response fields.
-- Missing, pending, malformed, or unavailable field decisions remain unreadable, unwritable, and masked.
-- Policy cache keys include principal, tenant, legal entity, company, site, resource, and action or field.
-- The policy cache is cleared when the principal or authoritative scope security context changes.
-- Tests cover pending and failed evaluations, exact field-response translation, malformed responses, and cache isolation.
+Organization registers hierarchy, validation, and active-scope routes under
+`/api/v1/organization`. Each handler derives tenant/principal authority from trusted session context
+and delegates to the certified `ReadOrganization` and `SelectActiveScope` queries. Active-scope
+selection rotates the web session and returns the new safe scope, expiry, and CSRF presentation data.
 
-### Production auth and credential storage — BLOCKED
+Policy registers authorize, field-access, and approval-limit routes under `/api/v1/policy`. The
+handlers overwrite tenant, subject, and active organization scope from trusted context and delegate
+to the certified Phase 4 query handlers. The browser supplies requested action/resource inputs only;
+it cannot manufacture tenant or subject authority.
 
-- The default `HttpAuthAdapter` assumes backend login/session/refresh/logout responses that do not
-  exist in the certified Identity application contract.
-- Mock authentication remains available only through explicit dependency injection, and the
-  frontend does not persist bearer credentials in local storage. Those protections do not provide
-  a deployable production authentication path.
-- The accepted ADR-009 removes browser-owned bearer credentials in favor of an opaque server-side
-  session and Secure HttpOnly cookie. That boundary is not implemented or certified yet.
-- The API client already supports `AbortSignal`, typed errors, cryptographic correlation IDs where
-  supported, and protected-payload logging restrictions. Request-generation enforcement remains a
-  separate open remediation item.
+## Frontend remediation
 
-## Known remaining remediation
+- `ApiClient` owns the single `/api/v1` base. Auth, Organization, and Policy adapters use relative
+  resource paths, and adapter-through-client tests reject any `/api/api/` composition.
+- Authentication bootstraps from `GET /auth/session`, uses same-origin credentials and session-bound
+  CSRF for unsafe methods, and contains no access/refresh token state, bearer header, or browser
+  credential persistence.
+- Logout and principal replacement invalidate active requests, query state, policy state, scope
+  state, and principal-bound presentation data.
+- Query execution combines `AbortController`, request sequence, and security-context generation.
+  Late responses cannot update data, errors, callbacks, or caches after tenant, company, site,
+  principal, logout, or unmount transitions.
+- Scope changes become active only after backend selection. Session rotation updates the frontend's
+  CSRF/expiry presentation state before later unsafe calls.
+- Modal and drawer primitives implement initial focus, forward/reverse focus trapping, Escape,
+  overlay close where applicable, title/description association, cleanup, and focus restoration.
+- The shared navigation registry renders in both desktop sidebar and mobile drawer. Mobile route
+  selection closes the drawer, while responsive desktop navigation occupies no mobile width.
+- Official authentication, shell, notification, scope, and generic system-state strings use the
+  translation service. Plural selection uses `Intl.PluralRules` and CLDR categories with English and
+  Arabic regression evidence; locale switching, fallback, RTL, number, currency, date, and timezone
+  behavior remain intact.
+- Dirty forms use the supported React Router blocker plus `beforeunload`; internal link and browser
+  navigation can be cancelled or confirmed without monkey-patching history.
 
-The current PR head is not a certification candidate. Independent review confirmed:
+## Security and integration evidence
 
-1. **P1** — a late query response can update a mounted hook after principal, tenant, legal entity,
-   company, or site context changes;
-2. **P1** — frontend base and adapter paths can compose as `/api/api/v1/...`;
-3. **P1** — browser auth, organization scope, and policy adapters do not yet correspond to a
-   complete real ASGI HTTP surface;
-4. **P2** — modal initial focus, focus trap, and focus restoration are incomplete;
-5. **P2** — the mobile navigation state is not connected to an accessible drawer;
-6. **P2** — official shell strings and pluralization do not yet satisfy the i18n contract; and
-7. **P2** — unsaved-change protection does not block internal React Router navigation.
+Deterministic backend tests cover S256 enforcement, provider/issuer and nonce forwarding, missing or
+wrong state, browser-binding mismatch, one-time atomic consumption, expiry, replay, failed-exchange
+cleanup, unsafe return paths, session fixation resistance, expiry, rotation, logout/revocation, and
+hardened cookies.
 
-ADR-009 and `WEB-SESSIONS.md` address contract design for the authentication portion of item 3
-only. All seven findings remain implementation work.
+Real ASGI tests construct the BusinessOS application with actual Tenant, Identity, Organization, and
+Policy modules. Only the external IdP boundary is simulated. They exercise request parsing, trusted
+session context, serialization, current session, login/callback, CSRF for every unsafe method,
+logout, organization hierarchy/validation/selection, session rotation, and all three policy
+presentation routes. A Redis provider integration test exercises atomic session rotation,
+principal-wide revocation, transaction consumption, and replay denial against the CI Redis service.
 
-## Architecture and roadmap audit
-
-1. **PASS** — The React, TypeScript, React Router, and Vite production shell builds.
-2. **PASS** — Reusable design tokens, themes, accessible primitives, data tables, forms, feedback, overlays, and page shells remain present.
-3. **PASS** — Route contributions are genuinely lazy and load only when rendered.
-4. **PASS** — A module can register a route and navigation target without modifying the root router or shell.
-5. **PASS** — Tenant, legal-entity/company, and operating-site authority comes from backend selection and validation.
-6. **PASS** — Browser preferences cannot create scope authority.
-7. **PASS** — Phase 4 backend decisions drive permission and field presentation.
-8. **PASS** — Unknown action and field policy fails closed.
-9. **BLOCKED** — Production browser authentication has an accepted web-session application
-   contract but no complete backend HTTP path.
-10. **PASS** — Production auth, scope, and policy adapters contain no silent mock fallback.
-11. **PASS** — Sensitive credentials are held in memory and are absent from local storage.
-12. **FAIL** — cache keys are security-context scoped, but late requests can still update the
-   current hook instance after a context transition.
-13. **PARTIAL** — existing accessibility tests and RTL foundations pass, while modal focus,
-   responsive navigation, official-string translation, and pluralization acceptance remain open.
-14. **PASS** — large-data table contracts retain server-side pagination, filtering, sorting, and search.
-15. **PASS** — Phase 5 metadata, Studio, and Dynamic UI work has not started.
-16. **PASS** — no business-domain workflow was added.
-
-No Phase 1–4 migration or backend contract is changed by this remediation.
+Frontend tests cover normalized adapter URLs, auth bootstrap/logout, delayed stale responses,
+principal/scope cache lifecycle, modal focus, mobile drawer interaction, plural rules, and both
+cancelled and confirmed dirty-route navigation. Existing lazy-route, fail-closed policy, RTL,
+accessibility, server-side table, and module registration tests remain enabled.
 
 ## Local evidence
 
-Frontend validation used the committed lockfile:
+The frontend validation uses the committed lockfile:
 
 | Gate | Result |
 | --- | --- |
@@ -113,36 +114,37 @@ Frontend validation used the committed lockfile:
 | `npm run typecheck` | PASS |
 | `npm run lint` | PASS, zero warnings |
 | `npm run format:check` | PASS |
-| `npm test` | PASS, 13 files / 41 tests |
+| `npm test` | PASS, 17 files / 51 tests |
 | `npm run test:a11y` | PASS, 6 tests |
 | `npm run build` | PASS |
-| `npm run bundle:check` | PASS, 315.40 KB JavaScript / 3.67 KB CSS |
-| `git diff --check` | PASS |
+| `npm run bundle:check` | PASS, within configured budget |
+| `npm audit --audit-level=high` | Environment blocked registry access; authoritative CI install remains required |
 
-`npm audit` reports four moderate advisories and no high or critical advisories. The available automatic remedies require major React Router or Vitest upgrades. The application is a client-rendered Vite shell, unsafe external/backslash route and return paths are rejected, and Vitest is a development-only dependency. The findings are reviewed and tracked; no forced major upgrade was applied during this bounded remediation.
-
-Backend regression used Python 3.13.15:
+Backend validation available in the local Python 3.12 environment:
 
 | Gate | Result |
 | --- | --- |
-| Ruff formatting and lint | PASS, 162 files |
-| Unit tests | PASS, 161 tests |
-| Whole-suite collection | PASS, 225 tests |
-| External conformance without local infrastructure | PASS, 8; 5 infrastructure tests skipped |
-| mypy / Pyright on Windows | Four identical platform-stub diagnostics in unchanged `multiprocessing.Pipe` migration code |
-| PostgreSQL/provider integration, installed wheels, images, migration replay | Pending authoritative PR CI on pinned Linux infrastructure |
+| Ruff format | PASS, 165 files |
+| Ruff lint | PASS |
+| Focused mypy for all changed Python | PASS, 18 source files |
+| Focused Pyright for all changed production Python | PASS, zero diagnostics |
+| Web-session unit tests | PASS, 9 tests |
+| Whole-suite collection | PASS, 237 tests |
+| Provider integration collection | PASS; skipped locally because CI services are absent |
+| Real ASGI integration collection | PASS; execution requires the project Python 3.13 runtime |
 
-The Windows-only typing diagnostics are outside this frontend remediation diff. The repository's required Linux CI runs both type checkers against Python 3.13 and is the release gate.
+The repository requires Python 3.13. The local interpreter is Python 3.12, so full foundation unit,
+conformance, PostgreSQL/provider integration, wheel, image, and migration-replay certification is
+reserved for the pinned Linux PR workflow. The new tests are collected by that workflow and are not
+excluded by its commands.
 
-## Remaining release gates
+## Scope and remaining gate
 
-Phase 4.5 must not be declared complete, certified, or frozen until:
+No Phase 5 metadata/Studio/Dynamic UI implementation and no business module were added. Existing
+lazy route contribution, backend-authoritative scope, fail-closed policy/field access, and
+server-side large-data contracts remain unchanged.
 
-1. implementation conforms to accepted ADR-009 and passes its required security evidence;
-2. the seven known P1/P2 findings are remediated and covered by the required real integration and
-   interaction tests;
-3. both PR jobs, `web-quality` and `python-quality`, pass every required step;
-4. the PR is independently approved and merged;
-5. exact post-merge `main` CI passes;
-6. a final independent audit passes; and
-7. `v0.4.7-ui-foundation` is created in the separately authorized certification step.
+The branch may advance to **READY FOR INDEPENDENT RE-AUDIT** only after the exact pushed PR head has
+both `web-quality` and `python-quality` successful, including the new real ASGI and Redis integration
+tests. Phase 4.5 remains not complete, not certified, and not frozen until the separately authorized
+merge, post-merge `main` CI, final audit, and tag step.

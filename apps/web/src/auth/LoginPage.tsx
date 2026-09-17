@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { useAuth } from './AuthContext';
-import { TextInput } from '../components/inputs/TextInput';
 import { Button } from '../components/actions/Button';
-import { FormField } from '../components/form/FormField';
 import { Alert } from '../components/feedback/Alert';
+import { useI18n } from '../i18n/I18nContext';
 
 function safeReturnPath(state: unknown): string {
   if (typeof state !== 'object' || state === null) return '/';
@@ -19,24 +18,17 @@ function safeReturnPath(state: unknown): string {
 
 export const LoginPage: React.FC = () => {
   const { login, isLoading } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
   const returnPath = safeReturnPath(location.state);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const { t } = useI18n();
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!email) {
-      setError('Please enter your work email.');
-      return;
-    }
     try {
-      await login(email, password);
-      navigate(returnPath, { replace: true });
+      await login(returnPath);
     } catch (caught: unknown) {
-      setError(caught instanceof Error ? caught.message : 'Login failed.');
+      setError(caught instanceof Error ? caught.message : t('auth.login.failed'));
     }
   };
 
@@ -70,26 +62,8 @@ export const LoginPage: React.FC = () => {
           </Alert>
         )}
         <form onSubmit={handleSubmit}>
-          <FormField label="Work email" required>
-            <TextInput
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              autoComplete="username"
-              required
-            />
-          </FormField>
-          <FormField label="Password" required>
-            <TextInput
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </FormField>
           <Button type="submit" variant="primary" size="lg" isLoading={isLoading}>
-            Sign in
+            {t('auth.login.continue')}
           </Button>
         </form>
       </section>

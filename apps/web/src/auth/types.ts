@@ -1,33 +1,37 @@
 export type AuthenticationStrength =
-  'password' | 'oidc' | 'mfa' | 'phishing_resistant' | 'break_glass' | 'unspecified';
+  'oidc' | 'mfa' | 'phishing_resistant' | 'break_glass' | 'unspecified';
 
 export interface PrincipalIdentity {
+  id: string;
   tenantId: string;
-  principalId: string;
-  principalType: 'user' | 'service_account' | 'system';
-  authenticationStrength: AuthenticationStrength;
-  scopes: Array<Record<string, string>>;
+  type: 'user' | 'service_account' | 'device';
+  displayName?: string;
+  email?: string;
+  authenticationStrength: AuthenticationStrength | string;
+}
+
+export interface SessionScope {
+  tenantId: string;
+  enterpriseGroupId?: string | null;
+  legalEntityId?: string | null;
+  companyId?: string | null;
+  operatingSiteId?: string | null;
+}
+
+export interface SessionInfo {
+  principal: PrincipalIdentity;
+  activeScope: SessionScope;
+  expiresAt: number;
+  csrfToken: string;
 }
 
 export interface UserProfile {
   id: string;
-  email: string;
+  email?: string;
   name: string;
   tenantId: string;
   avatarUrl?: string;
-  principal?: PrincipalIdentity;
-}
-
-export interface SessionInfo {
-  /** Bearer credential held in memory only. */
-  accessToken: string;
-  expiresAt: number;
-  issuedAt: number;
-}
-
-export interface AuthResponse {
-  user: UserProfile;
-  session: SessionInfo;
+  principal: PrincipalIdentity;
 }
 
 export interface AuthState {
@@ -38,7 +42,8 @@ export interface AuthState {
 }
 
 export interface AuthContextValue extends AuthState {
-  login: (email: string, password?: string) => Promise<void>;
+  login: (returnTo?: string) => Promise<void>;
   logout: () => Promise<void>;
-  refreshSession: () => Promise<void>;
+  reloadSession: () => Promise<void>;
+  updateSessionSecurity: (scope: SessionScope, csrfToken: string, expiresAt: number) => void;
 }

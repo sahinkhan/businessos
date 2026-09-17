@@ -1,12 +1,6 @@
 import { ApiError, ApiErrorPayload, RequestOptions } from './types';
 
-export type TokenProvider = () => string | null;
-export type ScopeProvider = () => {
-  tenantId?: string;
-  legalEntityId?: string;
-  companyId?: string;
-  siteId?: string;
-} | null;
+export type CsrfTokenProvider = () => string | null;
 export type UnauthorizedHandler = () => void;
 
 function generateCorrelationId(): string {
@@ -39,20 +33,15 @@ function toErrorPayload(value: unknown, statusText: string): ApiErrorPayload {
 
 export class ApiClient {
   private readonly baseUrl: string;
-  private tokenProvider: TokenProvider | null = null;
-  private scopeProvider: ScopeProvider | null = null;
+  private csrfTokenProvider: CsrfTokenProvider | null = null;
   private onUnauthorized: UnauthorizedHandler | null = null;
 
-  constructor(baseUrl = '/api') {
+  constructor(baseUrl = '/api/v1') {
     this.baseUrl = baseUrl;
   }
 
-  public setTokenProvider(provider: TokenProvider | null): void {
-    this.tokenProvider = provider;
-  }
-
-  public setScopeProvider(provider: ScopeProvider | null): void {
-    this.scopeProvider = provider;
+  public setCsrfTokenProvider(provider: CsrfTokenProvider | null): void {
+    this.csrfTokenProvider = provider;
   }
 
   public setOnUnauthorized(handler: UnauthorizedHandler | null): void {
@@ -60,7 +49,7 @@ export class ApiClient {
   }
 
   public async request<T = unknown>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-    const { params, body, headers: customHeaders, scope, ...customOptions } = options;
+    const { params, body, headers: customHeaders, ...customOptions } = options;
     let url = endpoint.startsWith('http')
       ? endpoint
       : `${this.baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
@@ -81,16 +70,11 @@ export class ApiClient {
       headers.set('Content-Type', 'application/json');
     }
 
-    const token = this.tokenProvider?.();
-    if (token) headers.set('Authorization', `Bearer ${token}`);
-
-    const activeScope = scope ?? this.scopeProvider?.();
-    if (activeScope?.tenantId) headers.set('X-Tenant-Id', activeScope.tenantId);
-    if (activeScope?.legalEntityId) {
-      headers.set('X-Legal-Entity-Id', activeScope.legalEntityId);
+    const method = (customOptions.method ?? 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      const csrfToken = this.csrfTokenProvider?.();
+      if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
     }
-    if (activeScope?.companyId) headers.set('X-Company-Id', activeScope.companyId);
-    if (activeScope?.siteId) headers.set('X-Operating-Site-Id', activeScope.siteId);
 
     const response = await fetch(url, {
       credentials: 'same-origin',

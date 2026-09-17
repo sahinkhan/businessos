@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { apiClient } from '../api/client';
 import { queryCache } from '../api/queryCache';
+import { securityContext } from '../api/securityContext';
 import { useAuth } from '../auth/AuthContext';
 import { ActiveScopeSelection, ScopeAdapter, defaultScopeAdapter } from './scopeAdapter';
 import { ActiveScope, ScopeContextValue, ScopeStatus, TenantScope } from './types';
@@ -55,22 +55,23 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
   children,
   adapter = defaultScopeAdapter,
 }) => {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, updateSessionSecurity } = useAuth();
   const [tenants, setTenants] = useState<TenantScope[]>([]);
   const [scope, setScopeState] = useState<ActiveScope | null>(null);
   const [status, setStatus] = useState<ScopeStatus>('idle');
   const [error, setError] = useState<string | null>(null);
 
   const clearScope = useCallback(() => {
+    securityContext.advance();
     setScopeState(null);
     setTenants([]);
     setStatus('idle');
     setError(null);
     queryCache.clear();
-    apiClient.setScopeProvider(null);
   }, []);
 
   const applyTrustedScope = useCallback((trustedScope: ActiveScope) => {
+    securityContext.advance();
     queryCache.clear();
     setScopeState(trustedScope);
     setStatus('ready');
@@ -86,6 +87,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
     }
 
     let cancelled = false;
+    const generation = securityContext.advance();
     setStatus('loading');
     setError(null);
     setScopeState(null);
@@ -94,7 +96,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
     const establish = async () => {
       try {
         const available = await adapter.fetchTenants();
-        if (cancelled) return;
+        if (cancelled || generation !== securityContext.generation()) return;
         setTenants(available);
         if (available.length === 0)
           throw new Error('No authorized organization scope is available.');
@@ -105,12 +107,27 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
         if (!result.valid && preference) {
           result = await adapter.selectActiveScope({ tenant_id: available[0].id });
         }
-        if (!result.valid || !result.scope || !(await adapter.validateScope(result.scope))) {
+        if (!result.valid || !result.scope) {
           throw new Error(result.error ?? 'Backend rejected the active scope.');
         }
-        if (!cancelled) applyTrustedScope(result.scope);
+        if (!cancelled && generation === securityContext.generation()) {
+          applyTrustedScope(result.scope);
+          if (result.csrfToken && result.expiresAt) {
+            updateSessionSecurity(
+              {
+                tenantId: result.scope.tenantId,
+                enterpriseGroupId: result.scope.groupId,
+                legalEntityId: result.scope.legalEntityId,
+                companyId: result.scope.companyId,
+                operatingSiteId: result.scope.siteId,
+              },
+              result.csrfToken,
+              result.expiresAt
+            );
+          }
+        }
       } catch (caught: unknown) {
-        if (!cancelled) {
+        if (!cancelled && generation === securityContext.generation()) {
           setScopeState(null);
           setStatus('unavailable');
           setError(caught instanceof Error ? caught.message : 'Organization scope is unavailable.');
@@ -122,40 +139,43 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [adapter, applyTrustedScope, clearScope, isAuthenticated, user]);
-
-  useEffect(() => {
-    apiClient.setScopeProvider(
-      scope
-        ? () => ({
-            tenantId: scope.tenantId,
-            legalEntityId: scope.legalEntityId ?? undefined,
-            companyId: scope.companyId,
-            siteId: scope.siteId,
-          })
-        : null
-    );
-    return () => apiClient.setScopeProvider(null);
-  }, [scope]);
+  }, [adapter, applyTrustedScope, clearScope, isAuthenticated, updateSessionSecurity, user]);
 
   const select = useCallback(
     async (selection: ActiveScopeSelection) => {
+      const generation = securityContext.advance();
+      queryCache.clear();
       setStatus('switching');
       setError(null);
       try {
         const result = await adapter.selectActiveScope(selection);
-        if (!result.valid || !result.scope || !(await adapter.validateScope(result.scope))) {
+        if (generation !== securityContext.generation()) return;
+        if (!result.valid || !result.scope) {
           setStatus(scope ? 'ready' : 'unavailable');
           setError(result.error ?? 'Backend rejected the requested scope.');
           return;
         }
         applyTrustedScope(result.scope);
+        if (result.csrfToken && result.expiresAt) {
+          updateSessionSecurity(
+            {
+              tenantId: result.scope.tenantId,
+              enterpriseGroupId: result.scope.groupId,
+              legalEntityId: result.scope.legalEntityId,
+              companyId: result.scope.companyId,
+              operatingSiteId: result.scope.siteId,
+            },
+            result.csrfToken,
+            result.expiresAt
+          );
+        }
       } catch (caught: unknown) {
+        if (generation !== securityContext.generation()) return;
         setStatus(scope ? 'ready' : 'unavailable');
         setError(caught instanceof Error ? caught.message : 'Scope switch failed.');
       }
     },
-    [adapter, applyTrustedScope, scope]
+    [adapter, applyTrustedScope, scope, updateSessionSecurity]
   );
 
   const setTenant = useCallback((tenantId: string) => select({ tenant_id: tenantId }), [select]);
@@ -170,7 +190,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
         ? select({
             tenant_id: scope.tenantId,
             legal_entity_id: scope.legalEntityId,
-            company_id: scope.companyId,
+            company_id: scope.companyId ?? undefined,
             operating_site_id: siteId,
           })
         : Promise.resolve(),
@@ -182,7 +202,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
         ? select({
             tenant_id: partial.tenantId ?? scope.tenantId,
             legal_entity_id: partial.legalEntityId ?? scope.legalEntityId,
-            company_id: partial.companyId ?? scope.companyId,
+            company_id: partial.companyId ?? scope.companyId ?? undefined,
             operating_site_id: partial.siteId ?? scope.siteId,
           })
         : Promise.resolve(),

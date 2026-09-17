@@ -16,6 +16,7 @@ const Consumer = () => {
       <span data-testid="company">{scope?.companyName ?? 'none'}</span>
       <span data-testid="error">{error ?? 'none'}</span>
       <button onClick={() => void setCompany('company_two')}>Company two</button>
+      <button onClick={() => void setCompany('company_one')}>Company one</button>
       <button onClick={() => void setCompany('rejected_company')}>Rejected</button>
       <button onClick={() => void setTenant('tenant_two')}>Tenant two</button>
     </div>
@@ -57,6 +58,38 @@ describe('backend-authoritative scope boundary', () => {
     await waitFor(() => expect(screen.getByTestId('company')).toHaveTextContent('Company One'));
     fireEvent.click(screen.getByText('Rejected'));
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('Company rejected'));
+    expect(screen.getByTestId('company')).toHaveTextContent('Company One');
+  });
+
+  it('does not apply a late scope response after a newer selection', async () => {
+    class DelayedScopeAdapter extends MockScopeAdapter {
+      private release: (() => void) | null = null;
+
+      public override async selectActiveScope(selection: {
+        tenant_id: string;
+        company_id?: string;
+      }) {
+        if (selection.company_id !== 'company_two') return super.selectActiveScope(selection);
+        return new Promise<Awaited<ReturnType<MockScopeAdapter['selectActiveScope']>>>(
+          (resolve) => {
+            this.release = () => void super.selectActiveScope(selection).then(resolve);
+          }
+        );
+      }
+
+      public releaseCompanyTwo(): void {
+        this.release?.();
+      }
+    }
+
+    const adapter = new DelayedScopeAdapter(TEST_TENANTS);
+    renderScope(adapter);
+    await waitFor(() => expect(screen.getByTestId('company')).toHaveTextContent('Company One'));
+    fireEvent.click(screen.getByText('Company two'));
+    fireEvent.click(screen.getByText('Company one'));
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('ready'));
+    adapter.releaseCompanyTwo();
+    await Promise.resolve();
     expect(screen.getByTestId('company')).toHaveTextContent('Company One');
   });
 

@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Building2, Check, ChevronDown } from 'lucide-react';
 import { useScope } from './ScopeContext';
+import { useI18n } from '../i18n/I18nContext';
 
 export const ScopeSwitcher: React.FC = () => {
   const { scope, tenants, status, error, setTenant, setCompany, setSite } = useScope();
   const [isOpen, setIsOpen] = useState(false);
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -19,9 +21,9 @@ export const ScopeSwitcher: React.FC = () => {
 
   if (!scope || status === 'loading' || status === 'unavailable') {
     return (
-      <button type="button" disabled aria-label="Organization scope unavailable">
+      <button type="button" disabled aria-label={t('scope.unavailable')}>
         <Building2 size={16} />{' '}
-        {status === 'loading' ? 'Loading scope…' : (error ?? 'Scope unavailable')}
+        {status === 'loading' ? t('scope.loading') : (error ?? t('scope.unavailable'))}
       </button>
     );
   }
@@ -34,7 +36,7 @@ export const ScopeSwitcher: React.FC = () => {
         type="button"
         onClick={() => setIsOpen((open) => !open)}
         aria-expanded={isOpen}
-        aria-label="Switch organization scope"
+        aria-label={t('scope.switch')}
         disabled={status === 'switching'}
         style={{
           display: 'flex',
@@ -58,7 +60,7 @@ export const ScopeSwitcher: React.FC = () => {
       {isOpen && currentTenant && (
         <div
           role="dialog"
-          aria-label="Scope Selector"
+          aria-label={t('scope.selector')}
           style={{
             position: 'absolute',
             top: '100%',
@@ -73,7 +75,7 @@ export const ScopeSwitcher: React.FC = () => {
             padding: '12px',
           }}
         >
-          <label htmlFor="tenant-scope">Tenant</label>
+          <label htmlFor="tenant-scope">{t('scope.tenant')}</label>
           <select
             id="tenant-scope"
             value={scope.tenantId}

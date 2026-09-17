@@ -24,10 +24,4 @@ export class ApiError extends Error {
 export interface RequestOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
   params?: Record<string, string | number | boolean | undefined>;
-  scope?: {
-    tenantId?: string;
-    legalEntityId?: string;
-    companyId?: string;
-    siteId?: string;
-  };
 }

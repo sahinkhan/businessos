@@ -27,13 +27,13 @@ export interface TenantScope {
 export interface ActiveScope {
   tenantId: string;
   tenantName: string;
-  groupId: string;
-  groupName: string;
+  groupId?: string | null;
+  groupName?: string | null;
   legalEntityId?: string | null;
-  companyId: string;
-  companyName: string;
-  siteId: string;
-  siteName: string;
+  companyId?: string | null;
+  companyName?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
 }
 
 export type ScopeStatus = 'idle' | 'loading' | 'ready' | 'unavailable' | 'switching';

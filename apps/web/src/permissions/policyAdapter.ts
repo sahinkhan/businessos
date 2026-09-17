@@ -1,4 +1,5 @@
 import { apiClient } from '../api/client';
+import { securityContext } from '../api/securityContext';
 import {
   ApprovalAuthorityDecision,
   AuthorizationDecision,
@@ -18,7 +19,7 @@ export interface PolicyPresentationAdapter {
   evaluateFieldAccess(
     resourceType: string,
     fieldName: string,
-    context: PolicySecurityContext
+    _context: PolicySecurityContext
   ): Promise<FieldAccessDecision>;
   evaluateApprovalAuthority(
     approvalType: string,
@@ -119,7 +120,7 @@ export class HttpPolicyAdapter implements PolicyPresentationAdapter {
   private readonly authorizations = new Map<string, AuthorizationDecision>();
   private readonly fields = new Map<string, FieldAccessDecision>();
 
-  constructor(private readonly baseUrl = '/api/v1/policy') {}
+  constructor(private readonly baseUrl = '/policy') {}
 
   public getCachedAuthorization(
     action: string,
@@ -147,19 +148,20 @@ export class HttpPolicyAdapter implements PolicyPresentationAdapter {
     const cached = this.authorizations.get(key);
     if (cached) return cached;
 
+    const generation = securityContext.generation();
+    const controller = securityContext.createAbortController();
     let decision: AuthorizationDecision;
     try {
-      const response = await apiClient.post<unknown>(`${this.baseUrl}/authorize`, {
-        tenant_id: query.tenantId,
-        subject_id: query.principalId,
-        action: query.action,
-        resource: query.resourceType,
-        company_id: query.companyId,
-        legal_entity_id: query.legalEntityId,
-        operating_site_id: query.siteId,
-        record_scope_id: query.resourceId,
-        attributes: query.context ?? {},
-      });
+      const response = await apiClient.post<unknown>(
+        `${this.baseUrl}/authorize`,
+        {
+          action: query.action,
+          resource: query.resourceType,
+          record_scope_id: query.resourceId,
+          attributes: query.context ?? {},
+        },
+        { signal: controller.signal }
+      );
       decision = normalizeAuthorization(response) ?? {
         allowed: false,
         reason: 'Deny by default: malformed policy response',
@@ -172,7 +174,10 @@ export class HttpPolicyAdapter implements PolicyPresentationAdapter {
         matchedPolicy: null,
       };
     }
-    this.authorizations.set(key, decision);
+    securityContext.release(controller);
+    if (!controller.signal.aborted && generation === securityContext.generation()) {
+      this.authorizations.set(key, decision);
+    }
     return decision;
   }
 
@@ -185,10 +190,10 @@ export class HttpPolicyAdapter implements PolicyPresentationAdapter {
     const cached = this.fields.get(key);
     if (cached) return cached;
 
+    const generation = securityContext.generation();
+    const controller = securityContext.createAbortController();
     let decision = deniedField(fieldName);
     const baseQuery = {
-      tenant_id: context.tenantId,
-      subject_id: context.principalId,
       resource_type: resourceType,
       field_name: fieldName,
       attributes: {
@@ -199,14 +204,16 @@ export class HttpPolicyAdapter implements PolicyPresentationAdapter {
     };
     try {
       const [readResponse, writeResponse] = await Promise.all([
-        apiClient.post<unknown>(`${this.baseUrl}/field-access`, {
-          ...baseQuery,
-          requested_access: 'read',
-        }),
-        apiClient.post<unknown>(`${this.baseUrl}/field-access`, {
-          ...baseQuery,
-          requested_access: 'write',
-        }),
+        apiClient.post<unknown>(
+          `${this.baseUrl}/field-access`,
+          { ...baseQuery, requested_access: 'read' },
+          { signal: controller.signal }
+        ),
+        apiClient.post<unknown>(
+          `${this.baseUrl}/field-access`,
+          { ...baseQuery, requested_access: 'write' },
+          { signal: controller.signal }
+        ),
       ]);
       const read = normalizeBackendField(readResponse);
       const write = normalizeBackendField(writeResponse);
@@ -222,7 +229,10 @@ export class HttpPolicyAdapter implements PolicyPresentationAdapter {
     } catch {
       // A missing trusted Phase 4 decision remains fail closed.
     }
-    this.fields.set(key, decision);
+    securityContext.release(controller);
+    if (!controller.signal.aborted && generation === securityContext.generation()) {
+      this.fields.set(key, decision);
+    }
     return decision;
   }
 
@@ -230,16 +240,19 @@ export class HttpPolicyAdapter implements PolicyPresentationAdapter {
     approvalType: string,
     amount: number,
     currency: string,
-    context: PolicySecurityContext
+    _context: PolicySecurityContext
   ): Promise<ApprovalAuthorityDecision> {
+    const generation = securityContext.generation();
+    const controller = securityContext.createAbortController();
     try {
-      const response = await apiClient.post<unknown>(`${this.baseUrl}/approval-limit`, {
-        tenant_id: context.tenantId,
-        subject_id: context.principalId,
-        action_type: approvalType,
-        amount,
-        currency,
-      });
+      const response = await apiClient.post<unknown>(
+        `${this.baseUrl}/approval-limit`,
+        { action_type: approvalType, amount, currency },
+        { signal: controller.signal }
+      );
+      if (controller.signal.aborted || generation !== securityContext.generation()) {
+        throw new Error('Stale security context');
+      }
       if (typeof response === 'object' && response !== null) {
         const value = response as Record<string, unknown>;
         const hasAuthority =
@@ -261,6 +274,8 @@ export class HttpPolicyAdapter implements PolicyPresentationAdapter {
       }
     } catch {
       // A missing trusted Phase 4 decision remains fail closed.
+    } finally {
+      securityContext.release(controller);
     }
     return {
       hasAuthority: false,

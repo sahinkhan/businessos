@@ -7,18 +7,18 @@ export const TEST_USER: UserProfile = {
   name: 'Test Operator',
   tenantId: 'tenant_one',
   principal: {
+    id: 'principal_test',
     tenantId: 'tenant_one',
-    principalId: 'principal_test',
-    principalType: 'user',
+    type: 'user',
     authenticationStrength: 'oidc',
-    scopes: [{ tenant_id: 'tenant_one' }],
   },
 };
 
 export const TEST_SESSION: SessionInfo = {
-  accessToken: 'memory_only_test_credential',
-  issuedAt: Math.floor(Date.now() / 1000),
+  principal: TEST_USER.principal,
+  activeScope: { tenantId: 'tenant_one' },
   expiresAt: Math.floor(Date.now() / 1000) + 3600,
+  csrfToken: 'test_csrf_token',
 };
 
 export const TEST_TENANTS: TenantScope[] = [

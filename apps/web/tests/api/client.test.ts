@@ -11,15 +11,9 @@ describe('ApiClient hardening', () => {
     localStorage.clear();
   });
 
-  it('uses only registered in-memory credential and trusted scope providers', async () => {
+  it('uses cookie credentials and CSRF without browser bearer or authority headers', async () => {
     localStorage.setItem('businessos.auth.session', JSON.stringify({ token: 'persisted' }));
-    client.setTokenProvider(() => 'memory_credential');
-    client.setScopeProvider(() => ({
-      tenantId: 'tenant_123',
-      legalEntityId: 'legal_234',
-      companyId: 'company_456',
-      siteId: 'site_789',
-    }));
+    client.setCsrfTokenProvider(() => 'csrf_test');
 
     let capturedHeaders = new Headers();
     global.fetch = vi.fn().mockImplementation((_url, init: RequestInit) => {
@@ -31,12 +25,10 @@ describe('ApiClient hardening', () => {
       });
     });
 
-    await expect(client.get('/test-endpoint')).resolves.toEqual({ success: true });
-    expect(capturedHeaders.get('Authorization')).toBe('Bearer memory_credential');
-    expect(capturedHeaders.get('X-Tenant-Id')).toBe('tenant_123');
-    expect(capturedHeaders.get('X-Legal-Entity-Id')).toBe('legal_234');
-    expect(capturedHeaders.get('X-Company-Id')).toBe('company_456');
-    expect(capturedHeaders.get('X-Operating-Site-Id')).toBe('site_789');
+    await expect(client.post('/test-endpoint')).resolves.toEqual({ success: true });
+    expect(capturedHeaders.get('Authorization')).toBeNull();
+    expect(capturedHeaders.get('X-Tenant-Id')).toBeNull();
+    expect(capturedHeaders.get('X-CSRF-Token')).toBe('csrf_test');
     expect(capturedHeaders.get('X-Correlation-Id')).toBeTruthy();
   });
 

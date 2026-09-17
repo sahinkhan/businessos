@@ -2,11 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { Modal } from '../components/overlays/Modal';
 import { Button } from '../components/actions/Button';
+import { useI18n } from '../i18n/I18nContext';
 
 export const SessionExpiryModal: React.FC = () => {
-  const { session, refreshSession, logout, isAuthenticated } = useAuth();
+  const { session, reloadSession, logout, isAuthenticated } = useAuth();
   const [showWarning, setShowWarning] = useState(false);
   const [secondsRemaining, setSecondsRemaining] = useState(0);
+  const { t, tp } = useI18n();
 
   useEffect(() => {
     if (!isAuthenticated || !session) {
@@ -30,27 +32,26 @@ export const SessionExpiryModal: React.FC = () => {
     <Modal
       isOpen
       onClose={() => setShowWarning(false)}
-      title="Session Expiration Warning"
+      title={t('auth.session.title')}
       footer={
         <>
           <Button variant="secondary" onClick={() => void logout()}>
-            Log out now
+            {t('auth.session.logout')}
           </Button>
           <Button
             variant="primary"
             onClick={async () => {
-              await refreshSession();
+              await reloadSession();
               setShowWarning(false);
             }}
           >
-            Extend session
+            {t('auth.session.extend')}
           </Button>
         </>
       }
     >
       <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem' }}>
-        Your active session will expire in approximately{' '}
-        {Math.max(1, Math.ceil(secondsRemaining / 60))} minute(s).
+        {tp('auth.session_minutes', Math.max(1, Math.ceil(secondsRemaining / 60)))}
       </p>
     </Modal>
   );

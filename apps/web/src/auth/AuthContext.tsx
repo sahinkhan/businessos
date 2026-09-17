@@ -1,38 +1,74 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
 import { queryCache } from '../api/queryCache';
+import { securityContext } from '../api/securityContext';
 import { AuthAdapter, defaultAuthAdapter } from './authAdapter';
-import { AuthContextValue, SessionInfo, UserProfile } from './types';
+import { AuthContextValue, SessionInfo, SessionScope, UserProfile } from './types';
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export interface AuthProviderProps {
   children: React.ReactNode;
   adapter?: AuthAdapter;
-  initialUser?: UserProfile | null;
   initialSession?: SessionInfo | null;
+  initialUser?: UserProfile | null;
+}
+
+function userFromSession(session: SessionInfo): UserProfile {
+  const principal = session.principal;
+  return {
+    id: principal.id,
+    email: principal.email,
+    name: principal.displayName ?? principal.email ?? principal.id,
+    tenantId: principal.tenantId,
+    principal,
+  };
 }
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({
   children,
   adapter = defaultAuthAdapter,
-  initialUser = null,
   initialSession = null,
 }) => {
-  const [user, setUser] = useState<UserProfile | null>(initialUser);
   const [session, setSession] = useState<SessionInfo | null>(initialSession);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(initialSession === null);
+  const user = session ? userFromSession(session) : null;
 
   const invalidateSession = useCallback(() => {
-    setUser(null);
-    setSession(null);
+    securityContext.advance();
     queryCache.clear();
-    apiClient.setTokenProvider(null);
+    setSession(null);
+    apiClient.setCsrfTokenProvider(null);
   }, []);
 
+  const acceptSession = useCallback((next: SessionInfo | null) => {
+    securityContext.advance();
+    queryCache.clear();
+    setSession(next);
+  }, []);
+
+  const reloadSession = useCallback(async () => {
+    const generation = securityContext.generation();
+    setIsLoading(true);
+    try {
+      const next = await adapter.getSession();
+      if (generation !== securityContext.generation()) return;
+      setIsLoading(false);
+      acceptSession(next);
+    } catch {
+      if (generation !== securityContext.generation()) return;
+      setIsLoading(false);
+      invalidateSession();
+    }
+  }, [acceptSession, adapter, invalidateSession]);
+
   useEffect(() => {
-    apiClient.setTokenProvider(() => session?.accessToken ?? null);
-    return () => apiClient.setTokenProvider(null);
+    if (initialSession === null) void reloadSession();
+  }, [initialSession, reloadSession]);
+
+  useEffect(() => {
+    apiClient.setCsrfTokenProvider(() => session?.csrfToken ?? null);
+    return () => apiClient.setCsrfTokenProvider(null);
   }, [session]);
 
   useEffect(() => {
@@ -52,16 +88,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
   }, [session, invalidateSession]);
 
   const login = useCallback(
-    async (email: string, password?: string) => {
+    async (returnTo?: string) => {
       setIsLoading(true);
       try {
-        const response = await adapter.login({ email, password });
-        if (response.session.expiresAt <= Math.floor(Date.now() / 1000)) {
-          throw new Error('Backend returned an expired session.');
-        }
-        queryCache.clear();
-        setUser(response.user);
-        setSession(response.session);
+        const started = await adapter.startLogin(returnTo);
+        window.location.assign(started.authorizationUrl);
       } finally {
         setIsLoading(false);
       }
@@ -71,38 +102,37 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
 
   const logout = useCallback(async () => {
     setIsLoading(true);
-    const accessToken = session?.accessToken;
-    invalidateSession();
     try {
-      await adapter.logout(accessToken);
+      await adapter.logout();
     } finally {
+      invalidateSession();
       setIsLoading(false);
     }
-  }, [adapter, invalidateSession, session]);
+  }, [adapter, invalidateSession]);
 
-  const refreshSession = useCallback(async () => {
-    if (!session?.accessToken) return;
-    try {
-      const refreshed = await adapter.refreshSession(session.accessToken);
-      setSession(refreshed);
-    } catch {
-      invalidateSession();
-    }
-  }, [adapter, invalidateSession, session]);
+  const updateSessionSecurity = useCallback(
+    (scope: SessionScope, csrfToken: string, expiresAt: number) => {
+      securityContext.advance();
+      queryCache.clear();
+      setSession((current) =>
+        current ? { ...current, activeScope: scope, csrfToken, expiresAt } : current
+      );
+    },
+    []
+  );
 
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
       session,
-      isAuthenticated: Boolean(
-        user && session && session.expiresAt > Math.floor(Date.now() / 1000)
-      ),
+      isAuthenticated: Boolean(session && session.expiresAt > Date.now() / 1000),
       isLoading,
       login,
       logout,
-      refreshSession,
+      reloadSession,
+      updateSessionSecurity,
     }),
-    [user, session, isLoading, login, logout, refreshSession]
+    [user, session, isLoading, login, logout, reloadSession, updateSessionSecurity]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

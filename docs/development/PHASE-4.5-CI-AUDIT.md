@@ -5,9 +5,10 @@ Audited `main` baseline: `3e551b8922397e03636db8d7ed7cf85d2477db83`.
 Accepted architecture checkpoint: `20e2c32d8a25e7959fcf474f70a77f5e8f96646e` on
 `fix/phase4.5-certification`.
 
-Status: implementation remediation complete; exact-head PR CI and independent re-audit pending.
-PR #9 must not be merged or certified yet. Historical tags `v0.4.5-ui-foundation` and
-`v0.4.6-ui-foundation` are unchanged. `v0.4.7-ui-foundation` must not be created in this step.
+Status: **READY FOR INDEPENDENT RE-AUDIT**. Implementation remediation is complete and exact-head
+PR CI is green. PR #9 must not be merged or certified without separate authorization. Historical
+tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are unchanged.
+`v0.4.7-ui-foundation` must not be created in this step.
 
 ## ADR-009 implementation
 
@@ -104,6 +105,33 @@ principal/scope cache lifecycle, modal focus, mobile drawer interaction, plural 
 cancelled and confirmed dirty-route navigation. Existing lazy-route, fail-closed policy, RTL,
 accessibility, server-side table, and module registration tests remain enabled.
 
+The ASGI framework resolves routes inside the composed middleware chain. Authenticated unsafe
+requests therefore cannot bypass CSRF enforcement by targeting an unknown path or unsupported
+method. Organization active-scope and validation responses serialize their nested Pydantic scope
+projection explicitly before returning JSON. The event-worker restart integration uses the shared
+committed-receipt polling boundary, so handler completion is not mistaken for transaction commit.
+
+## Exact-head PR CI evidence
+
+GitHub Actions run
+[`35270596792`](https://github.com/sahinkhan/businessos/actions/runs/35270596792) executed for PR #9
+head `b363359d7bc11596e22bc027b248070b7219b325` and completed successfully.
+
+| Gate | Result |
+| --- | --- |
+| `web-quality` | PASS |
+| Frontend typecheck, lint, format, tests, accessibility, build, bundle budget, and audit | PASS |
+| `python-quality` | PASS |
+| Ruff format and lint | PASS |
+| Static typing | PASS |
+| Unit tests and whole-suite collection | PASS |
+| PostgreSQL and provider integration tests, including real ASGI and Redis coverage | PASS, 54 tests |
+| External module conformance | PASS |
+| Installed-wheel migration smoke | PASS |
+| Development and production image builds | PASS |
+| Production-derived migration upgrade and replay | PASS |
+| Committed patch whitespace | PASS |
+
 ## Local evidence
 
 The frontend validation uses the committed lockfile:
@@ -144,7 +172,5 @@ No Phase 5 metadata/Studio/Dynamic UI implementation and no business module were
 lazy route contribution, backend-authoritative scope, fail-closed policy/field access, and
 server-side large-data contracts remain unchanged.
 
-The branch may advance to **READY FOR INDEPENDENT RE-AUDIT** only after the exact pushed PR head has
-both `web-quality` and `python-quality` successful, including the new real ASGI and Redis integration
-tests. Phase 4.5 remains not complete, not certified, and not frozen until the separately authorized
-merge, post-merge `main` CI, final audit, and tag step.
+The branch is **READY FOR INDEPENDENT RE-AUDIT**. Phase 4.5 remains not complete, not certified, and
+not frozen until the separately authorized merge, post-merge `main` CI, final audit, and tag step.

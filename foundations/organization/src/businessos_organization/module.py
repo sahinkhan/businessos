@@ -335,7 +335,9 @@ class OrganizationModule:
         result = await dispatcher.query(query, request.context, dependencies)
         if not isinstance(result, TenantContext):
             raise RuntimeError("Organization scope contract returned an invalid result")
-        return Response.json({"valid": True, "scope": _active_scope(result)})
+        return Response.json(
+            {"valid": True, "scope": _active_scope(result).model_dump(mode="json")}
+        )
 
     async def _http_select_scope(
         self, request: Request, dependencies: RequestDependencyScope
@@ -353,7 +355,7 @@ class OrganizationModule:
         response = Response.json(
             {
                 "valid": True,
-                "scope": session.active_scope,
+                "scope": session.active_scope.model_dump(mode="json"),
                 "csrf_token": session.csrf_token,
                 "expires_at": min(session.idle_expires_at, session.absolute_expires_at),
             }

@@ -1,13 +1,42 @@
 import { ApiError, RequestOptions } from './types';
 
+export type TokenProvider = () => string | null;
+export type ScopeProvider = () => { tenantId?: string; companyId?: string; siteId?: string } | null;
+export type UnauthorizedHandler = () => void;
+
+function generateCorrelationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'corr_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 10);
+}
+
 export class ApiClient {
   private baseUrl: string;
+  private tokenProvider: TokenProvider | null = null;
+  private scopeProvider: ScopeProvider | null = null;
+  private onUnauthorized: UnauthorizedHandler | null = null;
 
   constructor(baseUrl: string = '/api') {
     this.baseUrl = baseUrl;
   }
 
+  public setTokenProvider(provider: TokenProvider | null): void {
+    this.tokenProvider = provider;
+  }
+
+  public setScopeProvider(provider: ScopeProvider | null): void {
+    this.scopeProvider = provider;
+  }
+
+  public setOnUnauthorized(handler: UnauthorizedHandler | null): void {
+    this.onUnauthorized = handler;
+  }
+
   private getAuthToken(): string | null {
+    if (this.tokenProvider) {
+      return this.tokenProvider();
+    }
     try {
       const sessionStr = localStorage.getItem('businessos.auth.session');
       if (sessionStr) {
@@ -21,6 +50,9 @@ export class ApiClient {
   }
 
   private getActiveScope() {
+    if (this.scopeProvider) {
+      return this.scopeProvider();
+    }
     try {
       const scopeStr = localStorage.getItem('businessos.active_scope');
       if (scopeStr) return JSON.parse(scopeStr);
@@ -56,7 +88,7 @@ export class ApiClient {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json',
-      'X-Correlation-Id': 'corr_' + Math.random().toString(36).substring(2, 9),
+      'X-Correlation-Id': generateCorrelationId(),
       ...(customHeaders as Record<string, string>),
     };
 
@@ -84,6 +116,10 @@ export class ApiClient {
     }
 
     const response = await fetch(url, config);
+
+    if (response.status === 401) {
+      this.onUnauthorized?.();
+    }
 
     if (!response.ok) {
       let errorPayload = { code: 'HTTP_ERROR', message: response.statusText };

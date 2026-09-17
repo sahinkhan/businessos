@@ -2,6 +2,8 @@ export interface NavItem {
   id: string;
   label: string;
   path: string;
+  /** Optional reference to a registered route ID in RouteRegistry */
+  routeId?: string;
   icon?: string;
   group?: string;
   order?: number;

@@ -1,3 +1,11 @@
+export interface PolicySecurityContext {
+  principalId: string;
+  tenantId: string;
+  legalEntityId?: string | null;
+  companyId?: string | null;
+  siteId?: string | null;
+}
+
 export interface FieldPolicyHint {
   readable: boolean;
   writable: boolean;
@@ -9,15 +17,11 @@ export interface AuthorizationDecision {
   allowed: boolean;
   reason: string;
   matchedPolicy?: string | null;
-  constraints?: Record<string, any> | null;
+  constraints?: Record<string, unknown> | null;
 }
 
-export interface FieldAccessDecision {
+export interface FieldAccessDecision extends FieldPolicyHint {
   fieldName: string;
-  readable: boolean;
-  writable: boolean;
-  masked: boolean;
-  maskPattern?: string | null;
 }
 
 export interface ApprovalAuthorityDecision {
@@ -34,15 +38,8 @@ export interface AuthorizeActionResult {
   fields?: Record<string, FieldPolicyHint>;
 }
 
-export interface ApprovalLimitResult {
-  limit: number;
-  currency: string;
-}
-
 export interface PermissionContextValue {
   canPerformAction: (action: string, resource: string) => boolean;
   getFieldPolicy: (resource: string, fieldName: string) => FieldPolicyHint;
   getActionEvaluation: (action: string, resource: string) => AuthorizeActionResult;
-  registerPolicyDecisions?: (decisions: Record<string, AuthorizationDecision>) => void;
-  registerFieldDecisions?: (decisions: Record<string, FieldAccessDecision>) => void;
 }

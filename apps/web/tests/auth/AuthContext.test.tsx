@@ -1,122 +1,105 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, act, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { queryCache } from '../../src/api/queryCache';
 import { AuthProvider, useAuth } from '../../src/auth/AuthContext';
-import { MockAuthAdapter } from '../../src/auth/authAdapter';
-import { UserProfile, SessionInfo } from '../../src/auth/types';
+import { HttpAuthAdapter, MockAuthAdapter } from '../../src/auth/authAdapter';
+import { TEST_SESSION, TEST_USER } from '../fixtures/security';
 
-const TestAuthConsumer = () => {
+const Consumer = () => {
   const { user, session, isAuthenticated, login, logout } = useAuth();
   return (
     <div>
-      <div data-testid="auth-status">{isAuthenticated ? 'authenticated' : 'unauthenticated'}</div>
-      <div data-testid="user-email">{user?.email || 'none'}</div>
-      <div data-testid="token">{session?.token || 'none'}</div>
-      <button onClick={() => login('operator@enterprise.com', 'secret')}>Login</button>
-      <button onClick={() => logout()}>Logout</button>
+      <span data-testid="status">{isAuthenticated ? 'authenticated' : 'unauthenticated'}</span>
+      <span data-testid="user">{user?.email ?? 'none'}</span>
+      <span data-testid="credential-state">{session ? 'in-memory' : 'none'}</span>
+      <button onClick={() => void login(TEST_USER.email, 'secret')}>Login</button>
+      <button onClick={() => void logout()}>Logout</button>
     </div>
   );
 };
 
-describe('AuthContext & Session Boundary', () => {
+describe('backend-authoritative authentication boundary', () => {
   beforeEach(() => {
     localStorage.clear();
+    queryCache.clear();
+    vi.restoreAllMocks();
   });
 
-  it('starts unauthenticated when no session is stored (no auto-login as fake admin)', () => {
-    render(
-      <AuthProvider initialUser={null} initialSession={null}>
-        <TestAuthConsumer />
-      </AuthProvider>
-    );
-
-    expect(screen.getByTestId('auth-status')).toHaveTextContent('unauthenticated');
-    expect(screen.getByTestId('user-email')).toHaveTextContent('none');
-    expect(screen.getByTestId('token')).toHaveTextContent('none');
-  });
-
-  it('authenticates through the auth adapter and sets valid session', async () => {
-    const mockUser: UserProfile = {
-      id: 'usr_verified_1',
-      email: 'operator@enterprise.com',
-      name: 'Verified Operator',
-      roles: ['operator'],
-      tenantId: 'tenant_default',
-      principal: {
-        tenantId: 'tenant_default',
-        principalId: 'usr_verified_1',
-        principalType: 'user',
-        authenticationStrength: 'password',
-        scopes: [{ tenant_id: 'tenant_default' }],
-      },
-    };
-    const mockSession: SessionInfo = {
-      token: 'bos_token_valid',
-      issuedAt: Math.floor(Date.now() / 1000),
-      expiresAt: Math.floor(Date.now() / 1000) + 3600,
-    };
-    const adapter = new MockAuthAdapter(mockUser, mockSession);
-
-    render(
-      <AuthProvider adapter={adapter} initialUser={null} initialSession={null}>
-        <TestAuthConsumer />
-      </AuthProvider>
-    );
-
-    expect(screen.getByTestId('auth-status')).toHaveTextContent('unauthenticated');
-
-    await act(async () => {
-      screen.getByText('Login').click();
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('auth-status')).toHaveTextContent('authenticated');
-      expect(screen.getByTestId('user-email')).toHaveTextContent('operator@enterprise.com');
-      expect(screen.getByTestId('token')).toHaveTextContent('bos_token_valid');
-    });
-
-    // Logging out clears state
-    await act(async () => {
-      screen.getByText('Logout').click();
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId('auth-status')).toHaveTextContent('unauthenticated');
-      expect(screen.getByTestId('token')).toHaveTextContent('none');
-    });
-  });
-
-  it('rejects stale or invalid token on mount and purges storage', async () => {
-    // Inject invalid token into local storage
+  it('starts unauthenticated and ignores persisted browser credentials', () => {
     localStorage.setItem(
       'businessos.auth.session',
-      JSON.stringify({
-        token: 'invalid_expired_token',
-        issuedAt: 100,
-        expiresAt: Math.floor(Date.now() / 1000) + 3600,
-      })
+      JSON.stringify({ accessToken: 'attacker-controlled', expiresAt: 9999999999 })
     );
-    localStorage.setItem(
-      'businessos.auth.user',
-      JSON.stringify({
-        id: 'usr_stale',
-        email: 'stale@enterprise.com',
-        roles: ['user'],
-        tenantId: 'tenant_default',
-      })
-    );
-
-    const adapter = new MockAuthAdapter(null, null);
-    // validateSession for invalid_expired_token will return null
+    localStorage.setItem('businessos.auth.user', JSON.stringify(TEST_USER));
 
     render(
-      <AuthProvider adapter={adapter}>
-        <TestAuthConsumer />
+      <AuthProvider>
+        <Consumer />
       </AuthProvider>
     );
 
-    await waitFor(() => {
-      expect(screen.getByTestId('auth-status')).toHaveTextContent('unauthenticated');
-      expect(localStorage.getItem('businessos.auth.session')).toBeNull();
+    expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated');
+    expect(screen.getByTestId('credential-state')).toHaveTextContent('none');
+  });
+
+  it('keeps a backend-issued bearer credential in memory and never writes it to localStorage', async () => {
+    const adapter = new MockAuthAdapter(TEST_USER, TEST_SESSION);
+    render(
+      <AuthProvider adapter={adapter}>
+        <Consumer />
+      </AuthProvider>
+    );
+
+    queryCache.set('prior-principal-data', { sensitive: true });
+    fireEvent.click(screen.getByText('Login'));
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+    expect(screen.getByTestId('credential-state')).toHaveTextContent('in-memory');
+    const storedValues = Array.from({ length: localStorage.length }, (_, index) =>
+      localStorage.getItem(localStorage.key(index) ?? '')
+    );
+    expect(storedValues.join('')).not.toContain(TEST_SESSION.accessToken);
+    expect(localStorage.getItem('businessos.auth.session')).toBeNull();
+    expect(queryCache.size()).toBe(0);
+  });
+
+  it('clears principal-bound state on logout', async () => {
+    queryCache.set('principal-data', { sensitive: true });
+    render(
+      <AuthProvider
+        adapter={new MockAuthAdapter(TEST_USER, TEST_SESSION)}
+        initialUser={TEST_USER}
+        initialSession={TEST_SESSION}
+      >
+        <Consumer />
+      </AuthProvider>
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Logout'));
     });
+    expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated');
+    expect(queryCache.size()).toBe(0);
+  });
+
+  it('invalidates an expired in-memory session', async () => {
+    render(
+      <AuthProvider
+        initialUser={TEST_USER}
+        initialSession={{ ...TEST_SESSION, expiresAt: Math.floor(Date.now() / 1000) - 1 }}
+      >
+        <Consumer />
+      </AuthProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated'));
+    expect(screen.getByTestId('credential-state')).toHaveTextContent('none');
+  });
+
+  it('does not manufacture a production session when the backend is unavailable', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    const adapter = new HttpAuthAdapter();
+    await expect(adapter.login({ email: TEST_USER.email, password: 'secret' })).rejects.toThrow(
+      'Failed to fetch'
+    );
   });
 });

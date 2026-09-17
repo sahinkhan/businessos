@@ -1,26 +1,29 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiClient } from '../../src/api/client';
 import { ApiError } from '../../src/api/types';
 
-describe('ApiClient Hardening', () => {
+describe('ApiClient hardening', () => {
   let client: ApiClient;
 
   beforeEach(() => {
     client = new ApiClient('/api');
     vi.restoreAllMocks();
+    localStorage.clear();
   });
 
-  it('injects Authorization and Scope headers from registered providers', async () => {
-    client.setTokenProvider(() => 'test_jwt_token');
+  it('uses only registered in-memory credential and trusted scope providers', async () => {
+    localStorage.setItem('businessos.auth.session', JSON.stringify({ token: 'persisted' }));
+    client.setTokenProvider(() => 'memory_credential');
     client.setScopeProvider(() => ({
       tenantId: 'tenant_123',
-      companyId: 'cmp_456',
+      legalEntityId: 'legal_234',
+      companyId: 'company_456',
       siteId: 'site_789',
     }));
 
-    let capturedHeaders: Record<string, string> = {};
-    global.fetch = vi.fn().mockImplementation((_url, init) => {
-      capturedHeaders = init.headers;
+    let capturedHeaders = new Headers();
+    global.fetch = vi.fn().mockImplementation((_url, init: RequestInit) => {
+      capturedHeaders = new Headers(init.headers);
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -28,27 +31,46 @@ describe('ApiClient Hardening', () => {
       });
     });
 
-    const res = await client.get('/test-endpoint');
-    expect(res).toEqual({ success: true });
-    expect(capturedHeaders['Authorization']).toBe('Bearer test_jwt_token');
-    expect(capturedHeaders['X-Tenant-Id']).toBe('tenant_123');
-    expect(capturedHeaders['X-Company-Id']).toBe('cmp_456');
-    expect(capturedHeaders['X-Operating-Site-Id']).toBe('site_789');
-    expect(capturedHeaders['X-Correlation-Id']).toBeDefined();
+    await expect(client.get('/test-endpoint')).resolves.toEqual({ success: true });
+    expect(capturedHeaders.get('Authorization')).toBe('Bearer memory_credential');
+    expect(capturedHeaders.get('X-Tenant-Id')).toBe('tenant_123');
+    expect(capturedHeaders.get('X-Legal-Entity-Id')).toBe('legal_234');
+    expect(capturedHeaders.get('X-Company-Id')).toBe('company_456');
+    expect(capturedHeaders.get('X-Operating-Site-Id')).toBe('site_789');
+    expect(capturedHeaders.get('X-Correlation-Id')).toBeTruthy();
   });
 
-  it('triggers onUnauthorized callback on 401 response status', async () => {
+  it('forwards AbortSignal to fetch', async () => {
+    const controller = new AbortController();
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+    });
+    await client.get('/cancelable', { signal: controller.signal });
+    expect(vi.mocked(global.fetch).mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+
+  it('invalidates the session on 401 but leaves 403 as an authorization denial', async () => {
     const onUnauthorized = vi.fn();
     client.setOnUnauthorized(onUnauthorized);
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        json: async () => ({ code: 'FORBIDDEN', message: 'Denied' }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+        json: async () => ({ code: 'UNAUTHORIZED', message: 'Expired' }),
+      });
 
-    global.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      statusText: 'Unauthorized',
-      json: () => Promise.resolve({ code: 'UNAUTHORIZED', message: 'Session expired' }),
-    });
-
-    await expect(client.get('/secure-resource')).rejects.toThrow(ApiError);
+    await expect(client.get('/forbidden')).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    await expect(client.get('/expired')).rejects.toBeInstanceOf(ApiError);
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 });

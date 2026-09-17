@@ -1,119 +1,170 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../../src/auth/AuthContext';
+import { ScopeProvider } from '../../src/scope/ScopeContext';
+import { MockScopeAdapter } from '../../src/scope/mockScopeAdapter';
 import { PermissionProvider } from '../../src/permissions/PermissionContext';
 import { PermissionBoundary } from '../../src/permissions/PermissionBoundary';
 import { FieldPolicyWrapper } from '../../src/permissions/FieldPolicyWrapper';
-import { Button } from '../../src/components/actions/Button';
-import { MockPolicyAdapter } from '../../src/permissions/policyAdapter';
-import { UserProfile, SessionInfo } from '../../src/auth/types';
+import { HttpPolicyAdapter, MockPolicyAdapter } from '../../src/permissions/policyAdapter';
+import { PolicySecurityContext } from '../../src/permissions/types';
+import { TEST_SESSION, TEST_TENANTS, TEST_USER } from '../fixtures/security';
 
-const authenticatedUser: UserProfile = {
-  id: 'usr_controller_1',
-  email: 'controller@businessos.internal',
-  name: 'Financial Controller',
-  roles: ['controller'],
-  tenantId: 'tenant_default',
-  principal: {
-    tenantId: 'tenant_default',
-    principalId: 'usr_controller_1',
-    principalType: 'user',
-    authenticationStrength: 'password',
-    scopes: [{ tenant_id: 'tenant_default' }],
-  },
-};
+const wrapper = (adapter: MockPolicyAdapter, child: React.ReactNode) => (
+  <AuthProvider initialUser={TEST_USER} initialSession={TEST_SESSION}>
+    <ScopeProvider adapter={new MockScopeAdapter(TEST_TENANTS)}>
+      <PermissionProvider adapter={adapter}>{child}</PermissionProvider>
+    </ScopeProvider>
+  </AuthProvider>
+);
 
-const validSession: SessionInfo = {
-  token: 'bos_token_ctrl',
-  issuedAt: Math.floor(Date.now() / 1000),
-  expiresAt: Math.floor(Date.now() / 1000) + 3600,
-};
+describe('Phase 4 policy presentation', () => {
+  beforeEach(() => vi.restoreAllMocks());
 
-describe('Permission Boundary Foundation (Phase 4 Policy Presentation)', () => {
-  it('renders content when backend policy decision grants authorization', () => {
-    const policyAdapter = new MockPolicyAdapter({
-      'ledger:delete': {
-        allowed: true,
-        reason: 'Authorized by policy_financial_controller',
-        matchedPolicy: 'policy_financial_controller',
-      },
-    });
-
+  it('denies while an action decision is pending, then renders only a trusted grant', async () => {
     render(
-      <AuthProvider initialUser={authenticatedUser} initialSession={validSession}>
-        <PermissionProvider adapter={policyAdapter}>
-          <PermissionBoundary action="delete" resource="ledger">
-            <Button>Authorized Delete</Button>
-          </PermissionBoundary>
-        </PermissionProvider>
-      </AuthProvider>
+      wrapper(
+        new MockPolicyAdapter({
+          'ledger:read': { allowed: true, reason: 'Trusted test decision' },
+        }),
+        <PermissionBoundary action="read" resource="ledger" fallback={<span>Denied</span>}>
+          <span>Ledger</span>
+        </PermissionBoundary>
+      )
     );
 
-    expect(screen.getByText('Authorized Delete')).toBeInTheDocument();
+    expect(screen.getByText('Denied')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Ledger')).toBeInTheDocument());
   });
 
-  it('denies by default when no policy grant exists', async () => {
-    const emptyPolicyAdapter = new MockPolicyAdapter();
+  it('keeps unknown field access hidden while pending and after a missing decision', async () => {
+    const adapter = new MockPolicyAdapter();
+    render(
+      wrapper(
+        adapter,
+        <FieldPolicyWrapper resource="employee" field="secret">
+          <span data-testid="secret">classified</span>
+        </FieldPolicyWrapper>
+      )
+    );
 
-    await act(async () => {
-      render(
-        <AuthProvider initialUser={authenticatedUser} initialSession={validSession}>
-          <PermissionProvider adapter={emptyPolicyAdapter}>
-            <PermissionBoundary
-              action="delete"
-              resource="restricted_vault"
-              fallback={<div>Access Denied</div>}
-            >
-              <Button>Vault Button</Button>
-            </PermissionBoundary>
-          </PermissionProvider>
-        </AuthProvider>
-      );
-    });
-
-    expect(screen.queryByText('Vault Button')).not.toBeInTheDocument();
-    expect(screen.getByText('Access Denied')).toBeInTheDocument();
+    expect(screen.queryByTestId('secret')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        adapter.getCachedFieldAccess('employee', 'secret', {
+          principalId: TEST_USER.id,
+          tenantId: 'tenant_one',
+          legalEntityId: 'company_one',
+          companyId: 'company_one',
+          siteId: 'site_one',
+        })
+      ).not.toBeNull()
+    );
+    expect(screen.queryByTestId('secret')).not.toBeInTheDocument();
   });
 
-  it('masks sensitive fields according to Phase 4 FieldAccessDecision', () => {
-    const policyAdapter = new MockPolicyAdapter(
-      {},
-      {
-        'employee.ssn': {
-          fieldName: 'ssn',
-          readable: true,
-          writable: false,
-          masked: true,
-        },
-        'employee.secretKey': {
-          fieldName: 'secretKey',
-          readable: false,
-          writable: false,
-          masked: false,
-        },
-      }
-    );
-
+  it('renders a field only after a trusted readable decision arrives', async () => {
     render(
-      <AuthProvider initialUser={authenticatedUser} initialSession={validSession}>
-        <PermissionProvider adapter={policyAdapter}>
-          <div>
-            <FieldPolicyWrapper resource="employee" field="ssn">
-              <span data-testid="raw-ssn">123-45-6789</span>
-            </FieldPolicyWrapper>
-            <FieldPolicyWrapper resource="employee" field="secretKey">
-              <span data-testid="secret-key">TOP_SECRET</span>
-            </FieldPolicyWrapper>
-          </div>
-        </PermissionProvider>
-      </AuthProvider>
+      wrapper(
+        new MockPolicyAdapter(
+          {},
+          {
+            'employee.name': {
+              fieldName: 'name',
+              readable: true,
+              writable: true,
+              masked: false,
+            },
+          }
+        ),
+        <FieldPolicyWrapper resource="employee" field="name">
+          <span data-testid="name">Visible</span>
+        </FieldPolicyWrapper>
+      )
     );
 
-    // Raw SSN should not be rendered; mask placeholder should be rendered
-    expect(screen.queryByTestId('raw-ssn')).not.toBeInTheDocument();
-    expect(screen.getByText('••••••••')).toBeInTheDocument();
+    expect(screen.queryByTestId('name')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('name')).toBeInTheDocument());
+  });
 
-    // Unreadable field should not be rendered at all
-    expect(screen.queryByTestId('secret-key')).not.toBeInTheDocument();
+  it('fails closed for unavailable and malformed production field decisions', async () => {
+    const context: PolicySecurityContext = {
+      principalId: 'p1',
+      tenantId: 't1',
+      companyId: 'c1',
+      siteId: 's1',
+    };
+    global.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+    const unavailable = await new HttpPolicyAdapter().evaluateFieldAccess(
+      'employee',
+      'salary',
+      context
+    );
+    expect(unavailable).toMatchObject({ readable: false, writable: false, masked: true });
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ readable: true }),
+    });
+    const malformed = await new HttpPolicyAdapter().evaluateFieldAccess(
+      'employee',
+      'salary',
+      context
+    );
+    expect(malformed).toMatchObject({ readable: false, writable: false, masked: true });
+  });
+
+  it('translates exact Phase 4 field decisions without inventing write access', async () => {
+    const context: PolicySecurityContext = {
+      principalId: 'p1',
+      tenantId: 't1',
+      companyId: 'c1',
+      siteId: 's1',
+    };
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          allowed: true,
+          access_type: 'mask',
+          mask_pattern: '***-**-####',
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ allowed: false, access_type: 'deny', mask_pattern: null }),
+      });
+
+    await expect(
+      new HttpPolicyAdapter().evaluateFieldAccess('employee', 'ssn', context)
+    ).resolves.toMatchObject({
+      readable: true,
+      writable: false,
+      masked: true,
+      maskPattern: '***-**-####',
+    });
+  });
+
+  it('isolates cached decisions across principals and organization scopes', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ allowed: true, reason: 'trusted' }),
+    });
+    const adapter = new HttpPolicyAdapter();
+    const first = {
+      principalId: 'p1',
+      tenantId: 't1',
+      companyId: 'c1',
+      siteId: 's1',
+    };
+    const second = { ...first, principalId: 'p2' };
+    await adapter.evaluateAuthorization({ ...first, action: 'read', resourceType: 'ledger' });
+    expect(adapter.getCachedAuthorization('read', 'ledger', first)?.allowed).toBe(true);
+    expect(adapter.getCachedAuthorization('read', 'ledger', second)).toBeNull();
   });
 });

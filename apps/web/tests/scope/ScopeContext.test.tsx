@@ -1,84 +1,89 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { ScopeProvider, useScope } from '../../src/scope/ScopeContext';
-import { MockScopeAdapter, CONTRACT_DEFAULT_TENANTS } from '../../src/scope/scopeAdapter';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { queryCache } from '../../src/api/queryCache';
+import { AuthProvider } from '../../src/auth/AuthContext';
+import { ScopeProvider, useScope } from '../../src/scope/ScopeContext';
+import { HttpScopeAdapter, ScopeAdapter } from '../../src/scope/scopeAdapter';
+import { MockScopeAdapter } from '../../src/scope/mockScopeAdapter';
+import { TEST_SESSION, TEST_TENANTS, TEST_USER } from '../fixtures/security';
 
-const TestScopeComponent = () => {
-  const { scope, setTenant, setCompany, tenants } = useScope();
+const Consumer = () => {
+  const { scope, status, error, setCompany, setTenant } = useScope();
   return (
     <div>
-      <div data-testid="tenant">{scope.tenantName}</div>
-      <div data-testid="company">{scope.companyName}</div>
-      <div data-testid="site">{scope.siteName}</div>
-      <button onClick={() => setCompany('cmp_canada_ops')}>Switch to Canada</button>
-      <button onClick={() => setTenant(tenants[1].id)}>Switch to APAC</button>
-      <button onClick={() => setCompany('invalid_cmp')}>Switch to Invalid Company</button>
+      <span data-testid="status">{status}</span>
+      <span data-testid="tenant">{scope?.tenantName ?? 'none'}</span>
+      <span data-testid="company">{scope?.companyName ?? 'none'}</span>
+      <span data-testid="error">{error ?? 'none'}</span>
+      <button onClick={() => void setCompany('company_two')}>Company two</button>
+      <button onClick={() => void setCompany('rejected_company')}>Rejected</button>
+      <button onClick={() => void setTenant('tenant_two')}>Tenant two</button>
     </div>
   );
 };
 
-describe('Scope & Entity Isolation Foundation', () => {
+const renderScope = (adapter: ScopeAdapter) =>
+  render(
+    <AuthProvider initialUser={TEST_USER} initialSession={TEST_SESSION}>
+      <ScopeProvider adapter={adapter}>
+        <Consumer />
+      </ScopeProvider>
+    </AuthProvider>
+  );
+
+describe('backend-authoritative scope boundary', () => {
   beforeEach(() => {
     localStorage.clear();
     queryCache.clear();
+    vi.restoreAllMocks();
   });
 
-  it('provides default active scope and permits switching entities', async () => {
-    const adapter = new MockScopeAdapter(CONTRACT_DEFAULT_TENANTS);
+  it('establishes and switches only backend-validated scope and clears cached data', async () => {
+    renderScope(new MockScopeAdapter(TEST_TENANTS));
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('ready'));
+    expect(screen.getByTestId('company')).toHaveTextContent('Company One');
 
-    render(
-      <ScopeProvider adapter={adapter}>
-        <TestScopeComponent />
-      </ScopeProvider>
-    );
+    queryCache.set('scope-data', { secret: true });
+    fireEvent.click(screen.getByText('Company two'));
+    await waitFor(() => expect(screen.getByTestId('company')).toHaveTextContent('Company Two'));
+    expect(queryCache.size()).toBe(0);
 
-    expect(screen.getByTestId('tenant')).toHaveTextContent('Global Enterprise Holdings');
-    expect(screen.getByTestId('company')).toHaveTextContent('US Technology Inc');
-
-    // Populate cache with dummy data
-    queryCache.set('tenant_data', { foo: 'bar' });
-    expect(queryCache.get('tenant_data')).toEqual({ foo: 'bar' });
-
-    // Switch company under same tenant
-    fireEvent.click(screen.getByText('Switch to Canada'));
-    await waitFor(() => {
-      expect(screen.getByTestId('company')).toHaveTextContent('Canada Logistics Corp');
-    });
-
-    // Query cache should have been cleared on scope transition
-    expect(queryCache.get('tenant_data')).toBeNull();
-
-    // Switch tenant
-    fireEvent.click(screen.getByText('Switch to APAC'));
-    await waitFor(() => {
-      expect(screen.getByTestId('tenant')).toHaveTextContent('APAC Retail Ventures');
-      expect(screen.getByTestId('company')).toHaveTextContent('Singapore Trading Pte Ltd');
-    });
+    fireEvent.click(screen.getByText('Tenant two'));
+    await waitFor(() => expect(screen.getByTestId('tenant')).toHaveTextContent('Tenant Two'));
   });
 
-  it('safely handles stale or invalid scope in storage', async () => {
+  it('does not apply a backend-rejected company', async () => {
+    renderScope(new MockScopeAdapter(TEST_TENANTS));
+    await waitFor(() => expect(screen.getByTestId('company')).toHaveTextContent('Company One'));
+    fireEvent.click(screen.getByText('Rejected'));
+    await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('Company rejected'));
+    expect(screen.getByTestId('company')).toHaveTextContent('Company One');
+  });
+
+  it('validates an untrusted local preference before it can become active', async () => {
     localStorage.setItem(
-      'businessos.active_scope',
-      JSON.stringify({
-        tenantId: 'non_existent_tenant',
-        companyId: 'ghost_company',
-        siteId: 'ghost_site',
-      })
+      'businessos.scope.preference',
+      JSON.stringify({ tenant_id: 'attacker_tenant', company_id: 'attacker_company' })
     );
+    renderScope(new MockScopeAdapter(TEST_TENANTS));
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('ready'));
+    expect(screen.getByTestId('tenant')).toHaveTextContent('Tenant One');
+    expect(screen.getByTestId('tenant')).not.toHaveTextContent('attacker');
+  });
 
-    const adapter = new MockScopeAdapter(CONTRACT_DEFAULT_TENANTS);
+  it('shows unavailable state when the production backend cannot establish scope', async () => {
+    const adapter: ScopeAdapter = {
+      fetchTenants: vi.fn().mockRejectedValue(new Error('scope backend unavailable')),
+      selectActiveScope: vi.fn(),
+      validateScope: vi.fn(),
+    };
+    renderScope(adapter);
+    await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('unavailable'));
+    expect(screen.getByTestId('tenant')).toHaveTextContent('none');
+  });
 
-    render(
-      <ScopeProvider adapter={adapter}>
-        <TestScopeComponent />
-      </ScopeProvider>
-    );
-
-    // Stale scope must be reset safely to default valid hierarchy
-    await waitFor(() => {
-      expect(screen.getByTestId('tenant')).toHaveTextContent('Global Enterprise Holdings');
-      expect(screen.getByTestId('company')).toHaveTextContent('US Technology Inc');
-    });
+  it('production adapter propagates backend failure without fixture fallback', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    await expect(new HttpScopeAdapter().fetchTenants()).rejects.toThrow('Failed to fetch');
   });
 });

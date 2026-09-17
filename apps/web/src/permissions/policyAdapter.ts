@@ -1,17 +1,16 @@
 import { apiClient } from '../api/client';
-import { AuthorizationDecision, FieldAccessDecision, ApprovalAuthorityDecision } from './types';
+import {
+  ApprovalAuthorityDecision,
+  AuthorizationDecision,
+  FieldAccessDecision,
+  PolicySecurityContext,
+} from './types';
 
-export interface PolicyEvaluationQuery {
-  principalId?: string;
+export interface PolicyEvaluationQuery extends PolicySecurityContext {
   action: string;
   resourceType: string;
   resourceId?: string;
-  scope?: {
-    tenantId?: string;
-    companyId?: string;
-    siteId?: string;
-  };
-  context?: Record<string, any>;
+  context?: Record<string, unknown>;
 }
 
 export interface PolicyPresentationAdapter {
@@ -19,216 +18,319 @@ export interface PolicyPresentationAdapter {
   evaluateFieldAccess(
     resourceType: string,
     fieldName: string,
-    scope?: { tenantId?: string; companyId?: string; siteId?: string }
+    context: PolicySecurityContext
   ): Promise<FieldAccessDecision>;
   evaluateApprovalAuthority(
     approvalType: string,
     amount: number,
     currency: string,
-    scope?: { tenantId?: string; companyId?: string; siteId?: string }
+    context: PolicySecurityContext
   ): Promise<ApprovalAuthorityDecision>;
-  getPreloadedAuthorization(action: string, resource: string): AuthorizationDecision | null;
-  getPreloadedFieldAccess(resource: string, fieldName: string): FieldAccessDecision | null;
-  setPreloadedDecisions(decisions: Record<string, AuthorizationDecision>): void;
-  setPreloadedFields(decisions: Record<string, FieldAccessDecision>): void;
+  getCachedAuthorization(
+    action: string,
+    resource: string,
+    context: PolicySecurityContext
+  ): AuthorizationDecision | null;
+  getCachedFieldAccess(
+    resource: string,
+    fieldName: string,
+    context: PolicySecurityContext
+  ): FieldAccessDecision | null;
+  clearCache(): void;
+}
+
+function contextKey(context: PolicySecurityContext): string {
+  return [
+    context.principalId,
+    context.tenantId,
+    context.legalEntityId ?? '',
+    context.companyId ?? '',
+    context.siteId ?? '',
+  ].join('|');
+}
+
+function authorizationKey(
+  action: string,
+  resource: string,
+  context: PolicySecurityContext
+): string {
+  return `${contextKey(context)}|${resource}|${action}`;
+}
+
+function fieldKey(resource: string, fieldName: string, context: PolicySecurityContext): string {
+  return `${contextKey(context)}|${resource}|${fieldName}`;
+}
+
+const deniedField = (fieldName: string): FieldAccessDecision => ({
+  fieldName,
+  readable: false,
+  writable: false,
+  masked: true,
+});
+
+function normalizeAuthorization(value: unknown): AuthorizationDecision | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const decision = value as Record<string, unknown>;
+  if (typeof decision.allowed !== 'boolean' || typeof decision.reason !== 'string') return null;
+  const matchedPolicy =
+    typeof decision.matched_policy === 'string'
+      ? decision.matched_policy
+      : typeof decision.matchedPolicy === 'string'
+        ? decision.matchedPolicy
+        : null;
+  return { allowed: decision.allowed, reason: decision.reason, matchedPolicy };
+}
+
+interface BackendFieldDecision {
+  allowed: boolean;
+  accessType: 'read' | 'write' | 'mask' | 'deny';
+  maskPattern: string | null;
+}
+
+function normalizeBackendField(value: unknown): BackendFieldDecision | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const decision = value as Record<string, unknown>;
+  const accessType =
+    typeof decision.access_type === 'string'
+      ? decision.access_type
+      : typeof decision.accessType === 'string'
+        ? decision.accessType
+        : null;
+  if (
+    typeof decision.allowed !== 'boolean' ||
+    !accessType ||
+    !['read', 'write', 'mask', 'deny'].includes(accessType)
+  ) {
+    return null;
+  }
+  return {
+    allowed: decision.allowed,
+    accessType: accessType as BackendFieldDecision['accessType'],
+    maskPattern:
+      typeof decision.mask_pattern === 'string'
+        ? decision.mask_pattern
+        : typeof decision.maskPattern === 'string'
+          ? decision.maskPattern
+          : null,
+  };
 }
 
 export class HttpPolicyAdapter implements PolicyPresentationAdapter {
-  private baseUrl: string;
-  private preloadedDecisions: Map<string, AuthorizationDecision> = new Map();
-  private preloadedFields: Map<string, FieldAccessDecision> = new Map();
+  private readonly authorizations = new Map<string, AuthorizationDecision>();
+  private readonly fields = new Map<string, FieldAccessDecision>();
 
-  constructor(baseUrl: string = '/api/v1/policy') {
-    this.baseUrl = baseUrl;
+  constructor(private readonly baseUrl = '/api/v1/policy') {}
+
+  public getCachedAuthorization(
+    action: string,
+    resource: string,
+    context: PolicySecurityContext
+  ): AuthorizationDecision | null {
+    return this.authorizations.get(authorizationKey(action, resource, context)) ?? null;
   }
 
-  public setPreloadedDecisions(decisions: Record<string, AuthorizationDecision>): void {
-    for (const [k, v] of Object.entries(decisions)) {
-      this.preloadedDecisions.set(k, v);
-    }
+  public getCachedFieldAccess(
+    resource: string,
+    fieldName: string,
+    context: PolicySecurityContext
+  ): FieldAccessDecision | null {
+    return this.fields.get(fieldKey(resource, fieldName, context)) ?? null;
   }
 
-  public setPreloadedFields(decisions: Record<string, FieldAccessDecision>): void {
-    for (const [k, v] of Object.entries(decisions)) {
-      this.preloadedFields.set(k, v);
-    }
-  }
-
-  public getPreloadedAuthorization(action: string, resource: string): AuthorizationDecision | null {
-    const key = `${resource}:${action}`;
-    return this.preloadedDecisions.get(key) || null;
-  }
-
-  public getPreloadedFieldAccess(resource: string, fieldName: string): FieldAccessDecision | null {
-    const key = `${resource}.${fieldName}`;
-    return this.preloadedFields.get(key) || null;
+  public clearCache(): void {
+    this.authorizations.clear();
+    this.fields.clear();
   }
 
   public async evaluateAuthorization(query: PolicyEvaluationQuery): Promise<AuthorizationDecision> {
-    const key = `${query.resourceType}:${query.action}`;
-    const preloaded = this.preloadedDecisions.get(key);
-    if (preloaded) return preloaded;
+    const key = authorizationKey(query.action, query.resourceType, query);
+    const cached = this.authorizations.get(key);
+    if (cached) return cached;
 
+    let decision: AuthorizationDecision;
     try {
-      const decision = await apiClient.post<AuthorizationDecision>(
-        `${this.baseUrl}/authorize`,
-        query
-      );
-      if (decision && typeof decision.allowed === 'boolean') {
-        this.preloadedDecisions.set(key, decision);
-        return decision;
-      }
+      const response = await apiClient.post<unknown>(`${this.baseUrl}/authorize`, {
+        tenant_id: query.tenantId,
+        subject_id: query.principalId,
+        action: query.action,
+        resource: query.resourceType,
+        company_id: query.companyId,
+        legal_entity_id: query.legalEntityId,
+        operating_site_id: query.siteId,
+        record_scope_id: query.resourceId,
+        attributes: query.context ?? {},
+      });
+      decision = normalizeAuthorization(response) ?? {
+        allowed: false,
+        reason: 'Deny by default: malformed policy response',
+        matchedPolicy: null,
+      };
     } catch {
-      // Backend policy engine unreachable
+      decision = {
+        allowed: false,
+        reason: 'Deny by default: policy service unavailable',
+        matchedPolicy: null,
+      };
     }
-
-    // Phase 4 default: Deny by default
-    return {
-      allowed: false,
-      reason: `Deny by default: no active policy decision grants ${query.resourceType}:${query.action}`,
-      matchedPolicy: null,
-    };
+    this.authorizations.set(key, decision);
+    return decision;
   }
 
   public async evaluateFieldAccess(
     resourceType: string,
     fieldName: string,
-    scope?: { tenantId?: string; companyId?: string; siteId?: string }
+    context: PolicySecurityContext
   ): Promise<FieldAccessDecision> {
-    const key = `${resourceType}.${fieldName}`;
-    const preloaded = this.preloadedFields.get(key);
-    if (preloaded) return preloaded;
+    const key = fieldKey(resourceType, fieldName, context);
+    const cached = this.fields.get(key);
+    if (cached) return cached;
 
+    let decision = deniedField(fieldName);
+    const baseQuery = {
+      tenant_id: context.tenantId,
+      subject_id: context.principalId,
+      resource_type: resourceType,
+      field_name: fieldName,
+      attributes: {
+        legal_entity_id: context.legalEntityId,
+        company_id: context.companyId,
+        operating_site_id: context.siteId,
+      },
+    };
     try {
-      const decision = await apiClient.post<FieldAccessDecision>(`${this.baseUrl}/field-access`, {
-        resource_type: resourceType,
-        field_name: fieldName,
-        scope,
-      });
-      if (decision) {
-        this.preloadedFields.set(key, decision);
-        return decision;
+      const [readResponse, writeResponse] = await Promise.all([
+        apiClient.post<unknown>(`${this.baseUrl}/field-access`, {
+          ...baseQuery,
+          requested_access: 'read',
+        }),
+        apiClient.post<unknown>(`${this.baseUrl}/field-access`, {
+          ...baseQuery,
+          requested_access: 'write',
+        }),
+      ]);
+      const read = normalizeBackendField(readResponse);
+      const write = normalizeBackendField(writeResponse);
+      if (read && write) {
+        decision = {
+          fieldName,
+          readable: read.allowed && read.accessType !== 'deny',
+          writable: write.allowed && write.accessType === 'write',
+          masked: read.allowed && read.accessType === 'mask',
+          maskPattern: read.maskPattern,
+        };
       }
     } catch {
-      // Backend policy engine unreachable
+      // A missing trusted Phase 4 decision remains fail closed.
     }
-
-    return {
-      fieldName,
-      readable: true,
-      writable: true,
-      masked: false,
-    };
+    this.fields.set(key, decision);
+    return decision;
   }
 
   public async evaluateApprovalAuthority(
     approvalType: string,
     amount: number,
     currency: string,
-    scope?: { tenantId?: string; companyId?: string; siteId?: string }
+    context: PolicySecurityContext
   ): Promise<ApprovalAuthorityDecision> {
     try {
-      const decision = await apiClient.post<ApprovalAuthorityDecision>(
-        `${this.baseUrl}/approval-limit`,
-        {
-          approval_type: approvalType,
-          amount,
-          currency,
-          scope,
+      const response = await apiClient.post<unknown>(`${this.baseUrl}/approval-limit`, {
+        tenant_id: context.tenantId,
+        subject_id: context.principalId,
+        action_type: approvalType,
+        amount,
+        currency,
+      });
+      if (typeof response === 'object' && response !== null) {
+        const value = response as Record<string, unknown>;
+        const hasAuthority =
+          typeof value.has_authority === 'boolean' ? value.has_authority : value.hasAuthority;
+        const limit =
+          typeof value.limit === 'number'
+            ? value.limit
+            : typeof value.limit === 'string'
+              ? Number(value.limit)
+              : Number.NaN;
+        if (
+          typeof hasAuthority === 'boolean' &&
+          Number.isFinite(limit) &&
+          typeof value.currency === 'string' &&
+          typeof value.reason === 'string'
+        ) {
+          return { hasAuthority, limit, currency: value.currency, reason: value.reason };
         }
-      );
-      if (decision) return decision;
+      }
     } catch {
-      // Backend policy engine unreachable
+      // A missing trusted Phase 4 decision remains fail closed.
     }
-
     return {
       hasAuthority: false,
       limit: 0,
       currency,
-      reason: 'Deny by default: no active approval policy for principal',
+      reason: 'Deny by default: approval policy unavailable',
     };
   }
 }
 
 export class MockPolicyAdapter implements PolicyPresentationAdapter {
-  private decisions: Map<string, AuthorizationDecision> = new Map();
-  private fields: Map<string, FieldAccessDecision> = new Map();
+  private readonly cache = new Map<string, AuthorizationDecision>();
+  private readonly fieldCache = new Map<string, FieldAccessDecision>();
 
   constructor(
-    initialDecisions?: Record<string, AuthorizationDecision>,
-    initialFields?: Record<string, FieldAccessDecision>
-  ) {
-    if (initialDecisions) {
-      for (const [k, v] of Object.entries(initialDecisions)) {
-        this.decisions.set(k, v);
-      }
-    }
-    if (initialFields) {
-      for (const [k, v] of Object.entries(initialFields)) {
-        this.fields.set(k, v);
-      }
-    }
+    private readonly decisions: Record<string, AuthorizationDecision> = {},
+    private readonly fieldDecisions: Record<string, FieldAccessDecision> = {}
+  ) {}
+
+  public clearCache(): void {
+    this.cache.clear();
+    this.fieldCache.clear();
   }
 
-  public setPreloadedDecisions(decisions: Record<string, AuthorizationDecision>): void {
-    for (const [k, v] of Object.entries(decisions)) {
-      this.decisions.set(k, v);
-    }
+  public getCachedAuthorization(
+    action: string,
+    resource: string,
+    context: PolicySecurityContext
+  ): AuthorizationDecision | null {
+    return this.cache.get(authorizationKey(action, resource, context)) ?? null;
   }
 
-  public setPreloadedFields(decisions: Record<string, FieldAccessDecision>): void {
-    for (const [k, v] of Object.entries(decisions)) {
-      this.fields.set(k, v);
-    }
-  }
-
-  public getPreloadedAuthorization(action: string, resource: string): AuthorizationDecision | null {
-    return this.decisions.get(`${resource}:${action}`) || null;
-  }
-
-  public getPreloadedFieldAccess(resource: string, fieldName: string): FieldAccessDecision | null {
-    return this.fields.get(`${resource}.${fieldName}`) || null;
+  public getCachedFieldAccess(
+    resource: string,
+    fieldName: string,
+    context: PolicySecurityContext
+  ): FieldAccessDecision | null {
+    return this.fieldCache.get(fieldKey(resource, fieldName, context)) ?? null;
   }
 
   public async evaluateAuthorization(query: PolicyEvaluationQuery): Promise<AuthorizationDecision> {
-    const key = `${query.resourceType}:${query.action}`;
-    const found = this.decisions.get(key);
-    if (found) return found;
-
-    return {
+    const decision = this.decisions[`${query.resourceType}:${query.action}`] ?? {
       allowed: false,
-      reason: `Deny by default: no active policy decision grants ${query.resourceType}:${query.action}`,
+      reason: 'Deny by default: no mock decision',
       matchedPolicy: null,
     };
+    this.cache.set(authorizationKey(query.action, query.resourceType, query), decision);
+    return decision;
   }
 
   public async evaluateFieldAccess(
     resourceType: string,
-    fieldName: string
+    fieldName: string,
+    context: PolicySecurityContext
   ): Promise<FieldAccessDecision> {
-    const key = `${resourceType}.${fieldName}`;
-    const found = this.fields.get(key);
-    if (found) return found;
-
-    return {
-      fieldName,
-      readable: true,
-      writable: true,
-      masked: false,
-    };
+    const decision = this.fieldDecisions[`${resourceType}.${fieldName}`] ?? deniedField(fieldName);
+    this.fieldCache.set(fieldKey(resourceType, fieldName, context), decision);
+    return decision;
   }
 
   public async evaluateApprovalAuthority(
     _approvalType: string,
-    amount: number,
+    _amount: number,
     currency: string
   ): Promise<ApprovalAuthorityDecision> {
     return {
-      hasAuthority: amount <= 10000,
-      limit: 10000,
+      hasAuthority: false,
+      limit: 0,
       currency,
-      reason: amount <= 10000 ? 'Within approved threshold' : 'Exceeds approval delegation limit',
+      reason: 'Deny by default: no mock approval decision',
     };
   }
 }

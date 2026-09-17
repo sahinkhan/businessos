@@ -29,17 +29,22 @@ export interface ActiveScope {
   tenantName: string;
   groupId: string;
   groupName: string;
+  legalEntityId?: string | null;
   companyId: string;
   companyName: string;
   siteId: string;
   siteName: string;
 }
 
+export type ScopeStatus = 'idle' | 'loading' | 'ready' | 'unavailable' | 'switching';
+
 export interface ScopeContextValue {
-  scope: ActiveScope;
+  scope: ActiveScope | null;
   tenants: TenantScope[];
-  setTenant: (tenantId: string) => void;
-  setCompany: (companyId: string) => void;
-  setSite: (siteId: string) => void;
-  setScope: (scope: Partial<ActiveScope>) => void;
+  status: ScopeStatus;
+  error: string | null;
+  setTenant: (tenantId: string) => Promise<void>;
+  setCompany: (companyId: string) => Promise<void>;
+  setSite: (siteId: string) => Promise<void>;
+  setScope: (scope: Partial<ActiveScope>) => Promise<void>;
 }

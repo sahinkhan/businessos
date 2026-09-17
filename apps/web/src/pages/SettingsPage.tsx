@@ -120,7 +120,10 @@ export const SettingsPage: React.FC = () => {
             </p>
             <FormActions
               onSubmit={() =>
-                toast.info('Security Audit', 'No policy violations detected on current token.')
+                toast.info(
+                  'Security Audit',
+                  'No policy violations detected for the current session.'
+                )
               }
               submitLabel="Verify Token Validity"
             />

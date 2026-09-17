@@ -20,8 +20,8 @@ credential lifecycle that is outside Phase 4.5 and the accepted federation-first
 BusinessOS will use a backend-for-frontend web-session boundary for the authenticated enterprise
 backoffice:
 
-1. Authentication providers use OIDC Authorization Code with PKCE. A future SAML adapter may
-   terminate into the same boundary.
+1. Authentication providers use OIDC Authorization Code with PKCE using the `S256` challenge
+   method. A future SAML adapter may terminate into the same boundary.
 2. The backend performs authorization-code exchange and provider-token handling.
 3. Existing Identity federation and membership contracts resolve the provider identity to the
    authoritative `PrincipalIdentity`.
@@ -42,7 +42,7 @@ The version 1 browser HTTP surface is:
 ```text
 GET  /api/v1/auth/session
 POST /api/v1/auth/login/start
-GET  /api/v1/auth/callback
+GET  /api/v1/auth/callback       # OIDC callback
 POST /api/v1/auth/logout
 ```
 
@@ -52,8 +52,14 @@ The detailed application, HTTP, provider, cookie, CSRF, and failure contracts ar
 ## Security properties
 
 - Authentication credentials and provider tokens never enter browser storage or frontend logs.
-- Login state, nonce, PKCE verifier, return location, and callback state are bound to one
-  short-lived authentication transaction and consumed once.
+- Login state, nonce, PKCE verifier and `S256` challenge, return location, and callback state are
+  transaction-specific. The server binds each short-lived authorization transaction to the
+  browser/user agent that initiated it through a separate opaque browser binding tracked by the
+  server.
+- The callback atomically consumes the authorization transaction exactly once. Missing,
+  mismatched, expired, already-consumed, or replayed browser bindings fail closed. Transient
+  authorization state is cleared after every terminal callback outcome, whether authentication
+  succeeds or fails.
 - Session identifiers contain at least 256 bits of cryptographic randomness, are rotated after
   authentication and security-sensitive changes, and are stored server-side only as a one-way
   digest or equivalent non-recoverable lookup key.
@@ -72,6 +78,12 @@ The web-session application contract is owned by the Identity foundation as an a
 contract. Provider-specific OIDC and future SAML adapters remain behind that contract. The
 protected framework continues to own HTTP dispatch and trusted request-context integration; it
 does not acquire Identity business semantics.
+
+`GET /api/v1/auth/callback` is specifically the OIDC callback. A future SAML HTTP-POST assertion
+consumer service may use a separate Identity-owned endpoint. After the certified SAML adapter
+validates the assertion, that endpoint must supply the resulting `PrincipalIdentity` to the same
+web-session creation boundary. It must provide equivalent browser-transaction correlation,
+assertion replay protection, sanitized `RelayState`, and local-session revocation semantics.
 
 The contract is versioned independently as `foundation.identity.web-session.v1`. Breaking changes
 require a new contract version and the compatibility process from ADR-007. Existing Phase 2

@@ -32,7 +32,7 @@ Conceptual operations:
 
 ```text
 start_login(request) -> LoginStart
-complete_login(callback) -> WebSession
+complete_oidc_login(callback) -> WebSession
 get_session(session_id) -> SessionProjection
 logout(session_id) -> None
 resolve_request(session_id) -> RequestContext
@@ -52,6 +52,27 @@ revoke_principal(tenant_id, principal_id) -> None
 Implementations must provide atomic expiry, rotation, and revocation behavior. Redis is the normal
 production provider. An in-memory provider is test-only and must never be selected silently in
 production.
+
+## Authorization transaction
+
+Every OIDC authorization request has a short-lived, single-use server-side transaction. Its
+record contains transaction-specific `state`, OIDC `nonce`, PKCE verifier and `S256` challenge,
+provider and expected issuer, sanitized return path, issued/expiry instants, and a non-recoverable
+digest of a separate opaque browser-binding value.
+
+`POST /api/v1/auth/login/start` supplies that browser binding in a transient cookie named
+`__Host-businessos_auth_txn`. The cookie is `Secure`, `HttpOnly`, `SameSite=Lax`, has `Path=/`, has
+no `Domain` attribute, and expires no later than the authorization transaction. Its value contains
+no provider, tenant, principal, return-path, nonce, verifier, or credential data. It is distinct
+from the authenticated web-session cookie.
+
+The OIDC callback must compare the transient browser binding to the transaction record and consume
+the transaction atomically. Exactly one callback may obtain and use its contents. Missing,
+mismatched, expired, already-consumed, or replayed transactions or bindings fail closed. The
+server deletes the transaction's usable state and expires the transient cookie after every
+terminal callback outcome, including provider denial and validation, exchange, membership, or
+session-creation failure. A consumed marker may be retained only for the bounded transaction TTL
+to detect and audit replay without retaining verifier or credential material.
 
 ## Session record
 
@@ -130,23 +151,27 @@ return `401` and expire the browser cookie.
 
 Accepts an optional validated same-origin application `return_to` path and an optional configured
 provider identifier. It creates a short-lived, single-use authorization transaction containing
-state, nonce, PKCE verifier, provider, and sanitized return path. It returns `200` with the
-authorization URL and transaction expiry. The browser performs a top-level navigation to that URL.
+transaction-specific state and nonce, a PKCE verifier and `S256` challenge, provider and expected
+issuer, sanitized return path, and the server-tracked browser-binding digest. It sets the transient
+authorization-transaction cookie and returns `200` with the authorization URL and transaction
+expiry. The browser performs a top-level navigation to that URL.
 
 Unknown providers, unsafe return paths, invalid input, or unavailable federation configuration
 fail without creating a session. The endpoint must be rate limited and must not reveal whether a
 principal exists.
 
-### `GET /api/v1/auth/callback`
+### `GET /api/v1/auth/callback` — OIDC callback
 
-Validates and consumes the authorization transaction, exchanges the authorization code on the
-backend, validates issuer/audience/signature/nonce/time claims, and resolves the existing
-`PrincipalIdentity` and effective membership. It then creates and rotates the opaque session,
-sets the cookie, and responds with `303` to the sanitized application path.
+Validates the transaction-specific state, nonce, PKCE `S256` material, expected issuer, and
+browser binding and atomically consumes the authorization transaction exactly once. It exchanges
+the authorization code on the backend, validates issuer/audience/signature/nonce/time claims, and
+resolves the existing `PrincipalIdentity` and effective membership. It then creates and rotates
+the opaque session, sets the cookie, and responds with `303` to the sanitized application path.
 
-State mismatch, replay, expired transaction, invalid provider response, inactive tenant, or
-ineffective membership fails closed. No provider error details or tokens are reflected to the
-browser.
+Missing or mismatched browser binding, state mismatch, replay, an expired or already-consumed
+transaction, invalid provider response, inactive tenant, or ineffective membership fails closed.
+Transient authorization state and its cookie are cleared after every terminal success or failure.
+No provider error details or tokens are reflected to the browser.
 
 ### `POST /api/v1/auth/logout`
 
@@ -162,8 +187,23 @@ projection supplies a per-session token for an `X-CSRF-Token` header. The backen
 to the current session generation and also validates same-origin `Origin`/`Sec-Fetch-Site` signals
 where available. Session rotation invalidates the previous CSRF token.
 
-Login callback integrity is provided by single-use state, nonce, and PKCE validation. Cookie
-attributes supplement these checks; they are not the sole CSRF defense.
+OIDC callback integrity is provided by the transaction-specific state, nonce, PKCE `S256`
+validation, and the short-lived server-tracked browser binding. The transaction is consumed
+atomically once. Cookie attributes supplement these checks; they are not the sole CSRF defense.
+
+## Future SAML compatibility
+
+`GET /api/v1/auth/callback` is the OIDC callback. Future SAML HTTP-POST/ACS support may add a
+separate Identity-owned endpoint; it is not part of the Phase 4.5 implementation. The ACS must use
+the certified `SAMLAssertionValidator` adapter so raw SAML does not reach application or domain
+code. The validated `PrincipalIdentity` then enters the same `WebSessionApplicationService`
+session-creation boundary used by OIDC.
+
+The SAML flow must provide equivalent short-lived browser-transaction correlation, atomic
+single-use consumption, assertion replay protection, sanitized same-origin `RelayState`, and
+clearing of transient state after every terminal outcome. Provider single logout may be supported
+by its adapter, but it must never delay or prevent immediate revocation of the local BusinessOS
+web session.
 
 ## Trusted request resolution
 
@@ -239,7 +279,8 @@ The `/api` base is composed exactly once with versioned adapter paths.
 After ADR approval, implementation must include:
 
 - provider-contract unit and conformance tests
-- OIDC state/nonce/PKCE success, expiry, replay, and mismatch tests
+- OIDC browser-binding plus state/nonce/PKCE `S256` success, expiry, atomic consumption, replay,
+  mismatch, and terminal-cleanup tests
 - cookie attribute, rotation, expiry, revocation, and CSRF tests
 - active-tenant and effective-membership negative tests
 - cross-tenant and cross-principal session-isolation tests

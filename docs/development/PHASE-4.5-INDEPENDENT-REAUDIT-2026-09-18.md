@@ -119,4 +119,3 @@ These regression tests intentionally remain failing. Do not describe the checkou
 Fix the three P1 defects, close the three P2 acceptance gaps, and run the added regressions plus the existing suite. Verify startup, successful login, scope selection, concurrent authenticated requests, and logout against the composed frontend and backend. Re-run infrastructure checks on the required runtime before a fresh certification decision.
 
 This audit identifies confirmed gaps; it is not an assertion that unexercised deployment or browser scenarios are defect-free. No merge, certification tag, or Phase 5 work was performed.
-

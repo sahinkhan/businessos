@@ -1,0 +1,21 @@
+# Current repository ownership maps the verified GitHub owner to distinct governance roles.
+# Role responsibilities and multi-role review rules are defined in docs/governance/MAINTAINERS.md.
+
+* @sahinkhan
+
+/platform/ @sahinkhan
+/foundations/identity/ @sahinkhan
+/foundations/organization/ @sahinkhan
+/foundations/policy/ @sahinkhan
+/foundations/**/migrations/** @sahinkhan
+/foundations/**/contracts.py @sahinkhan
+/examples/proof_module/ @sahinkhan
+/apps/web/ @sahinkhan
+
+/docs/architecture/ @sahinkhan
+/docs/adr/ @sahinkhan
+/docs/governance/ @sahinkhan
+/docs/roadmap/ @sahinkhan
+
+/.github/workflows/ @sahinkhan
+/scripts/ @sahinkhan

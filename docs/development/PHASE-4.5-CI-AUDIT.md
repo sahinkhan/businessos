@@ -5,10 +5,10 @@ Audited `main` baseline: `3e551b8922397e03636db8d7ed7cf85d2477db83`.
 Accepted architecture checkpoint: `20e2c32d8a25e7959fcf474f70a77f5e8f96646e` on
 `fix/phase4.5-certification`.
 
-Status: **REMEDIATION IN PROGRESS — EXACT-HEAD CI REQUIRED**. The six findings from the
-2026-09-18 independent re-audit have local regression coverage and remediation. Exact-head PR CI
-and the final read-only review remain required before the branch can return to **READY FOR
-INDEPENDENT RE-AUDIT**. PR #9 must not be merged or certified without separate authorization.
+Status: **READY FOR INDEPENDENT RE-AUDIT**. The six findings from the 2026-09-18 independent
+re-audit have regression coverage and remediation. Exact implementation-head PR CI is green and
+the final read-only review found no remaining P1/P2 blocker in the authorized scope. PR #9 must not
+be merged or certified without separate authorization.
 Historical tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are unchanged.
 `v0.4.7-ui-foundation` must not be created in this step.
 
@@ -42,7 +42,7 @@ Local frontend gates pass: TypeScript, ESLint, Prettier, 19 test files / 59 test
 accessibility tests, production build, and bundle budget. Focused backend session tests pass 11/11,
 and repository Ruff formatting/lint pass. This workstation has Python 3.12 rather than the required
 Python 3.13 and no running Docker daemon, so full Python unit/static/provider/deployment evidence is
-deferred to exact-head GitHub CI. No migration or public certified contract changed.
+supplied by exact-head GitHub CI. No migration or public certified contract changed.
 
 ## ADR-009 implementation
 
@@ -148,13 +148,13 @@ committed-receipt polling boundary, so handler completion is not mistaken for tr
 ## Exact-head PR CI evidence
 
 GitHub Actions run
-[`35270596792`](https://github.com/sahinkhan/businessos/actions/runs/35270596792) executed for PR #9
-head `b363359d7bc11596e22bc027b248070b7219b325` and completed successfully.
+[`35304332034`](https://github.com/sahinkhan/businessos/actions/runs/35304332034) executed for PR #9
+implementation head `7fed8d8f99e39e11a2da624fe144c832eba8a97e` and completed successfully.
 
 | Gate | Result |
 | --- | --- |
 | `web-quality` | PASS |
-| Frontend typecheck, lint, format, tests, accessibility, build, bundle budget, and audit | PASS |
+| Frontend typecheck, lint, format, 59 tests, accessibility, build, and bundle budget | PASS |
 | `python-quality` | PASS |
 | Ruff format and lint | PASS |
 | Static typing | PASS |
@@ -176,7 +176,7 @@ The frontend validation uses the committed lockfile:
 | `npm run typecheck` | PASS |
 | `npm run lint` | PASS, zero warnings |
 | `npm run format:check` | PASS |
-| `npm test` | PASS, 17 files / 51 tests |
+| `npm test` | PASS, 19 files / 59 tests |
 | `npm run test:a11y` | PASS, 6 tests |
 | `npm run build` | PASS |
 | `npm run bundle:check` | PASS, within configured budget |
@@ -190,8 +190,7 @@ Backend validation available in the local Python 3.12 environment:
 | Ruff lint | PASS |
 | Focused mypy for all changed Python | PASS, 18 source files |
 | Focused Pyright for all changed production Python | PASS, zero diagnostics |
-| Web-session unit tests | PASS, 9 tests |
-| Whole-suite collection | PASS, 237 tests |
+| Focused web-session unit tests | PASS, 11 tests |
 | Provider integration collection | PASS; skipped locally because CI services are absent |
 | Real ASGI integration collection | PASS; execution requires the project Python 3.13 runtime |
 

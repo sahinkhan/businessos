@@ -73,7 +73,7 @@ export class ApiClient {
     const method = (customOptions.method ?? 'GET').toUpperCase();
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
       const csrfToken = this.csrfTokenProvider?.();
-      if (csrfToken) headers.set('X-CSRF-Token', csrfToken);
+      if (csrfToken && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', csrfToken);
     }
 
     const response = await fetch(url, {

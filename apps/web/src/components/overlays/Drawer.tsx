@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 import { IconButton } from '../actions/IconButton';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export type DrawerPlacement = 'left' | 'right' | 'bottom';
 
@@ -23,10 +24,16 @@ export const Drawer: React.FC<DrawerProps> = ({
   footer,
   placement = 'right',
   width = '380px',
-  closeLabel = 'Close',
+  closeLabel,
 }) => {
+  const { t } = useI18nText();
   const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
   const titleId = useId();
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!isOpen) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
@@ -39,7 +46,7 @@ export const Drawer: React.FC<DrawerProps> = ({
       );
     (focusable()[0] ?? panel)?.focus();
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
       if (e.key === 'Tab') {
         const elements = focusable();
         if (elements.length === 0) {
@@ -59,7 +66,7 @@ export const Drawer: React.FC<DrawerProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       previouslyFocused?.focus();
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -116,7 +123,7 @@ export const Drawer: React.FC<DrawerProps> = ({
           </div>
           <IconButton
             icon={<X size={18} />}
-            aria-label={closeLabel}
+            aria-label={closeLabel ?? t('common.close')}
             variant="ghost"
             size="sm"
             onClick={onClose}

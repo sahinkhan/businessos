@@ -2,6 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 import { SearchInput } from '../inputs/SearchInput';
 import { Button } from '../actions/Button';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface FilterChip {
   id: string;
@@ -26,6 +27,7 @@ export const DataTableFilterToolbar: React.FC<DataTableFilterToolbarProps> = ({
   onClearAllFilters,
   children,
 }) => {
+  const { t } = useI18nText();
   return (
     <div style={{ marginBottom: '12px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -33,7 +35,7 @@ export const DataTableFilterToolbar: React.FC<DataTableFilterToolbarProps> = ({
           <SearchInput
             value={searchQuery}
             onSearchChange={onSearchChange}
-            placeholder="Filter records..."
+            placeholder={t('table.filter_records')}
           />
         </div>
         {children}
@@ -49,7 +51,7 @@ export const DataTableFilterToolbar: React.FC<DataTableFilterToolbarProps> = ({
           }}
         >
           <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-            Active filters:
+            {t('table.active_filters')}
           </span>
           {activeFilters.map((chip) => (
             <span
@@ -72,7 +74,7 @@ export const DataTableFilterToolbar: React.FC<DataTableFilterToolbarProps> = ({
               <button
                 type="button"
                 onClick={() => onRemoveFilter(chip.id)}
-                aria-label={`Remove filter ${chip.label}`}
+                aria-label={t('table.remove_filter', { label: chip.label })}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
               >
                 <X size={12} />
@@ -85,7 +87,7 @@ export const DataTableFilterToolbar: React.FC<DataTableFilterToolbarProps> = ({
             onClick={onClearAllFilters}
             style={{ padding: '2px 6px', fontSize: '0.75rem' }}
           >
-            Clear all
+            {t('common.clear_all')}
           </Button>
         </div>
       )}

@@ -4,15 +4,22 @@ import { queryCache } from '../../src/api/queryCache';
 import { AuthProvider, useAuth } from '../../src/auth/AuthContext';
 import { AuthAdapter, HttpAuthAdapter, MockAuthAdapter } from '../../src/auth/authAdapter';
 import { TEST_SESSION } from '../fixtures/security';
+import { ApiError } from '../../src/api/types';
+import { MemoryRouter } from 'react-router-dom';
+import { LoginPage } from '../../src/auth/LoginPage';
+import { I18nProvider } from '../../src/i18n/I18nContext';
 
 const Consumer = () => {
-  const { user, session, isAuthenticated, isLoading, logout, reloadSession } = useAuth();
+  const { user, session, isAuthenticated, isLoading, status, error, logout, reloadSession } =
+    useAuth();
   return (
     <div>
       <span data-testid="status">{isAuthenticated ? 'authenticated' : 'unauthenticated'}</span>
       <span data-testid="user">{user?.email ?? 'none'}</span>
       <span data-testid="credential-state">{session ? 'safe-session' : 'none'}</span>
       <span data-testid="loading">{String(isLoading)}</span>
+      <span data-testid="auth-status">{status}</span>
+      <span data-testid="auth-error">{error ?? 'none'}</span>
       <button onClick={() => void logout()}>Logout</button>
       <button onClick={() => void reloadSession()}>Reload</button>
     </div>
@@ -100,8 +107,81 @@ describe('backend-authoritative authentication boundary', () => {
 
     await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'));
     expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated');
+    expect(screen.getByTestId('auth-status')).toHaveTextContent('service_unavailable');
     fireEvent.click(screen.getByText('Reload'));
     await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent('authenticated'));
+    expect(adapter.getSession).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['500 response', new ApiError(500, { code: 'unavailable', message: 'Session unavailable' })],
+    ['network failure', new TypeError('Failed to fetch')],
+    ['timeout', new DOMException('Timed out', 'TimeoutError')],
+    ['malformed response', new Error('Malformed current-session response')],
+  ])('exposes a recoverable state for %s', async (_label, failure) => {
+    const adapter: AuthAdapter = {
+      getSession: vi.fn().mockRejectedValue(failure),
+      startLogin: vi.fn(),
+      logout: vi.fn(),
+    };
+    render(
+      <AuthProvider adapter={adapter}>
+        <Consumer />
+      </AuthProvider>
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-status')).toHaveTextContent('service_unavailable')
+    );
+    expect(screen.getByTestId('status')).toHaveTextContent('unauthenticated');
+    expect(screen.getByTestId('auth-error')).not.toHaveTextContent('none');
+  });
+
+  it('recovers from a service failure to a trusted unauthenticated response', async () => {
+    const adapter: AuthAdapter = {
+      getSession: vi
+        .fn()
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        .mockResolvedValueOnce(null),
+      startLogin: vi.fn(),
+      logout: vi.fn(),
+    };
+    render(
+      <AuthProvider adapter={adapter}>
+        <Consumer />
+      </AuthProvider>
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-status')).toHaveTextContent('service_unavailable')
+    );
+    fireEvent.click(screen.getByText('Reload'));
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-status')).toHaveTextContent('unauthenticated')
+    );
+    expect(adapter.getSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('presents a production retry control and recovers when the service returns', async () => {
+    const adapter: AuthAdapter = {
+      getSession: vi
+        .fn()
+        .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+        .mockResolvedValueOnce(TEST_SESSION),
+      startLogin: vi.fn(),
+      logout: vi.fn(),
+    };
+    render(
+      <MemoryRouter>
+        <I18nProvider>
+          <AuthProvider adapter={adapter}>
+            <LoginPage />
+          </AuthProvider>
+        </I18nProvider>
+      </MemoryRouter>
+    );
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    expect(screen.getByText('Session service unavailable')).toBeInTheDocument();
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.queryByText('Session service unavailable')).toBeNull());
     expect(adapter.getSession).toHaveBeenCalledTimes(2);
   });
 });

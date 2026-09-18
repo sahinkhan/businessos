@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface SwitchProps {
   checked: boolean;
@@ -15,6 +16,7 @@ export const Switch: React.FC<SwitchProps> = ({
   disabled,
   'aria-label': ariaLabel,
 }) => {
+  const { t } = useI18nText();
   return (
     <label
       style={{
@@ -30,7 +32,7 @@ export const Switch: React.FC<SwitchProps> = ({
         type="button"
         role="switch"
         aria-checked={checked}
-        aria-label={ariaLabel || (typeof label === 'string' ? label : 'Toggle')}
+        aria-label={ariaLabel || (typeof label === 'string' ? label : t('controls.toggle'))}
         disabled={disabled}
         onClick={() => onChange(!checked)}
         style={{

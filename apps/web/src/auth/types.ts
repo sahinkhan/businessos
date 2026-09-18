@@ -39,11 +39,25 @@ export interface AuthState {
   session: SessionInfo | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  status:
+    | 'initializing'
+    | 'authenticated'
+    | 'unauthenticated'
+    | 'service_unavailable'
+    | 'authorization_denied';
+  error: string | null;
 }
 
 export interface AuthContextValue extends AuthState {
+  runSecurityTransition: SecurityTransitionRunner;
   login: (returnTo?: string) => Promise<void>;
   logout: () => Promise<void>;
   reloadSession: () => Promise<void>;
-  updateSessionSecurity: (scope: SessionScope, csrfToken: string, expiresAt: number) => void;
+  updateSessionSecurity: (
+    scope: SessionScope,
+    csrfToken: string,
+    expiresAt: number,
+    advanceContext?: boolean
+  ) => void;
 }
+import type { SecurityTransitionRunner } from '../api/securityTransition';

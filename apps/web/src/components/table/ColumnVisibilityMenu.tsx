@@ -3,6 +3,7 @@ import { Columns } from 'lucide-react';
 import { Button } from '../actions/Button';
 import { Checkbox } from '../inputs/Checkbox';
 import { ColumnDef } from './types';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface ColumnVisibilityMenuProps<T> {
   columns: ColumnDef<T>[];
@@ -15,6 +16,7 @@ export const ColumnVisibilityMenu = <T,>({
   visibility,
   onChange,
 }: ColumnVisibilityMenuProps<T>) => {
+  const { t } = useI18nText();
   const [isOpen, setIsOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -38,9 +40,9 @@ export const ColumnVisibilityMenu = <T,>({
         size="sm"
         leftIcon={<Columns size={14} />}
         onClick={() => setIsOpen(!isOpen)}
-        aria-label="Columns"
+        aria-label={t('table.columns')}
       >
-        Columns
+        {t('table.columns')}
       </Button>
       {isOpen && (
         <div
@@ -66,7 +68,7 @@ export const ColumnVisibilityMenu = <T,>({
               marginBottom: '6px',
             }}
           >
-            TOGGLE COLUMNS
+            {t('table.toggle_columns')}
           </div>
           {columns.map((col) => {
             const isVisible = visibility[col.id] ?? true;

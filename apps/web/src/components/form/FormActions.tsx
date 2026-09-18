@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button } from '../actions/Button';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface FormActionsProps {
   onSubmit?: () => void;
@@ -17,13 +18,14 @@ export const FormActions: React.FC<FormActionsProps> = ({
   onSubmit,
   onCancel,
   onReset,
-  submitLabel = 'Save changes',
-  cancelLabel = 'Cancel',
-  resetLabel = 'Reset',
+  submitLabel,
+  cancelLabel,
+  resetLabel,
   isSubmitting = false,
   isValid = true,
   align = 'right',
 }) => {
+  const { t } = useI18nText();
   return (
     <div
       style={{
@@ -39,13 +41,13 @@ export const FormActions: React.FC<FormActionsProps> = ({
     >
       {onReset && (
         <Button variant="ghost" size="md" onClick={onReset} disabled={isSubmitting}>
-          {resetLabel}
+          {resetLabel ?? t('common.reset')}
         </Button>
       )}
       <div style={{ display: 'flex', gap: '8px' }}>
         {onCancel && (
           <Button variant="secondary" size="md" onClick={onCancel} disabled={isSubmitting}>
-            {cancelLabel}
+            {cancelLabel ?? t('common.cancel')}
           </Button>
         )}
         <Button
@@ -56,7 +58,7 @@ export const FormActions: React.FC<FormActionsProps> = ({
           isLoading={isSubmitting}
           disabled={!isValid || isSubmitting}
         >
-          {submitLabel}
+          {submitLabel ?? t('common.save_changes')}
         </Button>
       </div>
     </div>

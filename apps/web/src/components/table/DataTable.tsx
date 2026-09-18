@@ -8,6 +8,7 @@ import { DataTablePagination } from './DataTablePagination';
 import { ColumnVisibilityMenu } from './ColumnVisibilityMenu';
 import { DensityToggle } from './DensityToggle';
 import { DataTableProps, ColumnDef, TableDensity } from './types';
+import { useI18nText } from '../../i18n/I18nContext';
 
 const densityPadding: Record<TableDensity, { cell: string; height: string }> = {
   compact: { cell: '4px 10px', height: '32px' },
@@ -33,10 +34,11 @@ export const DataTable = <T,>({
   onDensityChange,
   columnVisibility: controlledVisibility,
   onColumnVisibilityChange,
-  emptyTitle = 'No records found',
-  emptyDescription = 'There are no items to display matching your criteria.',
+  emptyTitle,
+  emptyDescription,
   onRowClick,
 }: DataTableProps<T>) => {
+  const { t, tp } = useI18nText();
   const [internalDensity, setInternalDensity] = useState<TableDensity>('normal');
   const [internalVisibility, setInternalVisibility] = useState<Record<string, boolean>>({});
 
@@ -126,13 +128,13 @@ export const DataTable = <T,>({
                   color: 'var(--color-status-info)',
                 }}
               >
-                {selectedIds.length} item{selectedIds.length > 1 ? 's' : ''} selected
+                {tp('table.selected', selectedIds.length)}
               </span>
               {bulkActions}
             </div>
           ) : (
             <span style={{ fontSize: '0.8125rem', color: 'var(--color-text-muted)' }}>
-              {data.length} total displayed
+              {tp('table.displayed', data.length)}
             </span>
           )}
         </div>
@@ -173,7 +175,7 @@ export const DataTable = <T,>({
                     checked={isAllSelected}
                     indeterminate={isPartiallySelected}
                     onChange={toggleSelectAll}
-                    aria-label="Select all rows"
+                    aria-label={t('table.select_all')}
                   />
                 </th>
               )}
@@ -206,7 +208,7 @@ export const DataTable = <T,>({
                       <button
                         type="button"
                         onClick={() => handleHeaderClick(col)}
-                        aria-label={`Sort by ${col.header}`}
+                        aria-label={t('table.sort_by', { label: String(col.header) })}
                         style={{
                           display: 'inline-flex',
                           alignItems: 'center',
@@ -290,7 +292,10 @@ export const DataTable = <T,>({
             ) : data.length === 0 ? (
               <tr>
                 <td colSpan={visibleColumns.length + (hasSelection ? 1 : 0)}>
-                  <EmptyState title={emptyTitle} description={emptyDescription} />
+                  <EmptyState
+                    title={emptyTitle ?? t('table.empty_title')}
+                    description={emptyDescription ?? t('table.empty_body')}
+                  />
                 </td>
               </tr>
             ) : (
@@ -324,7 +329,7 @@ export const DataTable = <T,>({
                         <Checkbox
                           checked={isSelected}
                           onChange={(e) => toggleSelectRow(rowKey, e as any)}
-                          aria-label={`Select row ${index + 1}`}
+                          aria-label={t('table.select_row', { row: index + 1 })}
                         />
                       </td>
                     )}

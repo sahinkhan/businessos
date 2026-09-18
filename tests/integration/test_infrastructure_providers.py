@@ -3,7 +3,7 @@ import hashlib
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 import boto3
@@ -16,6 +16,7 @@ from businessos_identity import (
     RedisAuthorizationTransactionStore,
     RedisWebSessionStore,
     WebSession,
+    web_sessions,
 )
 from redis.asyncio import Redis, from_url
 
@@ -28,6 +29,22 @@ def _required_env(name: str) -> str:
     if value is None:
         pytest.skip(f"{name} is not configured")
     return value
+
+
+class _DelayedTouchRedis:
+    def __init__(self, delegate: Redis) -> None:
+        self._delegate = delegate
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._delegate, name)
+
+    async def eval(self, script: str, *args: object) -> object:
+        if "candidate_seen < current_seen" in script:
+            self.entered.set()
+            await self.release.wait()
+        return await cast(Any, self._delegate).eval(script, *args)
 
 
 @pytest.mark.integration
@@ -117,6 +134,84 @@ async def test_redis_web_sessions_rotate_revoke_and_consume_transactions_atomica
         with pytest.raises(BusinessOSError) as replay:
             await transactions.consume(transaction.state, "binding")
         assert replay.value.status_code == 409
+    finally:
+        keys = [key async for key in redis.scan_iter(match=f"{namespace}*")]
+        if keys:
+            await redis.delete(*keys)
+        await redis.aclose()
+
+
+@pytest.mark.integration
+@pytest.mark.providers
+@pytest.mark.asyncio
+async def test_redis_session_activity_is_monotonic_and_loses_to_rotation_and_revocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = f"test:web-session-monotonic:{uuid4().hex}"
+    factory = cast(Callable[..., Redis], from_url)
+    redis = factory(_required_env("BOS_TEST_REDIS_URL"), decode_responses=False)
+    sessions = RedisWebSessionStore(redis, namespace=namespace)
+    now = datetime.now(UTC)
+    principal = PrincipalIdentity(
+        tenant_id=uuid4(),
+        principal_id=uuid4(),
+        principal_type="user",
+        authentication_strength=AuthenticationStrength.MFA,
+    )
+
+    def session(generation: int) -> WebSession:
+        return WebSession(
+            generation=generation,
+            principal=principal,
+            provider_id="test",
+            issued_at=now,
+            last_seen_at=now,
+            idle_expires_at=now + timedelta(minutes=10),
+            absolute_expires_at=now + timedelta(hours=1),
+            csrf_token=uuid4().hex,
+            active_scope=ActiveScope(tenant_id=principal.tenant_id),
+        )
+
+    try:
+        handle = await sessions.create(session(1))
+        newer_time = now + timedelta(seconds=20)
+        monkeypatch.setattr(web_sessions, "_now", lambda: newer_time)
+        newer = await sessions.touch(handle, 1, newer_time + timedelta(minutes=20))
+        assert newer is not None
+        ttl_after_newer = await redis.ttl(sessions._key(handle))
+
+        older_time = now + timedelta(seconds=10)
+        monkeypatch.setattr(web_sessions, "_now", lambda: older_time)
+        stale = await sessions.touch(handle, 1, older_time + timedelta(minutes=20))
+        assert stale is not None
+        final = await sessions.get(handle)
+        assert final is not None
+        assert final.last_seen_at == newer.last_seen_at
+        assert final.idle_expires_at == newer.idle_expires_at
+        assert await redis.ttl(sessions._key(handle)) >= ttl_after_newer - 2
+
+        delayed_redis = _DelayedTouchRedis(redis)
+        delayed_sessions = RedisWebSessionStore(cast(Redis, delayed_redis), namespace=namespace)
+        monkeypatch.setattr(web_sessions, "_now", lambda: newer_time + timedelta(seconds=5))
+        touching = asyncio.create_task(
+            delayed_sessions.touch(handle, 1, newer_time + timedelta(minutes=20))
+        )
+        await delayed_redis.entered.wait()
+        rotated = await sessions.rotate(handle, session(2))
+        delayed_redis.release.set()
+        assert await touching is None
+        assert await sessions.get(handle) is None
+
+        revoke_redis = _DelayedTouchRedis(redis)
+        revoke_sessions = RedisWebSessionStore(cast(Redis, revoke_redis), namespace=namespace)
+        touching_revoked = asyncio.create_task(
+            revoke_sessions.touch(rotated, 2, newer_time + timedelta(minutes=20))
+        )
+        await revoke_redis.entered.wait()
+        await sessions.revoke(rotated, "test-revocation")
+        revoke_redis.release.set()
+        assert await touching_revoked is None
+        assert await sessions.get(rotated) is None
     finally:
         keys = [key async for key in redis.scan_iter(match=f"{namespace}*")]
         if keys:

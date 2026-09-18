@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 import { IconButton } from '../actions/IconButton';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export type ModalSize = 'sm' | 'md' | 'lg' | 'xl' | 'full';
 
@@ -35,8 +36,9 @@ export const Modal: React.FC<ModalProps> = ({
   size = 'md',
   closeOnBackdrop = true,
   initialFocusRef,
-  closeLabel = 'Close dialog',
+  closeLabel,
 }) => {
+  const { t } = useI18nText();
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   const titleId = useId();
@@ -169,7 +171,7 @@ export const Modal: React.FC<ModalProps> = ({
             </div>
             <IconButton
               icon={<X size={18} />}
-              aria-label={closeLabel}
+              aria-label={closeLabel ?? t('modal.close')}
               variant="ghost"
               size="sm"
               onClick={onClose}

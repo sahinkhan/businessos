@@ -5,6 +5,8 @@ import { navigationRegistry } from '../../src/navigation/registry';
 import { ar } from '../../src/i18n/translations/ar';
 import { es } from '../../src/i18n/translations/es';
 import { Modal } from '../../src/components/overlays/Modal';
+import { ErrorState } from '../../src/components/feedback/ErrorState';
+import { SearchInput } from '../../src/components/inputs/SearchInput';
 
 const ArabicNavigation = () => {
   const { t } = useI18n();
@@ -19,6 +21,9 @@ const ArabicNavigation = () => {
       <Modal isOpen onClose={() => {}} closeLabel={t('modal.close')} title="اختبار">
         <p>محتوى</p>
       </Modal>
+      <ErrorState onRetry={() => {}} />
+      <SearchInput value="بحث" onSearchChange={() => {}} />
+      <span>{t('missing.translation.key')}</span>
     </>
   );
 };
@@ -46,5 +51,8 @@ describe('official navigation and reusable-control translations', () => {
     expect(screen.getByText('لوحة التحكم')).toBeInTheDocument();
     expect(screen.getByText('الإدارة')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'إغلاق مربع الحوار' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'إعادة المحاولة' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'مسح البحث' })).toBeInTheDocument();
+    expect(screen.getByText('missing.translation.key')).toBeInTheDocument();
   });
 });

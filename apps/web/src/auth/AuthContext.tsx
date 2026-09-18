@@ -1,7 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../api/client';
+import { createSecurityTransitionCoordinator } from '../api/securityTransition';
 import { queryCache } from '../api/queryCache';
 import { securityContext } from '../api/securityContext';
+import { ApiError } from '../api/types';
 import { AuthAdapter, defaultAuthAdapter } from './authAdapter';
 import { AuthContextValue, SessionInfo, SessionScope, UserProfile } from './types';
 
@@ -32,6 +34,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
 }) => {
   const [session, setSession] = useState<SessionInfo | null>(initialSession);
   const [isLoading, setIsLoading] = useState(initialSession === null);
+  const [status, setStatus] = useState<AuthContextValue['status']>(
+    initialSession ? 'authenticated' : 'initializing'
+  );
+  const [error, setError] = useState<string | null>(null);
+  const runSecurityTransition = useMemo(createSecurityTransitionCoordinator, []);
   const user = useMemo(() => (session ? userFromSession(session) : null), [session]);
 
   const invalidateSession = useCallback(() => {
@@ -39,6 +46,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     queryCache.clear();
     setSession(null);
     setIsLoading(false);
+    setStatus('unauthenticated');
+    setError(null);
     apiClient.setCsrfTokenProvider(null);
   }, []);
 
@@ -46,22 +55,38 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
     securityContext.advance();
     queryCache.clear();
     setSession(next);
+    setStatus(next ? 'authenticated' : 'unauthenticated');
+    setError(null);
   }, []);
 
   const reloadSession = useCallback(async () => {
-    const generation = securityContext.generation();
+    let attemptGeneration: number | null = null;
     setIsLoading(true);
+    setStatus('initializing');
+    setError(null);
     try {
-      const next = await adapter.getSession();
+      const { generation, next } = await runSecurityTransition(async () => ({
+        generation: (attemptGeneration = securityContext.generation()),
+        next: await adapter.getSession(),
+      }));
       if (generation !== securityContext.generation()) return;
       setIsLoading(false);
       acceptSession(next);
-    } catch {
-      if (generation !== securityContext.generation()) return;
+    } catch (caught: unknown) {
+      if (attemptGeneration !== null && attemptGeneration !== securityContext.generation()) return;
+      securityContext.advance();
+      queryCache.clear();
+      setSession(null);
       setIsLoading(false);
-      invalidateSession();
+      apiClient.setCsrfTokenProvider(null);
+      setStatus(
+        caught instanceof ApiError && caught.status === 403
+          ? 'authorization_denied'
+          : 'service_unavailable'
+      );
+      setError(caught instanceof Error ? caught.message : 'Session service is unavailable.');
     }
-  }, [acceptSession, adapter, invalidateSession]);
+  }, [acceptSession, adapter, runSecurityTransition]);
 
   useEffect(() => {
     if (initialSession === null) void reloadSession();
@@ -104,20 +129,24 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
   const logout = useCallback(async () => {
     setIsLoading(true);
     try {
-      await adapter.logout();
+      await runSecurityTransition(() => adapter.logout());
     } finally {
       invalidateSession();
       setIsLoading(false);
     }
-  }, [adapter, invalidateSession]);
+  }, [adapter, invalidateSession, runSecurityTransition]);
 
   const updateSessionSecurity = useCallback(
-    (scope: SessionScope, csrfToken: string, expiresAt: number) => {
-      securityContext.advance();
-      queryCache.clear();
+    (scope: SessionScope, csrfToken: string, expiresAt: number, advanceContext = true) => {
+      if (advanceContext) {
+        securityContext.advance();
+        queryCache.clear();
+      }
       setSession((current) =>
         current ? { ...current, activeScope: scope, csrfToken, expiresAt } : current
       );
+      setStatus('authenticated');
+      setError(null);
     },
     []
   );
@@ -128,12 +157,26 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
       session,
       isAuthenticated: Boolean(session && session.expiresAt > Date.now() / 1000),
       isLoading,
+      status,
+      error,
       login,
       logout,
       reloadSession,
       updateSessionSecurity,
+      runSecurityTransition,
     }),
-    [user, session, isLoading, login, logout, reloadSession, updateSessionSecurity]
+    [
+      user,
+      session,
+      isLoading,
+      status,
+      error,
+      login,
+      logout,
+      reloadSession,
+      updateSessionSecurity,
+      runSecurityTransition,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

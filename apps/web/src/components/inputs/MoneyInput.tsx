@@ -1,5 +1,6 @@
 import React, { forwardRef } from 'react';
 import { TextInput, TextInputProps } from './TextInput';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface MoneyInputProps extends Omit<TextInputProps, 'onChange' | 'value'> {
   value?: number | '';
@@ -22,6 +23,7 @@ export const MoneyInput = forwardRef<HTMLInputElement, MoneyInputProps>(
     },
     ref
   ) => {
+    const { t } = useI18nText();
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const raw = e.target.value;
       if (raw === '') {
@@ -42,7 +44,7 @@ export const MoneyInput = forwardRef<HTMLInputElement, MoneyInputProps>(
           onCurrencyChange?.(e.target.value);
           onValueChange?.(value ?? '', e.target.value);
         }}
-        aria-label="Currency"
+        aria-label={t('controls.currency')}
         style={{
           border: 'none',
           background: 'transparent',

@@ -630,12 +630,20 @@ class RedisWebSessionStore:
         local raw = redis.call('GET', KEYS[1])
         if not raw then return false end
         local current = cjson.decode(raw)
+        local candidate = cjson.decode(ARGV[2])
         if tonumber(current.generation) ~= tonumber(ARGV[1]) then return false end
         local now = sortable_instant(ARGV[4])
         local idle_expiry = sortable_instant(current.idle_expires_at)
         local absolute_expiry = sortable_instant(current.absolute_expires_at)
         if not now or not idle_expiry or not absolute_expiry then return false end
         if idle_expiry <= now or absolute_expiry <= now then return false end
+        local current_seen = sortable_instant(current.last_seen_at)
+        local candidate_seen = sortable_instant(candidate.last_seen_at)
+        local candidate_idle = sortable_instant(candidate.idle_expires_at)
+        if not current_seen or not candidate_seen or not candidate_idle then return false end
+        if candidate_seen < current_seen or candidate_idle < idle_expiry then
+            return raw
+        end
         redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
         return ARGV[2]
         """

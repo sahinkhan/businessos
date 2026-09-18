@@ -20,7 +20,9 @@ const nullableString = (value: unknown): string | null | undefined =>
   value === null ? null : optionalString(value);
 
 function parseSession(value: unknown): SessionInfo | null {
-  if (typeof value !== 'object' || value === null) return null;
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('Malformed current-session response');
+  }
   const response = value as Record<string, unknown>;
   const principal = response.principal;
   const scope = response.active_scope;
@@ -33,7 +35,7 @@ function parseSession(value: unknown): SessionInfo | null {
     typeof response.expires_at !== 'string' ||
     typeof response.csrf_token !== 'string'
   ) {
-    return null;
+    throw new Error('Malformed current-session response');
   }
   const p = principal as Record<string, unknown>;
   const s = scope as Record<string, unknown>;
@@ -46,7 +48,7 @@ function parseSession(value: unknown): SessionInfo | null {
     typeof s.tenant_id !== 'string' ||
     !Number.isFinite(expiresAt)
   ) {
-    return null;
+    throw new Error('Malformed current-session response');
   }
   return {
     principal: {

@@ -128,3 +128,25 @@ export const useI18n = (): I18nContextValue => {
   if (!ctx) throw new Error('useI18n must be used within I18nProvider');
   return ctx;
 };
+
+/** Reusable primitives use English resources when rendered outside the application provider. */
+export const useI18nText = (): Pick<I18nContextValue, 't' | 'tp'> => {
+  const ctx = useContext(I18nContext);
+  const t = useCallback(
+    (key: string, params?: Record<string, string | number>) => {
+      let value = ctx?.t(key, params) ?? en[key] ?? key;
+      for (const [name, replacement] of Object.entries(params ?? {})) {
+        value = value.replace(new RegExp(`{${name}}`, 'g'), String(replacement));
+      }
+      return value;
+    },
+    [ctx]
+  );
+  const tp = useCallback(
+    (key: string, count: number, params?: Record<string, string | number>) =>
+      ctx?.tp(key, count, params) ??
+      t(`${key}.${count === 1 ? 'one' : 'other'}`, { count, ...params }),
+    [ctx, t]
+  );
+  return { t, tp };
+};

@@ -20,7 +20,10 @@ export interface ScopeSelectionResult {
 
 export interface ScopeAdapter {
   fetchTenants(): Promise<TenantScope[]>;
-  selectActiveScope(selection: ActiveScopeSelection): Promise<ScopeSelectionResult>;
+  selectActiveScope(
+    selection: ActiveScopeSelection,
+    csrfToken?: string
+  ): Promise<ScopeSelectionResult>;
   validateScope(scope: ActiveScope): Promise<boolean>;
 }
 
@@ -84,8 +87,13 @@ export class HttpScopeAdapter implements ScopeAdapter {
     return response;
   }
 
-  public async selectActiveScope(selection: ActiveScopeSelection): Promise<ScopeSelectionResult> {
-    const response = await apiClient.post<unknown>(`${this.baseUrl}/active-scope`, selection);
+  public async selectActiveScope(
+    selection: ActiveScopeSelection,
+    csrfToken?: string
+  ): Promise<ScopeSelectionResult> {
+    const response = await apiClient.post<unknown>(`${this.baseUrl}/active-scope`, selection, {
+      headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : undefined,
+    });
     if (typeof response !== 'object' || response === null) {
       throw new Error('Malformed backend active-scope response');
     }

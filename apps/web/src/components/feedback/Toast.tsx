@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { CheckCircle2, AlertTriangle, AlertCircle, Info, X } from 'lucide-react';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export type ToastType = 'success' | 'warning' | 'danger' | 'info';
 
@@ -24,6 +25,7 @@ export interface ToastContextValue {
 const ToastContext = createContext<ToastContextValue | undefined>(undefined);
 
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { t } = useI18nText();
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const dismissToast = useCallback((id: string) => {
@@ -71,7 +73,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       {children}
       <div
         role="region"
-        aria-label="Notifications"
+        aria-label={t('nav.notifications')}
         style={{
           position: 'fixed',
           bottom: '24px',
@@ -141,7 +143,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               <button
                 type="button"
                 onClick={() => dismissToast(toast.id)}
-                aria-label="Close notification"
+                aria-label={t('notifications.close')}
                 style={{
                   background: 'none',
                   border: 'none',

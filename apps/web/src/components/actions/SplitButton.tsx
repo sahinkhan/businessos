@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Button, ButtonProps } from './Button';
 import { ChevronDown } from 'lucide-react';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface SplitButtonItem {
   id: string;
@@ -22,6 +23,7 @@ export const SplitButton: React.FC<SplitButtonProps> = ({
   size = 'md',
   ...rest
 }) => {
+  const { t } = useI18nText();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -54,7 +56,7 @@ export const SplitButton: React.FC<SplitButtonProps> = ({
         onClick={() => setIsOpen(!isOpen)}
         aria-haspopup="true"
         aria-expanded={isOpen}
-        aria-label="More options"
+        aria-label={t('controls.more_options')}
         style={{
           borderTopLeftRadius: 0,
           borderBottomLeftRadius: 0,

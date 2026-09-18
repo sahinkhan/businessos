@@ -5,10 +5,10 @@ Audited `main` baseline: `3e551b8922397e03636db8d7ed7cf85d2477db83`.
 Accepted architecture checkpoint: `20e2c32d8a25e7959fcf474f70a77f5e8f96646e` on
 `fix/phase4.5-certification`.
 
-Status: **READY FOR INDEPENDENT RE-AUDIT**. The six findings from the 2026-09-18 independent
-re-audit have regression coverage and remediation. Exact implementation-head PR CI is green and
-the final read-only review found no remaining P1/P2 blocker in the authorized scope. PR #9 must not
-be merged or certified without separate authorization.
+Status: **READY FOR INDEPENDENT RE-AUDIT**. The two P1 findings from the re-audit of `d3db48b`
+have production fixes and regression coverage. Exact implementation-head PR CI is green and the
+final read-only review found no remaining P1/P2 blocker in the authorized scope. PR #9 must not be
+merged or certified without separate authorization.
 Historical tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are unchanged.
 `v0.4.7-ui-foundation` must not be created in this step.
 
@@ -244,3 +244,62 @@ final whitespace step detected one extra blank line at the end of the preserved 
 report; the follow-up commit removes only that blank line. A new exact-head run remains the final
 branch gate. Phase 4.5 is not certified or frozen, PR #9 must not be merged, and Phase 5 must not
 start before independent re-audit.
+
+## Final P1 transition remediation — 2026-09-18
+
+The independent report at `d3db48ba9c140deca8ccd70b894e205ed65dec1d` remains unchanged in
+`PHASE-4.5-INDEPENDENT-REAUDIT-d3db48b.md`. It identified two final state-coherence defects:
+
+- a failed queued scope request discarded the last confirmed server result and could leave the UI,
+  CSRF material, query context, and policy context on the earlier scope; and
+- logout read CSRF through a React effect, so a logout serialized immediately behind scope rotation
+  could send the previous token, fail server revocation, and still clear local authentication.
+
+The frontend now maintains one synchronous authoritative session snapshot behind AuthProvider.
+The API client's CSRF provider and coordinated logout both read that snapshot, and logout passes the
+token explicitly to the adapter. Local authentication is cleared only after logout succeeds, a 401
+confirms session absence, or current-session reconciliation confirms no live session. An
+`invalid_csrf` response triggers one current-session read and at most one logout retry. A genuine
+denial, network failure, 5xx, or failed retry retains the live projection and exposes the existing
+recoverable session-service or authorization-denied state.
+
+Scope transitions use the same reusable current-session reconciliation path. Ambiguous 403,
+conflict, 5xx, and transport outcomes no longer invent rollback. A trusted current-session response
+atomically replaces principal, active-scope IDs, derived hierarchy labels, expiry, and CSRF state;
+query requests are cancelled and query/policy presentation caches are invalidated by the security
+generation and derived policy key. Reconciliation that loses its generation cannot overwrite a
+newer transition. When a newer selection arrives during reconciliation, the worker obtains a fresh
+snapshot before continuing with its CSRF token. If current-session service is unavailable, the
+frontend removes the uncertain local authority and exposes a recoverable unavailable state.
+
+The preserved real-adapter audit probes now pass. Additional controlled-backend tests cover an
+ambiguous mutation followed by authoritative reconciliation, a newer selection arriving while an
+older reconciliation is pending, confirmed 401 session loss, reconciliation 5xx/network failure,
+bounded stale-CSRF logout recovery, direct logout 5xx/network failure, and queued logout winning
+without authentication resurrection. The real ASGI test now proves that a stale pre-rotation CSRF
+token cannot revoke the rotated session, current-session returns the rotated token and scope, the
+authoritative token revokes the session, and the subsequent current-session request returns 401.
+
+Local frontend gates after `npm ci` pass: TypeScript, ESLint, Prettier, 22 test files / 85 tests,
+six accessibility tests, production build, and the 381.56 KB JavaScript / 3.67 KB CSS bundle
+budget. The two independent audit probes and twelve added recovery cases pass 14/14. Focused
+web-session unit tests pass 12/12. Ruff format and lint pass for all 167 checked Python files, and
+the complete suite collects 242 tests. This workstation remains on Python 3.12, so the Python
+3.13-only full unit/static/infrastructure/deployment results are supplied by the pinned PR workflow.
+The local Python 3.12 full run predictably rejects Python 3.13 module manifests and reports the
+known multiprocessing typing difference; it is not certification evidence.
+
+`npm audit` reports four moderate advisories and zero high or critical advisories. Available fixes
+require breaking Vitest 5 or React Router 7 upgrades and remain outside this bounded remediation.
+
+GitHub Actions run
+[`35327678802`](https://github.com/sahinkhan/businessos/actions/runs/35327678802) executed for exact
+implementation head `9f96597ebf7fcbc6f0c5533402e249167c08b278`. Both `web-quality` and
+`python-quality` completed successfully. The Python job passed Ruff, mypy, Pyright, unit and
+collection gates, PostgreSQL/provider integration including the real ASGI and Redis cases,
+conformance, installed-wheel migration smoke, development/production/migration image builds,
+production-derived migration replay, and committed-patch whitespace.
+
+No Identity 1.0 contract, migration, ADR-009 decision, historical tag, or Phase 5 implementation
+changed. Phase 4.5 remains not complete, not certified, and not frozen. PR #9 remains open and must
+not be merged before an independent re-audit.

@@ -35,12 +35,30 @@ class Settings(BaseSettings):
     request_body_limit_bytes: int = Field(default=1_048_576, ge=1)
     startup_timeout_seconds: float = Field(default=30.0, gt=0)
     shutdown_timeout_seconds: float = Field(default=10.0, gt=0)
+    s3_bucket: str | None = None
+    s3_endpoint_url: str | None = None
+    s3_region_name: str | None = None
+    s3_access_key: str | None = Field(default=None, repr=False, exclude=True)
+    s3_secret_key: str | None = Field(default=None, repr=False, exclude=True)
+    s3_provision_bucket: bool = False
 
     @model_validator(mode="after")
     def validate_database_driver(self) -> Self:
         if not self.database_url.startswith("postgresql+psycopg://"):
             msg = "database_url must use the postgresql+psycopg SQLAlchemy dialect"
             raise ValueError(msg)
+        if (self.s3_access_key is None) != (self.s3_secret_key is None):
+            raise ValueError("S3 access key and secret key must be configured together")
+        storage_options = (
+            self.s3_endpoint_url,
+            self.s3_region_name,
+            self.s3_access_key,
+            self.s3_secret_key,
+        )
+        if self.s3_bucket is None and (any(storage_options) or self.s3_provision_bucket):
+            raise ValueError("S3 bucket is required when object-storage options are configured")
+        if self.environment == "production" and self.s3_provision_bucket:
+            raise ValueError("Production object-storage buckets must be provisioned externally")
         return self
 
     @field_serializer("database_url")

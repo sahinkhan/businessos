@@ -36,11 +36,40 @@ from businessos.modules import (
 )
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
-from businessos.providers import ProviderRegistry
+from businessos.providers import ProviderRegistry, S3ObjectStorageProvider
 from businessos.runtime import FrameworkRuntime
 from businessos.security import Authorizer, DenyAllPolicyEvaluator, TrustedContextResolver
 from businessos.telemetry import configure_telemetry
 from businessos.version import runtime_version
+
+
+def configured_infrastructure_providers(settings: Settings) -> Mapping[str, object]:
+    """Build deployment providers without weakening capability checks."""
+    bucket = settings.s3_bucket
+    endpoint_url = settings.s3_endpoint_url
+    region_name = settings.s3_region_name
+    access_key = settings.s3_access_key
+    secret_key = settings.s3_secret_key
+    provision_bucket = settings.s3_provision_bucket
+    if bucket is None and settings.environment == "development":
+        bucket = "businessos-development"
+        endpoint_url = "http://localhost:9000"
+        region_name = "us-east-1"
+        access_key = "businessos"
+        secret_key = "businessos-development"
+        provision_bucket = True
+    if bucket is None:
+        return {}
+    return {
+        "object-storage": S3ObjectStorageProvider(
+            bucket=bucket,
+            endpoint_url=endpoint_url,
+            region_name=region_name,
+            access_key=access_key,
+            secret_key=secret_key,
+            provision_bucket=provision_bucket,
+        )
+    }
 
 
 def create_application(

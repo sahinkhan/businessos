@@ -168,33 +168,37 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
         return null;
       } catch (caught: unknown) {
         if (caught instanceof ApiError && caught.status === 401) return null;
-        if (!(
-          caught instanceof ApiError &&
-          caught.status === 403 &&
-          caught.code === 'invalid_csrf'
-        )) {
-          return caught;
+        if (caught instanceof ApiError && caught.status === 403 && caught.code === 'invalid_csrf') {
+          let reconciled: SessionReconciliation;
+          try {
+            reconciled = await reconcileAuthoritativeSession();
+          } catch (reconciliationFailure: unknown) {
+            return reconciliationFailure;
+          }
+          if (reconciled.status === 'stale') {
+            return sessionRef.current === null
+              ? null
+              : new Error('Session changed while logout was being reconciled.');
+          }
+          if (reconciled.session === null) return null;
+
+          try {
+            await adapter.logout(reconciled.session.csrfToken);
+            return null;
+          } catch (retryFailure: unknown) {
+            if (retryFailure instanceof ApiError && retryFailure.status === 401) return null;
+            return retryFailure;
+          }
         }
 
-        let reconciled: SessionReconciliation;
+        if (caught instanceof ApiError && caught.status < 500) return caught;
         try {
-          reconciled = await reconcileAuthoritativeSession();
+          const reconciled = await reconcileAuthoritativeSession();
+          if (reconciled.status === 'accepted' && reconciled.session === null) return null;
+          if (reconciled.status === 'stale' && sessionRef.current === null) return null;
+          return caught;
         } catch (reconciliationFailure: unknown) {
           return reconciliationFailure;
-        }
-        if (reconciled.status === 'stale') {
-          return sessionRef.current === null
-            ? null
-            : new Error('Session changed while logout was being reconciled.');
-        }
-        if (reconciled.session === null) return null;
-
-        try {
-          await adapter.logout(reconciled.session.csrfToken);
-          return null;
-        } catch (retryFailure: unknown) {
-          if (retryFailure instanceof ApiError && retryFailure.status === 401) return null;
-          return retryFailure;
         }
       }
     });

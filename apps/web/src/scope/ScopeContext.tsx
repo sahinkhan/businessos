@@ -287,6 +287,8 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
                 ['forbidden', 'invalid_csrf'].includes(caught.code) &&
                 lastAccepted
               ) {
+                nextCsrfToken = lastAccepted.csrfToken;
+                if (desiredTransitionRef.current?.id !== processedId) continue;
                 commitTrustedTransition(lastAccepted);
                 setError(message);
                 break;
@@ -357,6 +359,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
               }
               continue;
             }
+            if (desiredTransitionRef.current?.id !== processedId) continue;
             if (lastAccepted) commitTrustedTransition(lastAccepted);
             setError(result.error ?? 'Backend rejected the requested scope.');
             break;

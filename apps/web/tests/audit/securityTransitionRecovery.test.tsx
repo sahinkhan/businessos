@@ -355,6 +355,36 @@ describe('authoritative security snapshot recovery', () => {
     expect(screen.getByTestId('auth-status')).toHaveTextContent('unauthenticated');
   });
 
+  it('reconciles the live authoritative snapshot after an ambiguous logout 500', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/organization/hierarchy')) return response(hierarchy());
+        if (url.endsWith('/organization/active-scope')) {
+          return response(scopeProjection('company_one', TEST_SESSION.csrfToken));
+        }
+        if (url.endsWith('/auth/logout')) {
+          return response({ code: 'unavailable', message: 'Logout outcome is unknown' }, 500);
+        }
+        if (url.endsWith('/auth/session')) {
+          return response(sessionProjection('company_two', 'authoritative-csrf-b'));
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      })
+    );
+
+    mount();
+    await waitFor(() => expect(screen.getByTestId('scope-status')).toHaveTextContent('ready'));
+    fireEvent.click(screen.getByText('Logout'));
+    await waitFor(() =>
+      expect(screen.getByTestId('auth-status')).toHaveTextContent('service_unavailable')
+    );
+    expect(screen.getByTestId('principal')).toHaveTextContent(TEST_SESSION.principal.id);
+    expect(screen.getByTestId('company')).toHaveTextContent('company_two');
+    expect(screen.getByTestId('csrf')).toHaveTextContent('authoritative-csrf-b');
+  });
+
   it.each([
     ['logout 500', 'logout'],
     ['logout network failure', 'network'],

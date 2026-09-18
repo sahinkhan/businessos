@@ -208,3 +208,39 @@ server-side large-data contracts remain unchanged.
 
 The branch is **READY FOR INDEPENDENT RE-AUDIT**. Phase 4.5 remains not complete, not certified, and
 not frozen until the separately authorized merge, post-merge `main` CI, final audit, and tag step.
+
+## Second re-audit remediation — 2026-09-18
+
+The independent audit at `b06b08d8e29fa68b9fa9174688c03f4888361b25` identified five remaining
+gaps. Implementation commit `98d9959` addresses them as follows:
+
+- scope-changing requests share the authentication provider's serialized security-transition
+  coordinator; superseded responses pass rotated CSRF material to the next request and only the
+  final requested trusted snapshot is committed;
+- Redis touch compares candidate and current `last_seen_at` and `idle_expires_at` inside Lua and
+  returns the authoritative record without rewriting its TTL when the candidate is stale;
+- Drawer keeps its close callback in a ref, so its focus lifecycle runs only on closed/open state
+  changes;
+- reusable feedback, search, form, overlay, table, action, input, and accessibility labels resolve
+  through English, Spanish, and Arabic resources with English/key fallback;
+- authentication exposes initializing, authenticated, unauthenticated, service-unavailable, and
+  authorization-denied states, with explicit retry UI and malformed-response failure handling.
+
+Regression evidence includes the preserved independent audit tests, serialized overlap/rejection
+and cache invalidation tests, controlled Drawer rerender/focus tests, non-English navigation,
+control, and accessibility tests, and 500/network/timeout/malformed/retry authentication tests.
+The real Redis provider test now proves delayed older activity cannot replace newer activity or
+shorten TTL, and proves delayed touches lose to rotation and revocation.
+
+Local results: frontend typecheck/lint/format PASS; 71 frontend tests PASS; 6 accessibility tests
+PASS; production build and 378.71 KB JS / 3.67 KB CSS bundle budget PASS; focused session tests
+12 PASS; Ruff PASS; focused mypy PASS. `npm audit` reports 4 moderate, 0 high, and 0 critical
+advisories; available fixes require separately authorized major upgrades.
+
+PR run `35315427827` on `98d9959` passed `web-quality` and every substantive `python-quality`
+step, including static analysis, unit/collection, PostgreSQL/provider integration with the real
+Redis regressions, conformance, wheel migration, images, and production migration replay. Its
+final whitespace step detected one extra blank line at the end of the preserved independent audit
+report; the follow-up commit removes only that blank line. A new exact-head run remains the final
+branch gate. Phase 4.5 is not certified or frozen, PR #9 must not be merged, and Phase 5 must not
+start before independent re-audit.

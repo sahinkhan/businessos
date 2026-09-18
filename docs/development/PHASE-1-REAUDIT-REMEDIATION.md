@@ -5,82 +5,162 @@
 - Repository: `sahinkhan/businessos`
 - Branch: `fix/phase1-reaudit-remediation`
 - Authoritative starting `main`: `1decf4b030ce0663632d298b70dc5c290970ca88`
-- Audited implementation commit: `fff68b5aed9afbcc27c75a242f884a3d16b409ad`
+- First-remediation audit head: `306dfafba7e5abdccbf13889258b32875bfa4704`
+- Second-remediation implementation commit: `c76445ceec9531f4c6bad18eb4841974f2e756e3`
+- Implementation exact-head CI: `35375774996` - PASS
 - Status: **READY FOR INDEPENDENT PHASE 1 RE-AUDIT**
-- Scope exclusions: PR #9 and `fix/phase4.5-certification`, Phase 4.5 production code, Phase 5, historical tags, and all migrations.
+- Scope exclusions: PR #9 and `fix/phase4.5-certification`, Phase 4.5 production code,
+  Phase 5, historical tags, public SDK exports, and all migrations.
 
-The evidence commit follows the implementation commit, so the pull request and exact-head CI identify the final branch SHA without embedding a self-referential commit identifier in this document.
+The evidence commit follows the implementation commit. Final PR-head identity and its CI run are
+therefore external review evidence rather than a self-referential value embedded in this file.
 
-## Findings and corrections
+## Original findings and first remediation
 
 ### Shipped ASGI startup could not satisfy required infrastructure capabilities
 
-The discovered Phase 1 proof module requires `object-storage`, but the shipped ASGI composition supplied no provider and failed during startup.
-
-The application now composes the existing S3-compatible object-storage provider from validated settings. Development defaults target the Compose MinIO service and may provision the development bucket. Production remains fail closed: an absent bucket configuration cannot satisfy a module requirement, partial credentials are rejected, and production bucket provisioning is prohibited. Compose, the environment example, and setup guidance describe the same contract.
-
-A real ASGI lifespan integration test imports `businessos.asgi`, enables the discovered proof module, starts against PostgreSQL and MinIO, and verifies readiness before shutdown.
+The discovered Phase 1 proof module requires `object-storage`, but the shipped ASGI composition
+supplied no provider and failed during startup. The application now composes the existing
+S3-compatible provider from validated settings. Development may provision its configured bucket;
+production remains fail closed. A real lifespan test verifies startup, readiness, and shutdown
+against PostgreSQL and object storage.
 
 ### Upgrade planning validated only selected targets
 
-Upgrade planning could accept a proposed target that invalidated an unchanged module dependency or introduced a missing dependency/cycle.
+The coordinator now snapshots the complete installed manifest set, substitutes every proposed
+target, performs compatibility and downgrade checks, then validates and topologically orders the
+complete proposed graph. Permanent tests cover unchanged dependents, missing dependencies, cycles,
+ordering, multi-target upgrades, invalid targets, downgrades, and compatibility constraints.
 
-The coordinator now snapshots the complete installed manifest set, substitutes every proposed target, performs compatibility and downgrade checks, then validates and topologically orders the complete proposed graph. Tests cover unchanged dependents, missing dependencies, cycles, new ordering edges, multi-target upgrades, unknown or duplicate targets, downgrades, and platform/SDK/Python incompatibility.
+### Dependency injection permitted lifetime capture and duplicate request construction
 
-### Dependency injection permitted lifetime capture and duplicated request construction
-
-Singleton initialization could capture request-scoped dependencies through direct or transitive paths. Concurrent request resolution could also invoke one provider many times.
-
-Singleton construction now uses a lifetime-aware resolver and singleton-owned cleanup stack. A request dependency found anywhere in a singleton/transient construction chain raises a configuration error. Request scopes use per-key single-flight resolution, shared success or failure, retry after failure, cancellation-safe waiters, close-time cancellation, cross-key cycle detection, and scope-local caches. Tests cover direct, indirect, and deeper capture; permitted lifetime relationships; cleanup; 500 concurrent callers; cancellation; shared failure and retry; separate scopes; close during initialization; nested dependencies; and concurrent cycles.
+Singleton construction now rejects request-scoped dependencies through direct and arbitrary
+transient chains. Request dependencies use per-key single-flight resolution with shared results,
+retryable failures, cancellation-safe waiters, scope-local caches, and close-time cancellation.
 
 ### Migration subprocess typing was platform-specific
 
-The migration runner annotated multiprocessing connections with a concrete platform-specific class, producing four mypy errors on Windows.
+The migration runner now depends on a private structural connection protocol rather than a
+platform-specific multiprocessing class. CI includes native Windows Python 3.13 repository-wide
+mypy.
 
-The runner now depends on a private structural connection protocol containing only the operations it uses. Runtime behavior and the public SDK are unchanged. CI now includes a Windows Python 3.13 job that installs the full typing environment and runs the repository-wide mypy command.
+## Independent re-audit result and second remediation
+
+The independent re-audit confirmed the first remediation, then found three P2 request-lifecycle
+regressions. All three were reproduced before the second production change.
+
+### Transient-crossing concurrent cycles could deadlock
+
+The request wait graph recorded only the immediate waiter and lost complete ancestry when a
+request initializer crossed transient dependencies. Concurrent `REQUEST A -> TRANSIENT T ->
+REQUEST B -> REQUEST A` resolution timed out instead of failing.
+
+The wait graph now records the complete active dependency chain propagated through each initializer
+task's copied context. Its reference-counted edges include request, transient, and relevant nested
+provider nodes. Before waiting on an existing flight, every ancestry edge is inserted and checked;
+an edge that closes a cycle raises deterministic `ConfigurationError` with the dependency path.
+Independent concurrent dependencies and valid diamonds do not create false cycles.
+
+### Request resources could exit in an incompatible Context
+
+Request providers entered async context managers inside owned initializer tasks but stored all exit
+callbacks in a shared stack closed by the request caller. A context manager that reset a
+`ContextVar` token during exit therefore failed because entry and exit ran in different contexts.
+
+Every request-lifetime acquisition now has one resource owner containing its own copied `Context`
+and `AsyncExitStack`. That owner controls provider invocation, context-manager entry, publication,
+and exactly-once exit. Teardown creates the exit task with the same context object used for entry.
+Owners are retained in acquisition order and closed in reverse order. Cleanup errors are collected
+without skipping remaining owners.
+
+### Repeated cancellation could abandon teardown
+
+Request teardown previously ran in the caller task, so cancellation could interrupt cleanup and a
+second cancellation could leave acquired resources live.
+
+The scope now has explicit `NEW`, `OPEN`, `CLOSING`, and `CLOSED` states. Closing starts one owned
+cleanup task, cancels and drains active initializers, closes every resource owner, clears scope
+state, and rejects late publication. The caller shields that operation and continues waiting across
+repeated `CancelledError`; once cleanup reaches a terminal state, cancellation is re-raised.
+
+## Permanent regression tests
+
+`tests/unit/test_dependency_injection_lifecycle.py` permanently covers:
+
+- concurrent request cycles crossing one and multiple transient dependencies;
+- deterministic `ConfigurationError` paths containing transient nodes;
+- independent concurrent dependencies and a valid diamond graph;
+- 20 concurrent request resolves with one provider call and one instance;
+- ContextVar-sensitive entry and exit in one compatible lifecycle context;
+- nested resources and partial provider failure cleanup;
+- one, two, and five teardown cancellations;
+- reverse teardown of multiple resources under cancellation;
+- cleanup continuation when one resource exit fails;
+- close during initialization and rejection of late publication.
+
+The existing DI suite continues to cover singleton cycles, singleton lifetime rejection through
+transient chains, request isolation, waiter cancellation, retry, and container cleanup.
 
 ## Validation evidence
 
-All commands below completed successfully on the complete implementation tree.
+The implementation exact-head CI run `35375774996` completed successfully on
+`c76445ceec9531f4c6bad18eb4841974f2e756e3`.
 
 | Gate | Result |
 | --- | --- |
-| Ruff formatting | PASS - 163 files already formatted |
+| Focused DI regressions | PASS - 39 |
+| Ruff formatting | PASS - 164 files |
 | Ruff lint | PASS |
-| Linux mypy | PASS - 162 source files |
+| Linux mypy | PASS - 163 source files |
+| Windows Python 3.13 mypy | PASS - exact-head CI |
 | Pyright | PASS - 0 errors, 0 warnings |
-| Native Windows mypy reproduction | PASS locally; the original four errors are absent |
-| Unit tests | PASS - 181 |
-| Test collection | PASS - 246 collected |
-| PostgreSQL integration | PASS - 52 |
-| Architecture/conformance | PASS - 13 |
+| Unit tests | PASS - 194 |
+| Test collection | PASS - 259 collected |
+| PostgreSQL/provider integration | PASS - 52 |
+| External module conformance | PASS - 13 |
 | Installed-wheel migration smoke | PASS |
 | Development image build | PASS |
 | Production image build | PASS |
 | Migration-smoke image build | PASS |
-| Production-derived upgrade/downgrade/replay | PASS under Python 3.13 |
-| Web typecheck, lint, format | PASS |
+| Production-derived migration upgrade/replay | PASS |
+| Web typecheck, lint, and format | PASS |
 | Web unit tests | PASS - 16 |
 | Web accessibility tests | PASS - 3 |
 | Web production build and bundle budget | PASS |
-| Real Compose ASGI startup/readiness | PASS; application, PostgreSQL, and object-storage ready |
+| Real shipped ASGI startup/readiness | PASS in integration suite |
+| Committed patch whitespace | PASS |
 
-The pull request must additionally pass exact-head Linux Python quality, web quality, and the new Windows Python 3.13 typing job before independent review.
+The combined Python 3.13 suite truthfully reports **257 passed and 2 failed**. The two failures are
+the previously documented order-dependent logging-capture tests:
+
+- `test_server_errors_and_logging_do_not_expose_exception_secrets`
+- `test_event_worker_child_redacts_unexpected_exception_details`
+
+Both reproduce on the baseline SHA and pass in their prescribed isolated unit job. New failures
+caused by this branch: **0**. The combined suite is not represented as fully passing.
 
 ## Downstream regression classification
 
-- Phase 2: covered by the full unit, integration, and conformance runs.
-- Phase 3: covered by the full unit and conformance runs.
-- Phase 4: covered by the full unit, integration, and conformance runs.
-- Phase 4.5: **TARGETED REGRESSION REQUIRED** when PR #9 resumes. Its unmerged backend authentication/session implementation is not present on this branch's authoritative `main`; PR #9 and its worktree were intentionally untouched.
+- Phase 2: **TARGETED REGRESSION COMPLETE** through unit, integration, and public-boundary tests;
+  no contract change.
+- Phase 3: **TARGETED REGRESSION COMPLETE** through unit and public-boundary tests; no contract
+  change.
+- Phase 4: **TARGETED REGRESSION COMPLETE** through unit, integration, authorization, audit, and
+  public-boundary tests; no contract change.
+- Phase 4.5: **TARGETED REGRESSION REQUIRED when PR #9 resumes**. Its unmerged authentication and
+  web-session code is absent from this branch's authoritative base. PR #9 and its worktree remain
+  untouched.
 
 ## Compatibility and data impact
 
-- Public SDK exports: unchanged.
-- Public contract versions: unchanged.
-- Database schema and Alembic revisions: unchanged.
-- Runtime migrations: unchanged.
-- Historical tags: unchanged.
-- Phase 5: not started.
+- Public SDK exports changed: **NO**.
+- Public contract versions changed: **NO**.
+- Database schema changed: **NO**.
+- Alembic revisions changed: **NO**.
+- Runtime migrations changed: **NO**.
+- Historical tags changed: **NO**.
+- Phase 5 started: **NO**.
 
-This remediation corrects Phase 1 behavior without rewriting certified history or claiming Phase 1 certification. Independent review remains the acceptance gate.
+This remediation corrects Phase 1 runtime behavior without rewriting certified history or claiming
+Phase 1 certification. Independent review remains the acceptance gate, and PR #11 remains open and
+unmerged.

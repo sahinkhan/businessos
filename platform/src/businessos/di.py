@@ -146,9 +146,47 @@ class Container:
         self,
         key: DependencyKey[T],
         request_cache: dict[DependencyKey[Any], object],
+        request_flights: dict[DependencyKey[Any], Task[object]],
+        request_waits: dict[DependencyKey[Any], set[DependencyKey[Any]]],
         request_stack: AsyncExitStack,
         resolver: DependencyResolver,
+        scope_is_active: Callable[[], bool],
     ) -> T:
+        registration = self._registration_for_resolution(key)
+        if registration.scope is DependencyScope.SINGLETON:
+            return cast(T, await self._resolve_singleton(key, registration))
+        if registration.scope is DependencyScope.REQUEST and key in request_cache:
+            return cast(T, request_cache[key])
+        if registration.scope is DependencyScope.REQUEST:
+            path = _resolution_path.get()
+            parent = path[-1] if path else None
+            if parent is not None:
+                self._add_wait(request_waits, parent, key)
+            flight = request_flights.get(key)
+            if flight is None:
+                flight = asyncio.create_task(
+                    self._initialize_request(
+                        key,
+                        registration,
+                        request_cache,
+                        request_flights,
+                        request_stack,
+                        resolver,
+                        scope_is_active,
+                    ),
+                    name=f"businessos-di-request:{key.name}",
+                )
+                flight.add_done_callback(self._consume_flight_result)
+                request_flights[key] = flight
+            try:
+                return cast(T, await asyncio.shield(flight))
+            finally:
+                if parent is not None:
+                    self._remove_wait(request_waits, parent, key)
+        value = await self._provide(key, registration, resolver, request_stack)
+        return cast(T, value)
+
+    def _registration_for_resolution(self, key: DependencyKey[Any]) -> _Registration:
         if self._closed:
             raise ConfigurationError("Dependency container is closed")
         registration = self._registrations.get(key)
@@ -163,20 +201,33 @@ class Container:
             cycle = (*path[path.index(key) :], key)
             names = " -> ".join(item.name for item in cycle)
             raise ConfigurationError(f"Dependency cycle detected: {names}")
-        if registration.scope is DependencyScope.SINGLETON:
-            return cast(T, await self._resolve_singleton(key, registration, resolver))
-        if registration.scope is DependencyScope.REQUEST and key in request_cache:
-            return cast(T, request_cache[key])
-        value = await self._provide(key, registration, resolver, request_stack)
-        if registration.scope is DependencyScope.REQUEST:
+        return registration
+
+    async def _initialize_request(
+        self,
+        key: DependencyKey[Any],
+        registration: _Registration,
+        request_cache: dict[DependencyKey[Any], object],
+        request_flights: dict[DependencyKey[Any], Task[object]],
+        request_stack: AsyncExitStack,
+        resolver: DependencyResolver,
+        scope_is_active: Callable[[], bool],
+    ) -> object:
+        try:
+            value = await self._provide(key, registration, resolver, request_stack)
+            if not scope_is_active():
+                raise ConfigurationError("Dependency scope closed during resolution")
             request_cache[key] = value
-        return cast(T, value)
+            return value
+        finally:
+            current = asyncio.current_task()
+            if request_flights.get(key) is current:
+                request_flights.pop(key, None)
 
     async def _resolve_singleton(
         self,
         key: DependencyKey[Any],
         registration: _Registration,
-        resolver: DependencyResolver,
     ) -> object:
         cached = self._singletons.get(key)
         if cached is not None or key in self._singletons:
@@ -188,7 +239,7 @@ class Container:
         flight = self._singleton_flights.get(key)
         if flight is None:
             flight = asyncio.create_task(
-                self._initialize_singleton(key, registration, resolver),
+                self._initialize_singleton(key, registration),
                 name=f"businessos-di:{key.name}",
             )
             flight.add_done_callback(self._consume_flight_result)
@@ -203,10 +254,10 @@ class Container:
         self,
         key: DependencyKey[Any],
         registration: _Registration,
-        resolver: DependencyResolver,
     ) -> object:
         stack = AsyncExitStack()
         await stack.__aenter__()
+        resolver = _SingletonDependencyResolver(self, stack, key)
         try:
             value = await self._provide(key, registration, resolver, stack)
             self._singletons[key] = value
@@ -221,37 +272,73 @@ class Container:
             if self._singleton_flights.get(key) is current:
                 self._singleton_flights.pop(key, None)
 
+    async def resolve_for_singleton(
+        self,
+        key: DependencyKey[T],
+        stack: AsyncExitStack,
+        resolver: DependencyResolver,
+        owner: DependencyKey[Any],
+    ) -> T:
+        registration = self._registration_for_resolution(key)
+        if registration.scope is DependencyScope.REQUEST:
+            raise ConfigurationError(
+                f"Singleton dependency '{owner.name}' cannot capture request-scoped "
+                f"dependency '{key.name}'"
+            )
+        if registration.scope is DependencyScope.SINGLETON:
+            return cast(T, await self._resolve_singleton(key, registration))
+        return cast(T, await self._provide(key, registration, resolver, stack))
+
     def _add_singleton_wait(
         self,
         source: DependencyKey[Any],
         target: DependencyKey[Any],
     ) -> None:
-        waits = self._singleton_waits.setdefault(source, set())
-        waits.add(target)
-        path = self._wait_path(target, source, set())
-        if path is None:
-            return
-        waits.remove(target)
-        if not waits:
-            self._singleton_waits.pop(source, None)
-        cycle = (source, *path)
-        names = " -> ".join(item.name for item in cycle)
-        raise ConfigurationError(f"Dependency cycle detected: {names}")
+        self._add_wait(self._singleton_waits, source, target)
 
     def _remove_singleton_wait(
         self,
         source: DependencyKey[Any],
         target: DependencyKey[Any],
     ) -> None:
-        waits = self._singleton_waits.get(source)
+        self._remove_wait(self._singleton_waits, source, target)
+
+    @classmethod
+    def _add_wait(
+        cls,
+        graph: dict[DependencyKey[Any], set[DependencyKey[Any]]],
+        source: DependencyKey[Any],
+        target: DependencyKey[Any],
+    ) -> None:
+        waits = graph.setdefault(source, set())
+        waits.add(target)
+        path = cls._wait_path(graph, target, source, set())
+        if path is None:
+            return
+        waits.remove(target)
+        if not waits:
+            graph.pop(source, None)
+        cycle = (source, *path)
+        names = " -> ".join(item.name for item in cycle)
+        raise ConfigurationError(f"Dependency cycle detected: {names}")
+
+    @staticmethod
+    def _remove_wait(
+        graph: dict[DependencyKey[Any], set[DependencyKey[Any]]],
+        source: DependencyKey[Any],
+        target: DependencyKey[Any],
+    ) -> None:
+        waits = graph.get(source)
         if waits is None:
             return
         waits.discard(target)
         if not waits:
-            self._singleton_waits.pop(source, None)
+            graph.pop(source, None)
 
+    @classmethod
     def _wait_path(
-        self,
+        cls,
+        graph: dict[DependencyKey[Any], set[DependencyKey[Any]]],
         current: DependencyKey[Any],
         target: DependencyKey[Any],
         visited: set[DependencyKey[Any]],
@@ -261,10 +348,8 @@ class Container:
         if current in visited:
             return None
         visited.add(current)
-        for dependency in sorted(
-            self._singleton_waits.get(current, ()), key=lambda item: item.name
-        ):
-            path = self._wait_path(dependency, target, visited)
+        for dependency in sorted(graph.get(current, ()), key=lambda item: item.name):
+            path = cls._wait_path(graph, dependency, target, visited)
             if path is not None:
                 return (current, *path)
         return None
@@ -313,6 +398,8 @@ class RequestDependencyScope(
     def __init__(self, container: Container) -> None:
         self._container = container
         self._cache: dict[DependencyKey[Any], object] = {}
+        self._flights: dict[DependencyKey[Any], Task[object]] = {}
+        self._waits: dict[DependencyKey[Any], set[DependencyKey[Any]]] = {}
         self._exit_stack = AsyncExitStack()
         self._entered = False
 
@@ -328,10 +415,44 @@ class RequestDependencyScope(
         traceback: TracebackType | None,
     ) -> None:
         self._entered = False
-        await self._exit_stack.__aexit__(exc_type, exc_value, traceback)
-        self._cache.clear()
+        flights = tuple(self._flights.values())
+        for flight in flights:
+            flight.cancel()
+        if flights:
+            await asyncio.gather(*flights, return_exceptions=True)
+        try:
+            await self._exit_stack.__aexit__(exc_type, exc_value, traceback)
+        finally:
+            self._cache.clear()
+            self._flights.clear()
+            self._waits.clear()
 
     async def resolve(self, key: DependencyKey[T]) -> T:
         if not self._entered:
             raise ConfigurationError("Dependency scope must be entered before resolution")
-        return await self._container.resolve_for_scope(key, self._cache, self._exit_stack, self)
+        return await self._container.resolve_for_scope(
+            key,
+            self._cache,
+            self._flights,
+            self._waits,
+            self._exit_stack,
+            self,
+            lambda: self._entered,
+        )
+
+
+class _SingletonDependencyResolver(DependencyResolver):
+    """Resolve a singleton graph against its own lifetime boundary."""
+
+    def __init__(
+        self,
+        container: Container,
+        stack: AsyncExitStack,
+        owner: DependencyKey[Any],
+    ) -> None:
+        self._container = container
+        self._stack = stack
+        self._owner = owner
+
+    async def resolve(self, key: DependencyKey[T]) -> T:
+        return await self._container.resolve_for_singleton(key, self._stack, self, self._owner)

@@ -2,7 +2,7 @@
 
 import asyncio
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -44,6 +44,44 @@ class UpgradePlan:
     migration_locations: tuple[tuple[str, str], ...]
 
 
+def _ordered_manifests(
+    manifests: Mapping[str, ModuleManifest],
+) -> tuple[ModuleManifest, ...]:
+    pending = set(manifests)
+    resolved: list[str] = []
+    while pending:
+        ready: list[str] = []
+        for module_id in sorted(pending):
+            manifest = manifests[module_id]
+            _validate_dependencies(manifest, manifests)
+            if all(dependency.module_id in resolved for dependency in manifest.dependencies):
+                ready.append(module_id)
+        if not ready:
+            cycle = ", ".join(sorted(pending))
+            raise ConfigurationError(f"Circular module dependency detected: {cycle}")
+        for module_id in ready:
+            pending.remove(module_id)
+            resolved.append(module_id)
+    return tuple(manifests[module_id] for module_id in resolved)
+
+
+def _validate_dependencies(
+    manifest: ModuleManifest,
+    manifests: Mapping[str, ModuleManifest],
+) -> None:
+    for dependency in manifest.dependencies:
+        target = manifests.get(dependency.module_id)
+        if target is None:
+            raise ConfigurationError(
+                f"Module '{manifest.module_id}' requires missing module '{dependency.module_id}'"
+            )
+        if Version(target.version) not in SpecifierSet(dependency.version):
+            raise ConfigurationError(
+                f"Module '{manifest.module_id}' requires '{dependency.module_id}' "
+                f"{dependency.version}, found {target.version}"
+            )
+
+
 class ModuleRegistry:
     def __init__(self, *, platform_version: str, sdk_version: str) -> None:
         self.platform_version = Version(platform_version)
@@ -72,39 +110,15 @@ class ModuleRegistry:
         return registered
 
     def ordered(self) -> tuple[RegisteredModule, ...]:
-        pending = set(self._modules)
-        resolved: list[str] = []
-        while pending:
-            ready: list[str] = []
-            for module_id in sorted(pending):
-                manifest = self._modules[module_id].module.manifest
-                self._validate_dependencies(manifest)
-                if all(dependency.module_id in resolved for dependency in manifest.dependencies):
-                    ready.append(module_id)
-            if not ready:
-                cycle = ", ".join(sorted(pending))
-                raise ConfigurationError(f"Circular module dependency detected: {cycle}")
-            for module_id in ready:
-                pending.remove(module_id)
-                resolved.append(module_id)
-        return tuple(self._modules[module_id] for module_id in resolved)
+        manifests = {
+            module_id: registered.module.manifest for module_id, registered in self._modules.items()
+        }
+        return tuple(
+            self._modules[manifest.module_id] for manifest in _ordered_manifests(manifests)
+        )
 
     def entries(self) -> tuple[RegisteredModule, ...]:
         return tuple(self._modules[module_id] for module_id in sorted(self._modules))
-
-    def _validate_dependencies(self, manifest: ModuleManifest) -> None:
-        for dependency in manifest.dependencies:
-            target = self._modules.get(dependency.module_id)
-            if target is None:
-                raise ConfigurationError(
-                    f"Module '{manifest.module_id}' requires missing module "
-                    f"'{dependency.module_id}'"
-                )
-            if Version(target.module.manifest.version) not in SpecifierSet(dependency.version):
-                raise ConfigurationError(
-                    f"Module '{manifest.module_id}' requires '{dependency.module_id}' "
-                    f"{dependency.version}, found {target.module.manifest.version}"
-                )
 
 
 class LifecycleManager:
@@ -351,11 +365,21 @@ class UpgradeCoordinator:
         target_map = {manifest.module_id: manifest for manifest in target_list}
         if len(target_map) != len(target_list):
             raise ConflictError("Upgrade targets must contain unique module IDs")
-        migrations: list[tuple[str, str]] = []
-        ordered_ids: list[str] = []
-        for registered in self._registry.ordered():
+        current_entries = self._registry.entries()
+        current_ids = {registered.module.manifest.module_id for registered in current_entries}
+        unknown = set(target_map) - current_ids
+        if unknown:
+            raise ConfigurationError(f"Upgrade targets contain unknown modules: {sorted(unknown)}")
+        proposed = {
+            registered.module.manifest.module_id: target_map.get(
+                registered.module.manifest.module_id,
+                registered.module.manifest,
+            )
+            for registered in current_entries
+        }
+        for registered in current_entries:
             current = registered.module.manifest
-            target = target_map.get(current.module_id, current)
+            target = proposed[current.module_id]
             if Version(target.version) < Version(current.version):
                 raise ConfigurationError(
                     f"Upgrade target cannot downgrade module '{current.module_id}'"
@@ -366,9 +390,10 @@ class UpgradeCoordinator:
                 python=str(self._registry.python_version),
             ):
                 raise ConfigurationError(f"Upgrade target is incompatible: {target.module_id}")
-            ordered_ids.append(target.module_id)
-            migrations.extend((target.module_id, location) for location in target.migrations)
-        unknown = set(target_map) - set(ordered_ids)
-        if unknown:
-            raise ConfigurationError(f"Upgrade targets contain unknown modules: {sorted(unknown)}")
-        return UpgradePlan(tuple(ordered_ids), tuple(migrations))
+        ordered = _ordered_manifests(proposed)
+        migrations = tuple(
+            (manifest.module_id, location)
+            for manifest in ordered
+            for location in manifest.migrations
+        )
+        return UpgradePlan(tuple(manifest.module_id for manifest in ordered), migrations)

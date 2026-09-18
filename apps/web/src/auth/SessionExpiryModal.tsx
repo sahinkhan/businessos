@@ -1,66 +1,58 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { Modal } from '../components/overlays/Modal';
 import { Button } from '../components/actions/Button';
+import { useI18n } from '../i18n/I18nContext';
 
 export const SessionExpiryModal: React.FC = () => {
-  const { session, refreshToken, logout, isAuthenticated } = useAuth();
+  const { session, reloadSession, logout, isAuthenticated } = useAuth();
   const [showWarning, setShowWarning] = useState(false);
-  const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
+  const [secondsRemaining, setSecondsRemaining] = useState(0);
+  const { t, tp } = useI18n();
 
   useEffect(() => {
     if (!isAuthenticated || !session) {
       setShowWarning(false);
       return;
     }
-
-    const interval = setInterval(() => {
-      const nowSec = Math.floor(Date.now() / 1000);
-      const remaining = session.expiresAt - nowSec;
+    const update = () => {
+      const remaining = session.expiresAt - Math.floor(Date.now() / 1000);
       setSecondsRemaining(remaining);
-
-      // Show warning when 5 minutes or less remain
-      if (remaining > 0 && remaining <= 300) {
-        setShowWarning(true);
-      } else if (remaining <= 0) {
-        setShowWarning(false);
-        logout();
-      } else {
-        setShowWarning(false);
-      }
-    }, 5000);
-
-    return () => clearInterval(interval);
+      setShowWarning(remaining > 0 && remaining <= 300);
+      if (remaining <= 0) void logout();
+    };
+    update();
+    const interval = window.setInterval(update, 5000);
+    return () => window.clearInterval(interval);
   }, [isAuthenticated, session, logout]);
 
   if (!showWarning) return null;
 
   return (
     <Modal
-      isOpen={showWarning}
+      isOpen
       onClose={() => setShowWarning(false)}
-      title="Session Expiration Warning"
+      closeLabel={t('modal.close')}
+      title={t('auth.session.title')}
       footer={
         <>
-          <Button variant="secondary" onClick={() => logout()}>
-            Log out now
+          <Button variant="secondary" onClick={() => void logout()}>
+            {t('auth.session.logout')}
           </Button>
           <Button
             variant="primary"
             onClick={async () => {
-              await refreshToken();
+              await reloadSession();
               setShowWarning(false);
             }}
           >
-            Extend session
+            {t('auth.session.extend')}
           </Button>
         </>
       }
     >
       <p style={{ color: 'var(--color-text-secondary)', fontSize: '0.875rem' }}>
-        Your active session will expire in approximately{' '}
-        {Math.max(1, Math.ceil(secondsRemaining / 60))} minute(s). Would you like to extend your
-        session?
+        {tp('auth.session_minutes', Math.max(1, Math.ceil(secondsRemaining / 60)))}
       </p>
     </Modal>
   );

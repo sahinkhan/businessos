@@ -14,6 +14,7 @@ from businessos.dependencies import (
     EVENT_PUBLISHER,
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE,
+    PROVIDER_REGISTRY,
     UNIT_OF_WORK_FACTORY,
 )
 from businessos.di import Container, DependencyKey, DependencyResolver, DependencyScope
@@ -87,6 +88,7 @@ def create_application(
     metadata = MetadataRegistry(contributions)
     permissions = PermissionRegistry(contributions)
     providers = ProviderRegistry(contributions)
+    container.register(PROVIDER_REGISTRY, lambda _: providers, scope=DependencyScope.SINGLETON)
     provider_dependencies = {
         "cache": cast(DependencyKey[object], CACHE),
         "event-publisher": cast(DependencyKey[object], EVENT_PUBLISHER),

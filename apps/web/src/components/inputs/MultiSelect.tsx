@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, ChevronDown } from 'lucide-react';
 import { SelectOption } from './Select';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface MultiSelectProps {
   options: SelectOption[];
@@ -16,12 +17,13 @@ export const MultiSelect: React.FC<MultiSelectProps> = ({
   options,
   value,
   onChange,
-  placeholder = 'Select options...',
+  placeholder,
   disabled,
   error,
   'aria-label': ariaLabel,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const { t } = useI18nText();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -77,7 +79,7 @@ export const MultiSelect: React.FC<MultiSelectProps> = ({
       >
         {value.length === 0 && (
           <span style={{ color: 'var(--color-text-muted)', fontSize: '0.875rem' }}>
-            {placeholder}
+            {placeholder ?? t('controls.select_options')}
           </span>
         )}
         {value.map((v) => {
@@ -101,7 +103,7 @@ export const MultiSelect: React.FC<MultiSelectProps> = ({
                 <button
                   type="button"
                   onClick={(e) => removeValue(v, e)}
-                  aria-label={`Remove ${opt?.label || v}`}
+                  aria-label={t('controls.remove_option', { label: opt?.label || v })}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                 >
                   <X size={12} />

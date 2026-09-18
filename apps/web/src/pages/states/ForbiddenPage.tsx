@@ -2,9 +2,11 @@ import React from 'react';
 import { ShieldAlert } from 'lucide-react';
 import { Button } from '../../components/actions/Button';
 import { useNavigate } from 'react-router-dom';
+import { useI18n } from '../../i18n/I18nContext';
 
 export const ForbiddenPage: React.FC = () => {
   const navigate = useNavigate();
+  const { t } = useI18n();
 
   return (
     <div
@@ -40,7 +42,7 @@ export const ForbiddenPage: React.FC = () => {
           marginBottom: '8px',
         }}
       >
-        403 - Authorization Denied
+        {t('errors.forbidden_title')}
       </h1>
       <p
         style={{
@@ -50,11 +52,10 @@ export const ForbiddenPage: React.FC = () => {
           marginBottom: '24px',
         }}
       >
-        Your account does not possess the requisite policy permissions to view or interact with this
-        resource. Contact your enterprise system administrator.
+        {t('errors.forbidden_body')}
       </p>
       <Button variant="primary" onClick={() => navigate('/')}>
-        Return to Dashboard
+        {t('errors.return_dashboard')}
       </Button>
     </div>
   );

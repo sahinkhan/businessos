@@ -1,120 +1,117 @@
-import { ApiError, RequestOptions } from './types';
+import { ApiError, ApiErrorPayload, RequestOptions } from './types';
+
+export type CsrfTokenProvider = () => string | null;
+export type UnauthorizedHandler = () => void;
+
+function generateCorrelationId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+  }
+  return `corr_${Date.now().toString(36)}`;
+}
+
+function toErrorPayload(value: unknown, statusText: string): ApiErrorPayload {
+  if (typeof value !== 'object' || value === null) {
+    return { code: 'HTTP_ERROR', message: statusText || 'API request failed' };
+  }
+  const candidate = value as Record<string, unknown>;
+  return {
+    code: typeof candidate.code === 'string' ? candidate.code : 'HTTP_ERROR',
+    message:
+      typeof candidate.message === 'string'
+        ? candidate.message
+        : statusText || 'API request failed',
+    details: candidate.details,
+    correlationId:
+      typeof candidate.correlationId === 'string' ? candidate.correlationId : undefined,
+  };
+}
 
 export class ApiClient {
-  private baseUrl: string;
+  private readonly baseUrl: string;
+  private csrfTokenProvider: CsrfTokenProvider | null = null;
+  private onUnauthorized: UnauthorizedHandler | null = null;
 
-  constructor(baseUrl: string = '/api') {
+  constructor(baseUrl = '/api/v1') {
     this.baseUrl = baseUrl;
   }
 
-  private getAuthToken(): string | null {
-    try {
-      const sessionStr = localStorage.getItem('businessos.auth.session');
-      if (sessionStr) {
-        const session = JSON.parse(sessionStr);
-        return session.token || null;
-      }
-    } catch {
-      // ignore
-    }
-    return null;
+  public setCsrfTokenProvider(provider: CsrfTokenProvider | null): void {
+    this.csrfTokenProvider = provider;
   }
 
-  private getActiveScope() {
-    try {
-      const scopeStr = localStorage.getItem('businessos.active_scope');
-      if (scopeStr) return JSON.parse(scopeStr);
-    } catch {
-      // ignore
-    }
-    return null;
+  public setOnUnauthorized(handler: UnauthorizedHandler | null): void {
+    this.onUnauthorized = handler;
   }
 
-  public async request<T = any>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-    const { params, body, headers: customHeaders, scope, ...customOptions } = options;
-
+  public async request<T = unknown>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    const { params, body, headers: customHeaders, ...customOptions } = options;
     let url = endpoint.startsWith('http')
       ? endpoint
       : `${this.baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
 
     if (params) {
       const searchParams = new URLSearchParams();
-      Object.entries(params).forEach(([key, val]) => {
-        if (val !== undefined && val !== null) {
-          searchParams.append(key, String(val));
-        }
-      });
-      const qs = searchParams.toString();
-      if (qs) {
-        url += (url.includes('?') ? '&' : '?') + qs;
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined) searchParams.append(key, String(value));
       }
+      const query = searchParams.toString();
+      if (query) url += `${url.includes('?') ? '&' : '?'}${query}`;
     }
 
-    const token = this.getAuthToken();
-    const activeScope = scope || this.getActiveScope();
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'X-Correlation-Id': 'corr_' + Math.random().toString(36).substring(2, 9),
-      ...(customHeaders as Record<string, string>),
-    };
-
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+    const headers = new Headers(customHeaders);
+    headers.set('Accept', 'application/json');
+    headers.set('X-Correlation-Id', generateCorrelationId());
+    if (body !== undefined && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
     }
 
-    if (activeScope?.tenantId) {
-      headers['X-Tenant-Id'] = activeScope.tenantId;
-    }
-    if (activeScope?.companyId) {
-      headers['X-Company-Id'] = activeScope.companyId;
-    }
-    if (activeScope?.siteId) {
-      headers['X-Operating-Site-Id'] = activeScope.siteId;
+    const method = (customOptions.method ?? 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      const csrfToken = this.csrfTokenProvider?.();
+      if (csrfToken && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', csrfToken);
     }
 
-    const config: RequestInit = {
+    const response = await fetch(url, {
+      credentials: 'same-origin',
       ...customOptions,
       headers,
-    };
+      body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+    });
 
-    if (body !== undefined) {
-      config.body = typeof body === 'string' ? body : JSON.stringify(body);
-    }
-
-    const response = await fetch(url, config);
+    if (response.status === 401) this.onUnauthorized?.();
 
     if (!response.ok) {
-      let errorPayload = { code: 'HTTP_ERROR', message: response.statusText };
+      let payload: unknown;
       try {
-        errorPayload = await response.json();
+        payload = await response.json();
       } catch {
-        // ignore
+        payload = null;
       }
-      throw new ApiError(response.status, errorPayload);
+      throw new ApiError(response.status, toErrorPayload(payload, response.statusText));
     }
 
-    if (response.status === 204) {
-      return {} as T;
-    }
-
+    if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
   }
 
-  public get<T = any>(endpoint: string, options?: RequestOptions): Promise<T> {
+  public get<T = unknown>(endpoint: string, options?: RequestOptions): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'GET' });
   }
 
-  public post<T = any>(endpoint: string, body?: any, options?: RequestOptions): Promise<T> {
+  public post<T = unknown>(endpoint: string, body?: unknown, options?: RequestOptions): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'POST', body });
   }
 
-  public put<T = any>(endpoint: string, body?: any, options?: RequestOptions): Promise<T> {
+  public put<T = unknown>(endpoint: string, body?: unknown, options?: RequestOptions): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'PUT', body });
   }
 
-  public delete<T = any>(endpoint: string, options?: RequestOptions): Promise<T> {
+  public delete<T = unknown>(endpoint: string, options?: RequestOptions): Promise<T> {
     return this.request<T>(endpoint, { ...options, method: 'DELETE' });
   }
 }

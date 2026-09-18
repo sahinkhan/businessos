@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AlertOctagon, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import { Button } from '../actions/Button';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface ErrorStateProps {
   title?: string;
@@ -11,13 +12,16 @@ export interface ErrorStateProps {
 }
 
 export const ErrorState: React.FC<ErrorStateProps> = ({
-  title = 'An error occurred',
-  message = 'We encountered an issue loading this information. Please try again.',
+  title,
+  message,
   error,
   onRetry,
   style,
 }) => {
   const [showDetails, setShowDetails] = useState(false);
+  const { t } = useI18nText();
+  const resolvedTitle = title ?? t('errors.generic_title');
+  const resolvedMessage = message ?? t('errors.generic_body');
 
   return (
     <div
@@ -54,7 +58,7 @@ export const ErrorState: React.FC<ErrorStateProps> = ({
           marginBottom: '6px',
         }}
       >
-        {title}
+        {resolvedTitle}
       </h3>
       <p
         style={{
@@ -64,11 +68,11 @@ export const ErrorState: React.FC<ErrorStateProps> = ({
           marginBottom: '16px',
         }}
       >
-        {message}
+        {resolvedMessage}
       </p>
       {onRetry && (
         <Button variant="primary" size="md" leftIcon={<RefreshCw size={16} />} onClick={onRetry}>
-          Retry
+          {t('common.retry')}
         </Button>
       )}
       {Boolean(error) && (
@@ -87,7 +91,7 @@ export const ErrorState: React.FC<ErrorStateProps> = ({
               gap: '4px',
             }}
           >
-            {showDetails ? 'Hide technical details' : 'Show technical details'}
+            {showDetails ? t('errors.hide_details') : t('errors.show_details')}
             {showDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
           {showDetails && (

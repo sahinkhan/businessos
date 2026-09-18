@@ -1,17 +1,37 @@
-export interface UserProfile {
+export type AuthenticationStrength =
+  'oidc' | 'mfa' | 'phishing_resistant' | 'break_glass' | 'unspecified';
+
+export interface PrincipalIdentity {
   id: string;
-  email: string;
-  name: string;
-  roles: string[];
-  permissions: string[];
   tenantId: string;
-  avatarUrl?: string;
+  type: 'user' | 'service_account' | 'device';
+  displayName?: string;
+  email?: string;
+  authenticationStrength: AuthenticationStrength | string;
+}
+
+export interface SessionScope {
+  tenantId: string;
+  enterpriseGroupId?: string | null;
+  legalEntityId?: string | null;
+  companyId?: string | null;
+  operatingSiteId?: string | null;
 }
 
 export interface SessionInfo {
-  token: string;
-  expiresAt: number; // Unix timestamp in seconds
-  issuedAt: number;
+  principal: PrincipalIdentity;
+  activeScope: SessionScope;
+  expiresAt: number;
+  csrfToken: string;
+}
+
+export interface UserProfile {
+  id: string;
+  email?: string;
+  name: string;
+  tenantId: string;
+  avatarUrl?: string;
+  principal: PrincipalIdentity;
 }
 
 export interface AuthState {
@@ -19,10 +39,30 @@ export interface AuthState {
   session: SessionInfo | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  status:
+    | 'initializing'
+    | 'authenticated'
+    | 'unauthenticated'
+    | 'service_unavailable'
+    | 'authorization_denied';
+  error: string | null;
 }
 
 export interface AuthContextValue extends AuthState {
-  login: (email: string, password?: string) => Promise<void>;
+  runSecurityTransition: SecurityTransitionRunner;
+  login: (returnTo?: string) => Promise<void>;
   logout: () => Promise<void>;
-  refreshToken: () => Promise<void>;
+  reloadSession: () => Promise<void>;
+  reconcileAuthoritativeSession: () => Promise<SessionReconciliation>;
+  rejectAuthoritativeSession: (error: unknown) => void;
+  updateSessionSecurity: (
+    scope: SessionScope,
+    csrfToken: string,
+    expiresAt: number,
+    advanceContext?: boolean
+  ) => void;
 }
+import type { SecurityTransitionRunner } from '../api/securityTransition';
+
+export type SessionReconciliation =
+  { status: 'accepted'; session: SessionInfo | null } | { status: 'stale'; session: null };

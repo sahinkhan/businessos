@@ -3,6 +3,7 @@ import { AlignJustify } from 'lucide-react';
 import { Dropdown } from '../overlays/Dropdown';
 import { Button } from '../actions/Button';
 import { TableDensity } from './types';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface DensityToggleProps {
   density: TableDensity;
@@ -10,27 +11,28 @@ export interface DensityToggleProps {
 }
 
 export const DensityToggle: React.FC<DensityToggleProps> = ({ density, onChange }) => {
+  const { t } = useI18nText();
   return (
     <Dropdown
       trigger={
         <Button variant="outline" size="sm" leftIcon={<AlignJustify size={14} />}>
-          Density
+          {t('table.density')}
         </Button>
       }
       items={[
         {
           id: 'compact',
-          label: 'Compact' + (density === 'compact' ? ' ✓' : ''),
+          label: t('table.density.compact') + (density === 'compact' ? ' ✓' : ''),
           onClick: () => onChange('compact'),
         },
         {
           id: 'normal',
-          label: 'Normal' + (density === 'normal' ? ' ✓' : ''),
+          label: t('table.density.normal') + (density === 'normal' ? ' ✓' : ''),
           onClick: () => onChange('normal'),
         },
         {
           id: 'comfortable',
-          label: 'Comfortable' + (density === 'comfortable' ? ' ✓' : ''),
+          label: t('table.density.comfortable') + (density === 'comfortable' ? ' ✓' : ''),
           onClick: () => onChange('comfortable'),
         },
       ]}

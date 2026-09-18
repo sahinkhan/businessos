@@ -1,26 +1,39 @@
 """Identity and membership module registration and handlers."""
 
 import json
+import secrets
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from importlib.resources import files
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 from uuid import UUID, uuid4
 
+from businessos_tenant import DatabaseTenantAccessValidator
 from pydantic import Field
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from businessos.sdk import (
+    PROVIDER_REGISTRY,
+    TRUSTED_CONTEXT_RESOLVER,
+    UNIT_OF_WORK_FACTORY,
     BusinessOSError,
     Command,
+    DependencyScope,
     DomainEvent,
     HandlingContext,
     ModuleManifest,
     ModuleRegistration,
     PermissionDeclaration,
+    ProviderRegistry,
     Query,
+    Request,
     RequestContext,
+    RequestDependencyScope,
+    RequestIdentity,
+    Response,
     TenantContext,
+    UnitOfWorkFactory,
 )
 
 from .contracts import IdentityContract, MembershipRecord, MembershipStatus
@@ -33,6 +46,81 @@ from .models import (
     SERVICE_ACCOUNTS,
     USERS,
 )
+from .web_sessions import (
+    AUTH_TRANSACTION_COOKIE,
+    AUTH_TRANSACTION_PROVIDER,
+    OIDC_BROWSER_PROVIDER,
+    PRINCIPAL_SESSION_VALIDATOR,
+    SESSION_COOKIE,
+    SESSION_PROVIDER,
+    WEB_SESSION_CONFIGURATION,
+    WEB_SESSION_SERVICE,
+    AuthorizationTransactionStore,
+    DatabasePrincipalSessionValidator,
+    OIDCBrowserProvider,
+    PrincipalSessionValidator,
+    WebSessionApplicationService,
+    WebSessionConfiguration,
+    WebSessionContract,
+    WebSessionStore,
+    cookie_value,
+    expire_cookie,
+    session_cookie,
+    transaction_cookie,
+)
+
+
+class WebSessionContextResolver:
+    def __init__(self, service: WebSessionApplicationService) -> None:
+        self._service = service
+
+    async def resolve(self, identity: RequestIdentity) -> RequestContext:
+        handle = cookie_value(dict(identity.headers), SESSION_COOKIE)
+        if handle is None:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+            )
+        session = await self._service.get_session(handle)
+        if session is None:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+            )
+        return self._service.request_context(session, identity)
+
+
+def _web_session_service(
+    registry: ProviderRegistry, unit_of_work_factory: UnitOfWorkFactory
+) -> WebSessionApplicationService:
+    try:
+        configuration = cast(WebSessionConfiguration, registry.get(WEB_SESSION_CONFIGURATION))
+        sessions = cast(WebSessionStore, registry.get(SESSION_PROVIDER))
+        transactions = cast(AuthorizationTransactionStore, registry.get(AUTH_TRANSACTION_PROVIDER))
+        oidc = cast(OIDCBrowserProvider, registry.get(OIDC_BROWSER_PROVIDER))
+    except Exception:
+        raise BusinessOSError(
+            "authentication_unavailable",
+            "Authentication service is unavailable",
+            status_code=503,
+        ) from None
+    return WebSessionApplicationService(
+        configuration=configuration,
+        sessions=sessions,
+        transactions=transactions,
+        oidc=oidc,
+        principal_validator=(
+            cast(PrincipalSessionValidator, registry.get(PRINCIPAL_SESSION_VALIDATOR))
+            if registry.contains(PRINCIPAL_SESSION_VALIDATOR)
+            else DatabasePrincipalSessionValidator(
+                installation_id=configuration.installation_id,
+                unit_of_work_factory=unit_of_work_factory,
+                tenant_access=DatabaseTenantAccessValidator(
+                    configuration.installation_id, unit_of_work_factory
+                ),
+            )
+        ),
+    )
 
 
 class CreateUser(Command):
@@ -125,6 +213,7 @@ class IdentityModule:
             files("businessos_identity").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
+        self._web_sessions: WebSessionApplicationService | None = None
 
     async def register(self, registration: ModuleRegistration) -> None:
         for key, description in (
@@ -134,6 +223,26 @@ class IdentityModule:
         ):
             registration.permission(PermissionDeclaration(key=key, description=description))
         registration.contract("foundation.identity.v1", IdentityContract())
+        registration.contract("foundation.identity.web-session.v1", WebSessionContract())
+        registration.dependency(
+            WEB_SESSION_SERVICE,
+            self._provide_web_session_service,
+            scope=DependencyScope.SINGLETON,
+        )
+        registration.dependency(
+            TRUSTED_CONTEXT_RESOLVER,
+            self._provide_context_resolver,
+            scope=DependencyScope.SINGLETON,
+        )
+        registration.middleware("web-session-csrf", self._csrf_middleware)
+        registration.route("GET", "/api/v1/auth/session", self._http_session, name="auth-session")
+        registration.route(
+            "POST", "/api/v1/auth/login/start", self._http_login_start, name="auth-login-start"
+        )
+        registration.route(
+            "GET", "/api/v1/auth/callback", self._http_callback, name="auth-callback"
+        )
+        registration.route("POST", "/api/v1/auth/logout", self._http_logout, name="auth-logout")
         registration.command(CreateUser, self._create_user, permission="foundation.identity.manage")
         registration.command(
             MapExternalIdentity, self._map_external, permission="foundation.identity.manage"
@@ -163,6 +272,159 @@ class IdentityModule:
         registration.query(
             GetMembership, self._get_membership, permission="foundation.identity.read"
         )
+
+    async def _provide_web_session_service(
+        self, dependencies: object
+    ) -> WebSessionApplicationService:
+        registry = await cast(RequestDependencyScope, dependencies).resolve(PROVIDER_REGISTRY)
+        unit_of_work_factory = await cast(RequestDependencyScope, dependencies).resolve(
+            UNIT_OF_WORK_FACTORY
+        )
+        service = _web_session_service(registry, unit_of_work_factory)
+        self._web_sessions = service
+        return service
+
+    @staticmethod
+    async def _provide_context_resolver(dependencies: object) -> WebSessionContextResolver:
+        service = await cast(RequestDependencyScope, dependencies).resolve(WEB_SESSION_SERVICE)
+        return WebSessionContextResolver(service)
+
+    async def _csrf_middleware(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return await call_next(request)
+        handle = cookie_value(request.headers, SESSION_COOKIE)
+        if handle is None:
+            return await call_next(request)
+        service = self._web_sessions
+        if service is None:
+            raise BusinessOSError(
+                "authentication_unavailable",
+                "Authentication service is unavailable",
+                status_code=503,
+            )
+        session = await service.get_session(handle, touch=False)
+        supplied = request.headers.get("x-csrf-token", "")
+        if (
+            session is None
+            or not supplied
+            or not secrets.compare_digest(supplied, session.csrf_token)
+        ):
+            raise BusinessOSError("invalid_csrf", "CSRF validation failed", status_code=403)
+        fetch_site = request.headers.get("sec-fetch-site")
+        if fetch_site not in {None, "same-origin", "none"}:
+            raise BusinessOSError("invalid_csrf", "CSRF validation failed", status_code=403)
+        origin = request.headers.get("origin")
+        host = request.headers.get("host")
+        if origin is not None and (host is None or origin != f"{request.scheme}://{host}"):
+            raise BusinessOSError("invalid_csrf", "CSRF validation failed", status_code=403)
+        return await call_next(request)
+
+    @staticmethod
+    async def _resolve_service(
+        request: Request, dependencies: RequestDependencyScope
+    ) -> WebSessionApplicationService:
+        service = await dependencies.resolve(WEB_SESSION_SERVICE)
+        return service
+
+    async def _http_session(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        service = await self._resolve_service(request, dependencies)
+        handle = cookie_value(request.headers, SESSION_COOKIE)
+        session = await service.get_session(handle) if handle else None
+        if session is None:
+            response = Response.json(
+                {"code": "unauthenticated", "message": "Authentication required"},
+                status_code=401,
+            )
+            response.append_header("set-cookie", expire_cookie(SESSION_COOKIE))
+            return response
+        return Response.json(service.project(session))
+
+    async def _http_login_start(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        service = await self._resolve_service(request, dependencies)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise BusinessOSError("invalid_request", "Request must be an object", status_code=400)
+        payload = cast(dict[str, object], payload)
+        provider = payload.get("provider", "default")
+        return_to = payload.get("return_to")
+        if not isinstance(provider, str) or not isinstance(return_to, str | None):
+            raise BusinessOSError("invalid_request", "Request is not valid", status_code=400)
+        started = await service.start_login(
+            provider, return_to, rate_limit_key=f"login:{request.client_host}"
+        )
+        response = Response.json(
+            {
+                "authorization_url": started.authorization_url,
+                "expires_at": started.expires_at,
+            }
+        )
+        response.append_header(
+            "set-cookie", transaction_cookie(started.browser_binding, started.expires_at)
+        )
+        return response
+
+    async def _http_callback(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        service = await self._resolve_service(request, dependencies)
+        state = request.query_params.get("state", ("",))[0]
+        code = request.query_params.get("code", ("",))[0]
+        binding = cookie_value(request.headers, AUTH_TRANSACTION_COOKIE) or ""
+        if not state or not code or not binding:
+            if state:
+                try:
+                    await service.transactions.consume(state, binding)
+                except BusinessOSError:
+                    pass
+            elif binding:
+                await service.transactions.clear_browser_binding(binding)
+            response = Response.json(
+                {"code": "invalid_authentication_callback", "message": "Authentication failed"},
+                status_code=401,
+            )
+            response.append_header("set-cookie", expire_cookie(AUTH_TRANSACTION_COOKIE))
+            return response
+        try:
+            handle, session, return_to = await service.complete_oidc_login(
+                state=state, code=code, browser_binding=binding
+            )
+        except BusinessOSError as exc:
+            response = Response.json(exc.payload(), status_code=exc.status_code)
+            response.append_header("set-cookie", expire_cookie(AUTH_TRANSACTION_COOKIE))
+            return response
+        except Exception:
+            await service.transactions.clear_browser_binding(binding)
+            response = Response.json(
+                {"code": "invalid_authentication_callback", "message": "Authentication failed"},
+                status_code=401,
+            )
+            response.append_header("set-cookie", expire_cookie(AUTH_TRANSACTION_COOKIE))
+            return response
+        response = Response(status_code=303, headers={"location": return_to})
+        response.append_header("set-cookie", expire_cookie(AUTH_TRANSACTION_COOKIE))
+        response.append_header("set-cookie", session_cookie(handle, session.absolute_expires_at))
+        return response
+
+    async def _http_logout(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        service = await self._resolve_service(request, dependencies)
+        handle = cookie_value(request.headers, SESSION_COOKIE)
+        if handle:
+            session = await service.get_session(handle, touch=False)
+            supplied = request.headers.get("x-csrf-token", "")
+            if session is not None and not secrets.compare_digest(supplied, session.csrf_token):
+                raise BusinessOSError("invalid_csrf", "CSRF validation failed", status_code=403)
+            await service.logout(handle)
+        response = Response(status_code=204)
+        response.append_header("set-cookie", expire_cookie(SESSION_COOKIE))
+        return response
 
     async def start(self) -> None:
         return None

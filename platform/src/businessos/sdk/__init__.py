@@ -1,7 +1,13 @@
 """Stable public SDK facade for trusted first-party in-process modules."""
 
 from businessos.context import RequestContext, TenantContext
-from businessos.dependencies import MESSAGE_DISPATCHER, OBJECT_STORAGE, UNIT_OF_WORK_FACTORY
+from businessos.dependencies import (
+    MESSAGE_DISPATCHER,
+    OBJECT_STORAGE,
+    PROVIDER_REGISTRY,
+    TRUSTED_CONTEXT_RESOLVER,
+    UNIT_OF_WORK_FACTORY,
+)
 from businessos.di import DependencyKey, DependencyScope, RequestDependencyScope
 from businessos.errors import BusinessOSError
 from businessos.features import FeatureFlag
@@ -14,6 +20,7 @@ from businessos.modules import ModuleManifest, ModuleRegistration
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.uow import UnitOfWork, UnitOfWorkFactory
+from businessos.providers import ProviderRegistry
 from businessos.security import (
     Principal,
     PrincipalType,
@@ -24,6 +31,8 @@ from businessos.security import (
 __all__ = [
     "MESSAGE_DISPATCHER",
     "OBJECT_STORAGE",
+    "PROVIDER_REGISTRY",
+    "TRUSTED_CONTEXT_RESOLVER",
     "UNIT_OF_WORK_FACTORY",
     "BusinessOSError",
     "Command",
@@ -41,6 +50,7 @@ __all__ = [
     "PermissionDeclaration",
     "Principal",
     "PrincipalType",
+    "ProviderRegistry",
     "Query",
     "Request",
     "RequestContext",

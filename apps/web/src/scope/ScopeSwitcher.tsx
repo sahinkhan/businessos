@@ -1,15 +1,17 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Building2, ChevronDown, Check } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Building2, Check, ChevronDown } from 'lucide-react';
 import { useScope } from './ScopeContext';
+import { useI18n } from '../i18n/I18nContext';
 
 export const ScopeSwitcher: React.FC = () => {
-  const { scope, tenants, setTenant, setCompany, setSite } = useScope();
+  const { scope, tenants, status, error, setTenant, setCompany, setSite } = useScope();
   const [isOpen, setIsOpen] = useState(false);
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handleOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+    const handleOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setIsOpen(false);
       }
     };
@@ -17,15 +19,25 @@ export const ScopeSwitcher: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleOutside);
   }, []);
 
-  const currentTenant = tenants.find((t) => t.id === scope.tenantId) || tenants[0];
+  if (!scope || status === 'loading' || status === 'unavailable') {
+    return (
+      <button type="button" disabled aria-label={t('scope.unavailable')}>
+        <Building2 size={16} />{' '}
+        {status === 'loading' ? t('scope.loading') : (error ?? t('scope.unavailable'))}
+      </button>
+    );
+  }
+
+  const currentTenant = tenants.find((tenant) => tenant.id === scope.tenantId);
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => setIsOpen((open) => !open)}
         aria-expanded={isOpen}
-        aria-label="Switch organization scope"
+        aria-label={t('scope.switch')}
+        disabled={status === 'switching'}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -37,23 +49,18 @@ export const ScopeSwitcher: React.FC = () => {
           color: 'var(--color-text-primary)',
           fontSize: '0.8125rem',
           cursor: 'pointer',
-          outline: 'none',
         }}
       >
         <Building2 size={16} color="var(--color-action-primary)" />
-        <div style={{ textAlign: 'left', lineHeight: 1.2 }}>
-          <div style={{ fontWeight: 600 }}>{scope.companyName}</div>
-          <div style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
-            {scope.siteName}
-          </div>
-        </div>
-        <ChevronDown size={14} color="var(--color-text-muted)" />
+        <span>
+          {scope.companyName} · {scope.siteName}
+        </span>
+        <ChevronDown size={14} />
       </button>
-
-      {isOpen && (
+      {isOpen && currentTenant && (
         <div
           role="dialog"
-          aria-label="Scope Selector"
+          aria-label={t('scope.selector')}
           style={{
             position: 'absolute',
             top: '100%',
@@ -68,135 +75,43 @@ export const ScopeSwitcher: React.FC = () => {
             padding: '12px',
           }}
         >
-          {/* Tenant selection */}
-          <div style={{ marginBottom: '12px' }}>
-            <label
-              style={{
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                color: 'var(--color-text-muted)',
-                display: 'block',
-                marginBottom: '4px',
-              }}
-            >
-              TENANT
-            </label>
-            <select
-              value={scope.tenantId}
-              onChange={(e) => setTenant(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '6px 8px',
-                borderRadius: '4px',
-                border: '1px solid var(--color-border-default)',
-                backgroundColor: 'var(--color-surface-card)',
-                color: 'var(--color-text-primary)',
-                fontSize: '0.8125rem',
-              }}
-            >
-              {tenants.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Companies & Sites in Tenant */}
-          <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
-            <label
-              style={{
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                color: 'var(--color-text-muted)',
-                display: 'block',
-                marginBottom: '6px',
-              }}
-            >
-              LEGAL ENTITIES & SITES
-            </label>
-            {currentTenant.groups.map((group) => (
-              <div key={group.id} style={{ marginBottom: '8px' }}>
-                <div
-                  style={{
-                    fontSize: '0.6875rem',
-                    fontWeight: 600,
-                    color: 'var(--color-text-secondary)',
-                    padding: '2px 4px',
-                  }}
-                >
-                  {group.name}
-                </div>
-                {group.companies.map((company) => {
-                  const isCurrentCompany = company.id === scope.companyId;
-                  return (
-                    <div key={company.id} style={{ marginLeft: '6px', marginBottom: '4px' }}>
-                      <div
+          <label htmlFor="tenant-scope">{t('scope.tenant')}</label>
+          <select
+            id="tenant-scope"
+            value={scope.tenantId}
+            onChange={(event) => void setTenant(event.target.value)}
+          >
+            {tenants.map((tenant) => (
+              <option key={tenant.id} value={tenant.id}>
+                {tenant.name}
+              </option>
+            ))}
+          </select>
+          {currentTenant.groups.map((group) => (
+            <div key={group.id}>
+              <strong>{group.name}</strong>
+              {group.companies.map((company) => (
+                <div key={company.id}>
+                  <button type="button" onClick={() => void setCompany(company.id)}>
+                    {company.name} {company.id === scope.companyId && <Check size={14} />}
+                  </button>
+                  {company.id === scope.companyId &&
+                    company.sites.map((site) => (
+                      <button
+                        type="button"
+                        key={site.id}
                         onClick={() => {
-                          setCompany(company.id);
-                        }}
-                        style={{
-                          fontSize: '0.8125rem',
-                          fontWeight: isCurrentCompany ? 600 : 400,
-                          padding: '4px 6px',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          backgroundColor: isCurrentCompany
-                            ? 'var(--color-surface-subtle)'
-                            : 'transparent',
-                          color: isCurrentCompany
-                            ? 'var(--color-action-primary)'
-                            : 'var(--color-text-primary)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
+                          void setSite(site.id);
+                          setIsOpen(false);
                         }}
                       >
-                        <span>
-                          {company.name} ({company.code})
-                        </span>
-                        {isCurrentCompany && <Check size={14} />}
-                      </div>
-
-                      {/* Sites */}
-                      {isCurrentCompany && (
-                        <div style={{ marginLeft: '12px', marginTop: '2px' }}>
-                          {company.sites.map((site) => {
-                            const isCurrentSite = site.id === scope.siteId;
-                            return (
-                              <div
-                                key={site.id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSite(site.id);
-                                  setIsOpen(false);
-                                }}
-                                style={{
-                                  fontSize: '0.75rem',
-                                  padding: '3px 6px',
-                                  borderRadius: '4px',
-                                  cursor: 'pointer',
-                                  color: isCurrentSite
-                                    ? 'var(--color-action-primary)'
-                                    : 'var(--color-text-secondary)',
-                                  backgroundColor: isCurrentSite
-                                    ? 'var(--color-surface-subtle)'
-                                    : 'transparent',
-                                  fontWeight: isCurrentSite ? 600 : 400,
-                                }}
-                              >
-                                • {site.name}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
+                        {site.name} {site.id === scope.siteId && <Check size={14} />}
+                      </button>
+                    ))}
+                </div>
+              ))}
+            </div>
+          ))}
         </div>
       )}
     </div>

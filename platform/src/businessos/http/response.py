@@ -30,6 +30,11 @@ class Response:
     status_code: int = 200
     body: bytes = b""
     headers: dict[str, str] = field(default_factory=dict[str, str])
+    extra_headers: list[tuple[str, str]] = field(default_factory=list[tuple[str, str]])
+
+    def append_header(self, name: str, value: str) -> None:
+        """Append a response header whose name may occur more than once."""
+        self.extra_headers.append((name, value))
 
     @classmethod
     def text(
@@ -65,7 +70,7 @@ class Response:
             "status": self.status_code,
             "headers": [
                 (key.lower().encode("latin-1"), value.encode("latin-1"))
-                for key, value in self.headers.items()
+                for key, value in (*self.headers.items(), *self.extra_headers)
             ],
             "trailers": False,
         }

@@ -1,37 +1,40 @@
 import React, { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { useAuth } from './AuthContext';
-import { TextInput } from '../components/inputs/TextInput';
 import { Button } from '../components/actions/Button';
-import { FormField } from '../components/form/FormField';
 import { Alert } from '../components/feedback/Alert';
+import { useI18n } from '../i18n/I18nContext';
+import { ErrorState } from '../components/feedback/ErrorState';
+
+function safeReturnPath(state: unknown): string {
+  if (typeof state !== 'object' || state === null) return '/';
+  const from = (state as { from?: { pathname?: unknown } }).from?.pathname;
+  return typeof from === 'string' &&
+    from.startsWith('/') &&
+    !from.startsWith('//') &&
+    !from.includes('\\')
+    ? from
+    : '/';
+}
 
 export const LoginPage: React.FC = () => {
-  const { login, isLoading } = useAuth();
-  const navigate = useNavigate();
+  const { login, isLoading, status, error: sessionError, reloadSession } = useAuth();
   const location = useLocation();
-  const from = (location.state as any)?.from?.pathname || '/';
-
-  const [email, setEmail] = useState('admin@businessos.internal');
-  const [password, setPassword] = useState('password');
+  const returnPath = safeReturnPath(location.state);
   const [error, setError] = useState<string | null>(null);
+  const { t } = useI18n();
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email) {
-      setError('Please enter your work email.');
-      return;
-    }
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     try {
-      await login(email, password);
-      navigate(from, { replace: true });
-    } catch (err: any) {
-      setError(err.message || 'Login failed. Please verify credentials.');
+      await login(returnPath);
+    } catch (caught: unknown) {
+      setError(caught instanceof Error ? caught.message : t('auth.login.failed'));
     }
   };
 
   return (
-    <div
+    <main
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -41,7 +44,8 @@ export const LoginPage: React.FC = () => {
         padding: '16px',
       }}
     >
-      <div
+      <section
+        aria-labelledby="login-title"
         style={{
           width: '100%',
           maxWidth: '400px',
@@ -52,59 +56,38 @@ export const LoginPage: React.FC = () => {
           padding: '32px',
         }}
       >
-        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--color-text-primary)' }}>
-            BusinessOS
-          </h1>
-          <p
-            style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}
-          >
-            Enterprise Management Platform
-          </p>
-        </div>
-
-        {error && (
-          <div style={{ marginBottom: '16px' }}>
-            <Alert severity="danger" onDismiss={() => setError(null)}>
-              {error}
-            </Alert>
-          </div>
+        <h1 id="login-title">BusinessOS</h1>
+        {(status === 'service_unavailable' || status === 'authorization_denied') && (
+          <ErrorState
+            title={t(
+              status === 'authorization_denied'
+                ? 'auth.session_denied.title'
+                : 'auth.session_unavailable.title'
+            )}
+            message={t(
+              status === 'authorization_denied'
+                ? 'auth.session_denied.body'
+                : 'auth.session_unavailable.body'
+            )}
+            error={sessionError}
+            onRetry={() => void reloadSession()}
+            style={{ padding: '24px 0' }}
+          />
         )}
-
-        <form onSubmit={handleSubmit}>
-          <FormField label="Work email" required>
-            <TextInput
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="user@enterprise.com"
-              autoComplete="username"
-              required
-            />
-          </FormField>
-
-          <FormField label="Password" required>
-            <TextInput
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              autoComplete="current-password"
-              required
-            />
-          </FormField>
-
-          <Button
-            type="submit"
-            variant="primary"
-            size="lg"
-            isLoading={isLoading}
-            style={{ width: '100%', marginTop: '8px' }}
-          >
-            Sign in
+        {error && (
+          <Alert severity="danger" onDismiss={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+        <form
+          onSubmit={handleSubmit}
+          hidden={status === 'service_unavailable' || status === 'authorization_denied'}
+        >
+          <Button type="submit" variant="primary" size="lg" isLoading={isLoading}>
+            {t('auth.login.continue')}
           </Button>
         </form>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 };

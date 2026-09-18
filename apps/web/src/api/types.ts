@@ -1,15 +1,15 @@
 export interface ApiErrorPayload {
   code: string;
   message: string;
-  details?: any;
+  details?: unknown;
   correlationId?: string;
 }
 
 export class ApiError extends Error {
-  public code: string;
-  public status: number;
-  public details?: any;
-  public correlationId?: string;
+  public readonly code: string;
+  public readonly status: number;
+  public readonly details?: unknown;
+  public readonly correlationId?: string;
 
   constructor(status: number, payload: ApiErrorPayload) {
     super(payload.message || 'API request failed');
@@ -22,11 +22,6 @@ export class ApiError extends Error {
 }
 
 export interface RequestOptions extends Omit<RequestInit, 'body'> {
-  body?: any;
+  body?: unknown;
   params?: Record<string, string | number | boolean | undefined>;
-  scope?: {
-    tenantId?: string;
-    companyId?: string;
-    siteId?: string;
-  };
 }

@@ -23,6 +23,11 @@ global.ResizeObserver = class ResizeObserver {
   disconnect() {}
 };
 
+// Polyfill canvas for axe-core color contrast checks in jsdom
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => null;
+}
+
 // Clean local storage between tests
 beforeEach(() => {
   localStorage.clear();

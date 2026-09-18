@@ -1,51 +1,167 @@
-import React, { createContext, useContext, useMemo, useCallback } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useAuth } from '../auth/AuthContext';
-import { PermissionContextValue, AuthorizeActionResult, FieldPolicyHint } from './types';
+import { useScope } from '../scope/ScopeContext';
+import { PolicyPresentationAdapter, defaultPolicyAdapter } from './policyAdapter';
+import {
+  AuthorizeActionResult,
+  FieldPolicyHint,
+  PermissionContextValue,
+  PolicySecurityContext,
+} from './types';
 
 const PermissionContext = createContext<PermissionContextValue | undefined>(undefined);
+const FAIL_CLOSED_FIELD: FieldPolicyHint = {
+  readable: false,
+  writable: false,
+  masked: true,
+};
 
-export const PermissionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
+export interface PermissionProviderProps {
+  children: React.ReactNode;
+  adapter?: PolicyPresentationAdapter;
+}
 
-  // Consumes policy hints without duplicating backend engine
+export const PermissionProvider: React.FC<PermissionProviderProps> = ({
+  children,
+  adapter = defaultPolicyAdapter,
+}) => {
+  const { user, isAuthenticated } = useAuth();
+  const { scope, status } = useScope();
+  const [version, setVersion] = useState(0);
+  const pending = useRef(new Set<string>());
+
+  const securityContext = useMemo<PolicySecurityContext | null>(
+    () =>
+      isAuthenticated && user && scope && status === 'ready'
+        ? {
+            principalId: user.id,
+            tenantId: scope.tenantId,
+            legalEntityId: scope.legalEntityId,
+            companyId: scope.companyId,
+            siteId: scope.siteId,
+          }
+        : null,
+    [isAuthenticated, user, scope, status]
+  );
+
+  const securityKey = securityContext
+    ? [
+        securityContext.principalId,
+        securityContext.tenantId,
+        securityContext.legalEntityId ?? '',
+        securityContext.companyId ?? '',
+        securityContext.siteId ?? '',
+      ].join('|')
+    : 'untrusted';
+
+  useEffect(() => {
+    adapter.clearCache();
+    pending.current.clear();
+    setVersion((current) => current + 1);
+  }, [adapter, securityKey]);
+
+  const queueAuthorization = useCallback(
+    (action: string, resource: string) => {
+      if (!securityContext) return;
+      const key = `action|${securityKey}|${resource}|${action}`;
+      if (pending.current.has(key)) return;
+      pending.current.add(key);
+      void adapter
+        .evaluateAuthorization({
+          ...securityContext,
+          action,
+          resourceType: resource,
+        })
+        .finally(() => {
+          pending.current.delete(key);
+          setVersion((current) => current + 1);
+        });
+    },
+    [adapter, securityContext, securityKey]
+  );
+
+  const queueField = useCallback(
+    (resource: string, fieldName: string) => {
+      if (!securityContext) return;
+      const key = `field|${securityKey}|${resource}|${fieldName}`;
+      if (pending.current.has(key)) return;
+      pending.current.add(key);
+      void adapter.evaluateFieldAccess(resource, fieldName, securityContext).finally(() => {
+        pending.current.delete(key);
+        setVersion((current) => current + 1);
+      });
+    },
+    [adapter, securityContext, securityKey]
+  );
+
   const canPerformAction = useCallback(
     (action: string, resource: string): boolean => {
-      if (!user) return false;
-      if (user.roles.includes('admin') || user.permissions.includes('*')) return true;
-      const required = `${resource}:${action}`;
-      return user.permissions.includes(required) || user.permissions.includes(action);
+      void version;
+      if (!securityContext) return false;
+      const decision = adapter.getCachedAuthorization(action, resource, securityContext);
+      if (!decision) queueAuthorization(action, resource);
+      return decision?.allowed === true;
     },
-    [user]
+    [adapter, queueAuthorization, securityContext, version]
   );
 
   const getActionEvaluation = useCallback(
     (action: string, resource: string): AuthorizeActionResult => {
-      const allowed = canPerformAction(action, resource);
+      void version;
+      if (!securityContext) {
+        return {
+          allowed: false,
+          reason: 'Deny by default: trusted principal and scope required',
+          matchedPolicy: null,
+        };
+      }
+      const decision = adapter.getCachedAuthorization(action, resource, securityContext);
+      if (!decision) {
+        queueAuthorization(action, resource);
+        return {
+          allowed: false,
+          reason: 'Deny by default: policy decision pending',
+          matchedPolicy: null,
+        };
+      }
       return {
-        allowed,
-        reason: allowed
-          ? undefined
-          : `Authorization denied: Missing policy grant for ${resource}:${action}`,
+        allowed: decision.allowed,
+        reason: decision.allowed ? undefined : decision.reason,
+        matchedPolicy: decision.matchedPolicy,
       };
     },
-    [canPerformAction]
+    [adapter, queueAuthorization, securityContext, version]
   );
 
-  const getFieldPolicy = useCallback((_resource: string, _fieldName: string): FieldPolicyHint => {
-    // Default standard field policy
-    return {
-      readable: true,
-      writable: true,
-      masked: false,
-    };
-  }, []);
+  const getFieldPolicy = useCallback(
+    (resource: string, fieldName: string): FieldPolicyHint => {
+      void version;
+      if (!securityContext) return FAIL_CLOSED_FIELD;
+      const decision = adapter.getCachedFieldAccess(resource, fieldName, securityContext);
+      if (!decision) {
+        queueField(resource, fieldName);
+        return FAIL_CLOSED_FIELD;
+      }
+      return {
+        readable: decision.readable,
+        writable: decision.writable,
+        masked: decision.masked,
+        maskPattern: decision.maskPattern,
+      };
+    },
+    [adapter, queueField, securityContext, version]
+  );
 
-  const value = useMemo(
-    () => ({
-      canPerformAction,
-      getFieldPolicy,
-      getActionEvaluation,
-    }),
+  const value = useMemo<PermissionContextValue>(
+    () => ({ canPerformAction, getFieldPolicy, getActionEvaluation }),
     [canPerformAction, getFieldPolicy, getActionEvaluation]
   );
 
@@ -53,7 +169,7 @@ export const PermissionProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 };
 
 export const usePermission = (): PermissionContextValue => {
-  const ctx = useContext(PermissionContext);
-  if (!ctx) throw new Error('usePermission must be used within PermissionProvider');
-  return ctx;
+  const context = useContext(PermissionContext);
+  if (!context) throw new Error('usePermission must be used within PermissionProvider');
+  return context;
 };

@@ -24,6 +24,14 @@ export const DashboardOverview: React.FC = () => {
   const toast = useToast();
   const navigate = useNavigate();
 
+  if (!scope) {
+    return (
+      <DashboardPageShell title="Enterprise Operational Overview">
+        Organization scope unavailable.
+      </DashboardPageShell>
+    );
+  }
+
   return (
     <DashboardPageShell title="Enterprise Operational Overview">
       {/* Scope banner */}
@@ -51,12 +59,7 @@ export const DashboardOverview: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={() =>
-                toast.info(
-                  'Diagnostics',
-                  'Correlation ID: corr_' + Math.random().toString(36).substring(2, 8)
-                )
-              }
+              onClick={() => toast.info('Diagnostics', 'Correlation ID: ' + crypto.randomUUID())}
             >
               Copy Diagnostics
             </Button>
@@ -135,7 +138,7 @@ export const DashboardOverview: React.FC = () => {
             {user?.name}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-            Roles: {user?.roles.join(', ')}
+            Principal: {user?.id}
           </div>
         </Card>
 
@@ -160,7 +163,7 @@ export const DashboardOverview: React.FC = () => {
               color: 'var(--color-text-primary)',
             }}
           >
-            Phase 4.5 Certified
+            Phase 4.5 Foundation
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
             Design System &amp; Core Shell v1

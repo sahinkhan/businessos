@@ -1,16 +1,18 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ChevronRight, Home } from 'lucide-react';
+import { useI18n } from '../i18n/I18nContext';
 
 export const Breadcrumbs: React.FC = () => {
   const location = useLocation();
+  const { t } = useI18n();
   const pathnames = location.pathname.split('/').filter(Boolean);
 
   if (pathnames.length === 0) return null;
 
   return (
     <nav
-      aria-label="Breadcrumb"
+      aria-label={t('shell.breadcrumb')}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -28,7 +30,7 @@ export const Breadcrumbs: React.FC = () => {
           color: 'var(--color-text-muted)',
           textDecoration: 'none',
         }}
-        aria-label="Dashboard Home"
+        aria-label={t('shell.dashboard_home')}
       >
         <Home size={14} />
       </Link>

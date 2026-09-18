@@ -212,6 +212,36 @@ async def test_middleware_order_and_lifecycle_are_deterministic() -> None:
 
 
 @pytest.mark.asyncio
+async def test_middleware_runs_before_route_resolution() -> None:
+    from businessos.errors import BusinessOSError
+
+    app = create_application(_settings())
+
+    class RejectUnsafeMiddleware:
+        async def __call__(self, request: Request, call_next: CallNext) -> Response:
+            if request.method == "POST":
+                raise BusinessOSError("unsafe_rejected", "Unsafe request rejected", status_code=403)
+            return await call_next(request)
+
+    async def route(_: Request, __: object) -> Response:
+        return Response.text("ok")
+
+    app.add_middleware(RejectUnsafeMiddleware())
+    app.router.add_route("GET", "/known", route)
+    await app.startup()
+    transport = httpx.ASGITransport(app=cast(Any, app))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        missing = await client.post("/missing")
+        method_mismatch = await client.post("/known")
+        safe_missing = await client.get("/missing")
+    await app.shutdown()
+
+    assert missing.status_code == 403
+    assert method_mismatch.status_code == 403
+    assert safe_missing.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_framework_serializes_expected_and_unexpected_errors() -> None:
     app = create_application(_settings())
 

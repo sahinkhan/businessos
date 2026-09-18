@@ -1,6 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 import { IconButton } from '../actions/IconButton';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export type DrawerPlacement = 'left' | 'right' | 'bottom';
 
@@ -12,6 +13,7 @@ export interface DrawerProps {
   footer?: React.ReactNode;
   placement?: DrawerPlacement;
   width?: string;
+  closeLabel?: string;
 }
 
 export const Drawer: React.FC<DrawerProps> = ({
@@ -22,15 +24,49 @@ export const Drawer: React.FC<DrawerProps> = ({
   footer,
   placement = 'right',
   width = '380px',
+  closeLabel,
 }) => {
+  const { t } = useI18nText();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = useId();
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!isOpen) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    const focusable = () =>
+      Array.from(
+        panel?.querySelectorAll<HTMLElement>(
+          'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])'
+        ) ?? []
+      );
+    (focusable()[0] ?? panel)?.focus();
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
+      if (e.key === 'Tab') {
+        const elements = focusable();
+        if (elements.length === 0) {
+          e.preventDefault();
+          panel?.focus();
+        } else if (e.shiftKey && document.activeElement === elements[0]) {
+          e.preventDefault();
+          elements[elements.length - 1].focus();
+        } else if (!e.shiftKey && document.activeElement === elements[elements.length - 1]) {
+          e.preventDefault();
+          elements[0].focus();
+        }
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -45,6 +81,7 @@ export const Drawer: React.FC<DrawerProps> = ({
     <div
       role="dialog"
       aria-modal="true"
+      aria-labelledby={title ? titleId : undefined}
       style={{
         position: 'fixed',
         inset: 0,
@@ -56,6 +93,8 @@ export const Drawer: React.FC<DrawerProps> = ({
       }}
     >
       <div
+        ref={panelRef}
+        tabIndex={-1}
         style={{
           position: 'absolute',
           backgroundColor: 'var(--color-surface-card)',
@@ -77,13 +116,14 @@ export const Drawer: React.FC<DrawerProps> = ({
           }}
         >
           <div
+            id={titleId}
             style={{ fontSize: '1.0625rem', fontWeight: 600, color: 'var(--color-text-primary)' }}
           >
             {title}
           </div>
           <IconButton
             icon={<X size={18} />}
-            aria-label="Close drawer"
+            aria-label={closeLabel ?? t('common.close')}
             variant="ghost"
             size="sm"
             onClick={onClose}

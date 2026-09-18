@@ -6,9 +6,14 @@ import { Breadcrumbs } from './Breadcrumbs';
 import { CommandPalette } from '../command-palette/CommandPalette';
 import { NotificationDrawer } from '../notifications/NotificationDrawer';
 import { SessionExpiryModal } from '../auth/SessionExpiryModal';
+import { Drawer } from '../components/overlays/Drawer';
+import { useNavigation } from '../navigation/NavigationContext';
+import { useI18n } from '../i18n/I18nContext';
 
 export const AppShell: React.FC = () => {
   const [isNotificationsOpen, setNotificationsOpen] = useState(false);
+  const { isMobileDrawerOpen, setMobileDrawerOpen } = useNavigation();
+  const { t } = useI18n();
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -33,7 +38,7 @@ export const AppShell: React.FC = () => {
           e.currentTarget.style.top = '-100px';
         }}
       >
-        Skip to main content
+        {t('shell.skip')}
       </a>
 
       {/* Global Header */}
@@ -65,6 +70,18 @@ export const AppShell: React.FC = () => {
         onClose={() => setNotificationsOpen(false)}
       />
       <SessionExpiryModal />
+      <Drawer
+        isOpen={isMobileDrawerOpen}
+        onClose={() => setMobileDrawerOpen(false)}
+        placement="left"
+        width="min(88vw, 320px)"
+        title={t('shell.navigation')}
+        closeLabel={t('shell.close_navigation')}
+      >
+        <div id="mobile-navigation">
+          <Sidebar mobile onNavigate={() => setMobileDrawerOpen(false)} />
+        </div>
+      </Drawer>
     </div>
   );
 };

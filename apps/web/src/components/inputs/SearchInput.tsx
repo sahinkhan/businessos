@@ -1,6 +1,7 @@
 import { useState, useEffect, forwardRef } from 'react';
 import { Search, X } from 'lucide-react';
 import { TextInput, TextInputProps } from './TextInput';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface SearchInputProps extends Omit<TextInputProps, 'onChange'> {
   value?: string;
@@ -9,17 +10,9 @@ export interface SearchInputProps extends Omit<TextInputProps, 'onChange'> {
 }
 
 export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(
-  (
-    {
-      value: externalValue = '',
-      onSearchChange,
-      debounceMs = 250,
-      placeholder = 'Search...',
-      ...rest
-    },
-    ref
-  ) => {
+  ({ value: externalValue = '', onSearchChange, debounceMs = 250, placeholder, ...rest }, ref) => {
     const [localValue, setLocalValue] = useState(externalValue);
+    const { t } = useI18nText();
 
     useEffect(() => {
       setLocalValue(externalValue);
@@ -38,7 +31,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(
       <TextInput
         ref={ref}
         type="search"
-        placeholder={placeholder}
+        placeholder={placeholder ?? t('common.search')}
         value={localValue}
         onChange={(e) => setLocalValue(e.target.value)}
         leftElement={<Search size={16} />}
@@ -50,7 +43,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(
                 setLocalValue('');
                 onSearchChange?.('');
               }}
-              aria-label="Clear search"
+              aria-label={t('controls.clear_search')}
               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >
               <X size={14} />

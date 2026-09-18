@@ -2,6 +2,7 @@ import React from 'react';
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { IconButton } from '../actions/IconButton';
 import { PaginationState } from './types';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export interface DataTablePaginationProps {
   pagination: PaginationState;
@@ -14,6 +15,7 @@ export const DataTablePagination: React.FC<DataTablePaginationProps> = ({
   onPageChange,
   pageSizeOptions = [10, 25, 50, 100],
 }) => {
+  const { t } = useI18nText();
   const { page, pageSize, totalCount } = pagination;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const startItem = totalCount === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -34,7 +36,7 @@ export const DataTablePagination: React.FC<DataTablePaginationProps> = ({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <span>Rows per page:</span>
+        <span>{t('table.rows_per_page')}</span>
         <select
           value={pageSize}
           onChange={(e) => onPageChange(1, Number(e.target.value))}
@@ -53,15 +55,13 @@ export const DataTablePagination: React.FC<DataTablePaginationProps> = ({
             </option>
           ))}
         </select>
-        <span>
-          {startItem}-{endItem} of {totalCount}
-        </span>
+        <span>{t('table.range', { start: startItem, end: endItem, total: totalCount })}</span>
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
         <IconButton
           icon={<ChevronsLeft size={16} />}
-          aria-label="First page"
+          aria-label={t('table.first_page')}
           size="sm"
           variant="ghost"
           disabled={page <= 1}
@@ -69,18 +69,16 @@ export const DataTablePagination: React.FC<DataTablePaginationProps> = ({
         />
         <IconButton
           icon={<ChevronLeft size={16} />}
-          aria-label="Previous page"
+          aria-label={t('table.previous_page')}
           size="sm"
           variant="ghost"
           disabled={page <= 1}
           onClick={() => onPageChange(page - 1, pageSize)}
         />
-        <span style={{ margin: '0 8px' }}>
-          Page {page} of {totalPages}
-        </span>
+        <span style={{ margin: '0 8px' }}>{t('table.page', { page, total: totalPages })}</span>
         <IconButton
           icon={<ChevronRight size={16} />}
-          aria-label="Next page"
+          aria-label={t('table.next_page')}
           size="sm"
           variant="ghost"
           disabled={page >= totalPages}
@@ -88,7 +86,7 @@ export const DataTablePagination: React.FC<DataTablePaginationProps> = ({
         />
         <IconButton
           icon={<ChevronsRight size={16} />}
-          aria-label="Last page"
+          aria-label={t('table.last_page')}
           size="sm"
           variant="ghost"
           disabled={page >= totalPages}

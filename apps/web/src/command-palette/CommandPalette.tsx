@@ -4,6 +4,7 @@ import { Search, ArrowRight, CornerDownLeft } from 'lucide-react';
 import { navigationRegistry } from '../navigation/registry';
 import { useTheme } from '../design-system/theme/ThemeContext';
 import { useScope } from '../scope/ScopeContext';
+import { useI18n } from '../i18n/I18nContext';
 
 export interface CommandItem {
   id: string;
@@ -20,6 +21,7 @@ export const CommandPalette: React.FC = () => {
   const navigate = useNavigate();
   const { toggleTheme } = useTheme();
   const { tenants, setTenant } = useScope();
+  const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Keyboard shortcut: Cmd+K / Ctrl+K
@@ -46,13 +48,16 @@ export const CommandPalette: React.FC = () => {
 
   // Aggregate command items
   const commands: CommandItem[] = [
-    ...navigationRegistry.getAll().map((nav) => ({
-      id: nav.id,
-      label: `Go to ${nav.label}`,
-      category: 'Navigation',
-      action: () => navigate(nav.path),
-      keywords: [nav.label.toLowerCase(), nav.path],
-    })),
+    ...navigationRegistry.getAll().map((nav) => {
+      const label = nav.labelKey ? t(nav.labelKey) : (nav.label ?? nav.id);
+      return {
+        id: nav.id,
+        label: t('command.go_to', { destination: label }),
+        category: 'Navigation',
+        action: () => navigate(nav.path),
+        keywords: [label.toLowerCase(), nav.path],
+      };
+    }),
     {
       id: 'cmd_theme_toggle',
       label: 'Toggle Theme (Light / Dark)',

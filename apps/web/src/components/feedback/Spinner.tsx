@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export type SpinnerSize = 'xs' | 'sm' | 'md' | 'lg';
 
@@ -6,6 +7,7 @@ export interface SpinnerProps {
   size?: SpinnerSize | number;
   color?: string;
   className?: string;
+  label?: string;
 }
 
 const sizeMap: Record<SpinnerSize, number> = {
@@ -19,14 +21,16 @@ export const Spinner: React.FC<SpinnerProps> = ({
   size = 'md',
   color = 'var(--color-action-primary)',
   className = '',
+  label,
 }) => {
+  const { t } = useI18nText();
   const pixelSize = typeof size === 'number' ? size : sizeMap[size];
 
   return (
     <svg
       role="status"
       aria-live="polite"
-      aria-label="Loading"
+      aria-label={label ?? t('common.loading')}
       className={`bos-spinner ${className}`}
       width={pixelSize}
       height={pixelSize}

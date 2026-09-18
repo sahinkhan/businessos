@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from businessos.config import Settings
 from businessos.context import RequestContext
-from businessos.dependencies import AUTHORIZER
+from businessos.dependencies import AUTHORIZER, TRUSTED_CONTEXT_RESOLVER
 from businessos.di import Container, RequestDependencyScope
 from businessos.errors import BusinessOSError, ClientDisconnectedError
 from businessos.http import Request, Response, Router
@@ -378,14 +378,16 @@ class BusinessOSApplication:
                 correlation_id=headers.get("x-correlation-id", generated_context.correlation_id),
                 trace_id=trace_id,
             )
-            context = await self._context_resolver.resolve(identity)
+            resolver = self._context_resolver
+            if self.container.contains(TRUSTED_CONTEXT_RESOLVER):
+                async with self.container.request_scope() as resolver_scope:
+                    resolver = await resolver_scope.resolve(TRUSTED_CONTEXT_RESOLVER)
+            context = await resolver.resolve(identity)
             response_context = context
-            match = self.router.match(scope["method"], scope["path"])
             request = Request(
                 scope,
                 receive,
                 context,
-                path_params=match.path_params,
                 body_limit_bytes=self.settings.request_body_limit_bytes,
             )
             await request.body()
@@ -396,11 +398,17 @@ class BusinessOSApplication:
                 else self.container.request_scope()
             )
             async with dependency_scope as dependencies:
-                endpoint = self._endpoint(
-                    match.route.handler,
-                    dependencies,
-                    permission=match.route.permission,
-                )
+
+                async def endpoint(current_request: Request) -> Response:
+                    match = self.router.match(scope["method"], scope["path"])
+                    current_request.path_params.update(match.path_params)
+                    handler = self._endpoint(
+                        match.route.handler,
+                        dependencies,
+                        permission=match.route.permission,
+                    )
+                    return await handler(current_request)
+
                 module_middleware = self.runtime.middleware.active() if self.runtime else ()
                 response = await self._run_request_until_disconnect(
                     compose_middleware((*self._middleware, *module_middleware), endpoint),

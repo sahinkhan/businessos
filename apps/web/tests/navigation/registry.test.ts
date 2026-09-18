@@ -1,26 +1,34 @@
-import { describe, it, expect } from 'vitest';
-import { navigationRegistry } from '../../src/navigation/registry';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { NavigationRegistry } from '../../src/navigation/registry';
+import { routeRegistry } from '../../src/navigation/routeRegistry';
 
-describe('Navigation Registry', () => {
-  it('registers navigation items dynamically and groups them', () => {
-    navigationRegistry.register({
-      id: 'custom_reports',
-      label: 'Financial Statements',
-      path: '/reports/financial',
-      group: 'Reporting',
-      order: 5,
+describe('navigation registry route references', () => {
+  beforeEach(() => routeRegistry.unregister('route_reports'));
+
+  it('rejects unknown route IDs', () => {
+    const registry = new NavigationRegistry();
+    expect(() =>
+      registry.register({ id: 'bad', routeId: 'missing', label: 'Bad', path: '/bad' })
+    ).toThrow(/unknown route ID/);
+  });
+
+  it('resolves a module navigation contribution from its route ID', () => {
+    routeRegistry.register({
+      id: 'route_reports',
+      moduleOwner: 'reporting',
+      path: 'reports',
+      component: async () => ({ default: () => null }),
     });
-
-    const items = navigationRegistry.getAll();
-    const registered = items.find((i) => i.id === 'custom_reports');
-    expect(registered).toBeDefined();
-    expect(registered?.label).toBe('Financial Statements');
-
-    const groups = navigationRegistry.getGroups();
-    const reportGroup = groups.find((g) => g.label === 'Reporting');
-    expect(reportGroup).toBeDefined();
-    expect(reportGroup?.items.some((i) => i.id === 'custom_reports')).toBe(true);
-
-    navigationRegistry.unregister('custom_reports');
+    const registry = new NavigationRegistry();
+    registry.register({
+      id: 'reports',
+      routeId: 'route_reports',
+      label: 'Reports',
+      path: '/ignored',
+    });
+    expect(registry.getAll()[0]).toMatchObject({
+      routeId: 'route_reports',
+      path: '/reports',
+    });
   });
 });

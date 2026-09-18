@@ -1,6 +1,7 @@
 """OIDC verification and trusted membership-derived request context."""
 
 import asyncio
+import hmac
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from businessos.sdk import (
     UnitOfWorkFactory,
 )
 
+from .contracts import PrincipalIdentity
 from .models import EXTERNAL_IDENTITIES, MEMBERSHIPS, USERS
 
 
@@ -35,6 +37,7 @@ class VerifiedOIDCClaims(BaseModel):
     businessos_tenant_id: UUID
     acr: str | None = None
     amr: tuple[str, ...] = ()
+    nonce: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,19 +119,38 @@ class OIDCContextResolver:
             return RequestContext(
                 correlation_id=identity.correlation_id, trace_id=identity.trace_id
             )
-        claims = await self._verifier.verify(credential.strip())
-        await self._tenant_access.require_active(claims.businessos_tenant_id)
-        principal_id, _scopes = await self._membership(claims)
-        strength = claims.acr or ("mfa" if "mfa" in claims.amr else "oidc")
+        principal = await self.authenticate_token(credential.strip())
         return RequestContext(
             correlation_id=identity.correlation_id,
             trace_id=identity.trace_id,
             tenant=TenantContext(
                 installation_id=self._installation_id,
-                tenant_id=claims.businessos_tenant_id,
-                principal_id=principal_id,
-                authentication_strength=strength,
+                tenant_id=principal.tenant_id,
+                principal_id=principal.principal_id,
+                authentication_strength=str(principal.authentication_strength),
             ),
+        )
+
+    async def authenticate_token(
+        self, credential: str, *, expected_nonce: str | None = None
+    ) -> PrincipalIdentity:
+        """Validate an OIDC token and resolve certified tenant membership."""
+        claims = await self._verifier.verify(credential)
+        if expected_nonce is not None and (
+            claims.nonce is None or not hmac.compare_digest(claims.nonce, expected_nonce)
+        ):
+            raise BusinessOSError(
+                "invalid_oidc_nonce", "Authentication credential is not valid", status_code=401
+            )
+        await self._tenant_access.require_active(claims.businessos_tenant_id)
+        principal_id, scopes = await self._membership(claims)
+        strength = claims.acr or ("mfa" if "mfa" in claims.amr else "oidc")
+        return PrincipalIdentity(
+            tenant_id=claims.businessos_tenant_id,
+            principal_id=principal_id,
+            principal_type="user",
+            authentication_strength=strength,
+            scopes=scopes,
         )
 
     async def _membership(

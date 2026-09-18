@@ -1,5 +1,6 @@
 import React from 'react';
 import { AlertCircle, CheckCircle2, Info, AlertTriangle, X } from 'lucide-react';
+import { useI18nText } from '../../i18n/I18nContext';
 
 export type AlertSeverity = 'info' | 'success' | 'warning' | 'danger';
 
@@ -50,6 +51,7 @@ export const Alert: React.FC<AlertProps> = ({
   action,
   className = '',
 }) => {
+  const { t } = useI18nText();
   const conf = severityConfig[severity];
 
   return (
@@ -78,7 +80,7 @@ export const Alert: React.FC<AlertProps> = ({
         <button
           type="button"
           onClick={onDismiss}
-          aria-label="Dismiss alert"
+          aria-label={t('controls.dismiss_alert')}
           style={{
             background: 'none',
             border: 'none',

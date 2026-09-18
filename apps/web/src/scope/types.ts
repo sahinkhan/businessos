@@ -27,19 +27,24 @@ export interface TenantScope {
 export interface ActiveScope {
   tenantId: string;
   tenantName: string;
-  groupId: string;
-  groupName: string;
-  companyId: string;
-  companyName: string;
-  siteId: string;
-  siteName: string;
+  groupId?: string | null;
+  groupName?: string | null;
+  legalEntityId?: string | null;
+  companyId?: string | null;
+  companyName?: string | null;
+  siteId?: string | null;
+  siteName?: string | null;
 }
 
+export type ScopeStatus = 'idle' | 'loading' | 'ready' | 'unavailable' | 'switching';
+
 export interface ScopeContextValue {
-  scope: ActiveScope;
+  scope: ActiveScope | null;
   tenants: TenantScope[];
-  setTenant: (tenantId: string) => void;
-  setCompany: (companyId: string) => void;
-  setSite: (siteId: string) => void;
-  setScope: (scope: Partial<ActiveScope>) => void;
+  status: ScopeStatus;
+  error: string | null;
+  setTenant: (tenantId: string) => Promise<void>;
+  setCompany: (companyId: string) => Promise<void>;
+  setSite: (siteId: string) => Promise<void>;
+  setScope: (scope: Partial<ActiveScope>) => Promise<void>;
 }

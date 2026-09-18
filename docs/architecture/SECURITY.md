@@ -22,6 +22,11 @@ BusinessOS integrates with enterprise identity through standards:
 
 Authentication mechanism details remain behind platform identity contracts.
 
+The accepted browser authentication and server-side session boundary is documented in
+[`ADR-009`](../adr/ADR-009-browser-authentication-and-web-session-boundary.md) and
+[`WEB-SESSIONS.md`](WEB-SESSIONS.md). The decision keeps OAuth and SAML credentials server-side and
+exposes only an opaque Secure HttpOnly session cookie to the enterprise backoffice.
+
 ## Authorization
 
 Authorization must support combinations of:

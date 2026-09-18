@@ -53,6 +53,8 @@ export interface AuthContextValue extends AuthState {
   login: (returnTo?: string) => Promise<void>;
   logout: () => Promise<void>;
   reloadSession: () => Promise<void>;
+  reconcileAuthoritativeSession: () => Promise<SessionReconciliation>;
+  rejectAuthoritativeSession: (error: unknown) => void;
   updateSessionSecurity: (
     scope: SessionScope,
     csrfToken: string,
@@ -61,3 +63,6 @@ export interface AuthContextValue extends AuthState {
   ) => void;
 }
 import type { SecurityTransitionRunner } from '../api/securityTransition';
+
+export type SessionReconciliation =
+  { status: 'accepted'; session: SessionInfo | null } | { status: 'stale'; session: null };

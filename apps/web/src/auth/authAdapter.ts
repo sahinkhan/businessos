@@ -10,7 +10,7 @@ export interface LoginStart {
 export interface AuthAdapter {
   getSession(): Promise<SessionInfo | null>;
   startLogin(returnTo?: string): Promise<LoginStart>;
-  logout(): Promise<void>;
+  logout(csrfToken?: string): Promise<void>;
 }
 
 const optionalString = (value: unknown): string | undefined =>
@@ -99,8 +99,10 @@ export class HttpAuthAdapter implements AuthAdapter {
     return { authorizationUrl: value.authorization_url, expiresAt };
   }
 
-  public async logout(): Promise<void> {
-    await apiClient.post(`${this.baseUrl}/logout`);
+  public async logout(csrfToken?: string): Promise<void> {
+    await apiClient.post(`${this.baseUrl}/logout`, undefined, {
+      headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : undefined,
+    });
   }
 }
 

@@ -9,7 +9,9 @@ import React, {
 } from 'react';
 import { queryCache } from '../api/queryCache';
 import { securityContext } from '../api/securityContext';
+import { ApiError } from '../api/types';
 import { useAuth } from '../auth/AuthContext';
+import { SessionScope } from '../auth/types';
 import { ActiveScopeSelection, ScopeAdapter, defaultScopeAdapter } from './scopeAdapter';
 import { ActiveScope, ScopeContextValue, ScopeStatus, TenantScope } from './types';
 
@@ -54,6 +56,27 @@ function storePreference(scope: ActiveScope): void {
   );
 }
 
+function projectSessionScope(active: SessionScope, tenants: TenantScope[]): ActiveScope {
+  const tenant = tenants.find((item) => item.id === active.tenantId);
+  const group = tenant?.groups.find((item) => item.id === active.enterpriseGroupId);
+  const companies = tenant?.groups.flatMap((item) => item.companies) ?? [];
+  const company = companies.find((item) => item.id === (active.companyId ?? active.legalEntityId));
+  const site = companies
+    .flatMap((item) => item.sites)
+    .find((item) => item.id === active.operatingSiteId);
+  return {
+    tenantId: active.tenantId,
+    tenantName: tenant?.name ?? active.tenantId,
+    groupId: active.enterpriseGroupId,
+    groupName: group?.name ?? null,
+    legalEntityId: active.legalEntityId,
+    companyId: active.companyId,
+    companyName: company?.name ?? null,
+    siteId: active.operatingSiteId,
+    siteName: site?.name ?? null,
+  };
+}
+
 export interface ScopeProviderProps {
   children: React.ReactNode;
   adapter?: ScopeAdapter;
@@ -63,13 +86,26 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
   children,
   adapter = defaultScopeAdapter,
 }) => {
-  const { user, session, isAuthenticated, updateSessionSecurity, runSecurityTransition } =
-    useAuth();
+  const {
+    user,
+    session,
+    isAuthenticated,
+    status: authStatus,
+    reconcileAuthoritativeSession,
+    rejectAuthoritativeSession,
+    updateSessionSecurity,
+    runSecurityTransition,
+  } = useAuth();
   const principalKey = isAuthenticated && user ? `${user.tenantId}:${user.id}` : null;
+  const emptyScopeStatus: ScopeStatus =
+    !principalKey && (authStatus === 'service_unavailable' || authStatus === 'authorization_denied')
+      ? 'unavailable'
+      : 'idle';
   const [tenants, setTenants] = useState<TenantScope[]>([]);
   const [scope, setScopeState] = useState<ActiveScope | null>(null);
   const [status, setStatus] = useState<ScopeStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const tenantsRef = useRef<TenantScope[]>([]);
   const scopeRef = useRef<ActiveScope | null>(null);
   const desiredTransitionRef = useRef<{
     id: number;
@@ -85,6 +121,24 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
     csrfToken: session?.csrfToken,
     expiresAt: session?.expiresAt,
   };
+  tenantsRef.current = tenants;
+
+  const sessionProjection = useMemo(
+    () => (session ? projectSessionScope(session.activeScope, tenants) : null),
+    [session, tenants]
+  );
+  const sessionHasDetailedScope = Boolean(
+    session?.activeScope.enterpriseGroupId ||
+    session?.activeScope.legalEntityId ||
+    session?.activeScope.companyId ||
+    session?.activeScope.operatingSiteId
+  );
+  const activeScope =
+    session && status !== 'unavailable'
+      ? sessionHasDetailedScope
+        ? sessionProjection
+        : (scope ?? sessionProjection)
+      : null;
 
   const clearScope = useCallback(() => {
     securityContext.advance();
@@ -133,6 +187,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
   useEffect(() => {
     if (!principalKey) {
       clearScope();
+      setStatus(emptyScopeStatus);
       localStorage.removeItem(SCOPE_PREFERENCE_KEY);
       return;
     }
@@ -148,6 +203,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
       try {
         const available = await adapter.fetchTenants();
         if (cancelled) return;
+        tenantsRef.current = available;
         setTenants(available);
         if (available.length === 0)
           throw new Error('No authorized organization scope is available.');
@@ -194,6 +250,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
     applyTrustedScope,
     clearScope,
     commitTrustedTransition,
+    emptyScopeStatus,
     principalKey,
     runSecurityTransition,
   ]);
@@ -216,7 +273,70 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
             const target = desiredTransitionRef.current;
             if (!target) break;
             processedId = target.id;
-            const result = await adapter.selectActiveScope(target.selection, nextCsrfToken);
+            let result;
+            try {
+              result = await adapter.selectActiveScope(target.selection, nextCsrfToken);
+            } catch (caught: unknown) {
+              const message = caught instanceof Error ? caught.message : 'Scope switch failed.';
+
+              // These codes are raised before the Organization mutation handler runs. Other 403
+              // and conflict responses remain ambiguous and require a current-session read.
+              if (
+                caught instanceof ApiError &&
+                caught.status === 403 &&
+                ['forbidden', 'invalid_csrf'].includes(caught.code) &&
+                lastAccepted
+              ) {
+                commitTrustedTransition(lastAccepted);
+                setError(message);
+                break;
+              }
+
+              try {
+                let reconciled = await reconcileAuthoritativeSession();
+                while (
+                  reconciled.status === 'stale' &&
+                  desiredTransitionRef.current?.id !== processedId
+                ) {
+                  reconciled = await reconcileAuthoritativeSession();
+                }
+                if (reconciled.status === 'stale') break;
+                if (reconciled.session === null) {
+                  scopeRef.current = null;
+                  setScopeState(null);
+                  setStatus('idle');
+                  setError(message);
+                  break;
+                }
+                const authoritative = projectSessionScope(
+                  reconciled.session.activeScope,
+                  tenantsRef.current
+                );
+                nextCsrfToken = reconciled.session.csrfToken;
+                lastAccepted = {
+                  scope: authoritative,
+                  csrfToken: reconciled.session.csrfToken,
+                  expiresAt: reconciled.session.expiresAt,
+                };
+                scopeRef.current = authoritative;
+                setScopeState(authoritative);
+                storePreference(authoritative);
+                if (desiredTransitionRef.current?.id !== processedId) continue;
+                setStatus('ready');
+                setError(message);
+              } catch (reconciliationFailure: unknown) {
+                rejectAuthoritativeSession(reconciliationFailure);
+                scopeRef.current = null;
+                setScopeState(null);
+                setStatus('unavailable');
+                setError(
+                  reconciliationFailure instanceof Error
+                    ? reconciliationFailure.message
+                    : 'Authoritative session reconciliation failed.'
+                );
+              }
+              break;
+            }
             const acceptedCsrf =
               result.csrfToken ?? nextCsrfToken ?? sessionSecurityRef.current.csrfToken;
             const acceptedExpiry = result.expiresAt ?? sessionSecurityRef.current.expiresAt;
@@ -248,73 +368,94 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
           .finally(() => {
             transitionWorkerRef.current = null;
             desiredTransitionRef.current = null;
-            setStatus(scopeRef.current ? 'ready' : 'unavailable');
+            setStatus((current) =>
+              current === 'idle' || current === 'unavailable'
+                ? current
+                : scopeRef.current
+                  ? 'ready'
+                  : 'unavailable'
+            );
           });
       }
       return transitionWorkerRef.current;
     },
-    [adapter, commitTrustedTransition, runSecurityTransition]
+    [
+      adapter,
+      commitTrustedTransition,
+      reconcileAuthoritativeSession,
+      rejectAuthoritativeSession,
+      runSecurityTransition,
+    ]
   );
 
   const retainCurrentScope = useCallback(() => {
-    if (!scope || status !== 'switching') return Promise.resolve();
+    if (!activeScope || status !== 'switching') return Promise.resolve();
     return select({
-      tenant_id: scope.tenantId,
-      legal_entity_id: scope.legalEntityId,
-      company_id: scope.companyId,
-      operating_site_id: scope.siteId,
+      tenant_id: activeScope.tenantId,
+      legal_entity_id: activeScope.legalEntityId,
+      company_id: activeScope.companyId,
+      operating_site_id: activeScope.siteId,
     });
-  }, [scope, select, status]);
+  }, [activeScope, select, status]);
 
   const setTenant = useCallback(
     (tenantId: string) =>
-      scope?.tenantId === tenantId ? retainCurrentScope() : select({ tenant_id: tenantId }),
-    [scope?.tenantId, retainCurrentScope, select]
+      activeScope?.tenantId === tenantId ? retainCurrentScope() : select({ tenant_id: tenantId }),
+    [activeScope?.tenantId, retainCurrentScope, select]
   );
   const setCompany = useCallback(
     (companyId: string) =>
-      scope && scope.companyId !== companyId
-        ? select({ tenant_id: scope.tenantId, company_id: companyId })
+      activeScope && activeScope.companyId !== companyId
+        ? select({ tenant_id: activeScope.tenantId, company_id: companyId })
         : retainCurrentScope(),
-    [scope, retainCurrentScope, select]
+    [activeScope, retainCurrentScope, select]
   );
   const setSite = useCallback(
     (siteId: string) =>
-      scope && scope.siteId !== siteId
+      activeScope && activeScope.siteId !== siteId
         ? select({
-            tenant_id: scope.tenantId,
-            legal_entity_id: scope.legalEntityId,
-            company_id: scope.companyId ?? undefined,
+            tenant_id: activeScope.tenantId,
+            legal_entity_id: activeScope.legalEntityId,
+            company_id: activeScope.companyId ?? undefined,
             operating_site_id: siteId,
           })
         : retainCurrentScope(),
-    [scope, retainCurrentScope, select]
+    [activeScope, retainCurrentScope, select]
   );
   const setScope = useCallback(
     (partial: Partial<ActiveScope>) => {
-      if (!scope) return Promise.resolve();
+      if (!activeScope) return Promise.resolve();
       const selection = {
-        tenant_id: partial.tenantId ?? scope.tenantId,
-        legal_entity_id: partial.legalEntityId ?? scope.legalEntityId,
-        company_id: partial.companyId ?? scope.companyId ?? undefined,
-        operating_site_id: partial.siteId ?? scope.siteId,
+        tenant_id: partial.tenantId ?? activeScope.tenantId,
+        legal_entity_id: partial.legalEntityId ?? activeScope.legalEntityId,
+        company_id: partial.companyId ?? activeScope.companyId ?? undefined,
+        operating_site_id: partial.siteId ?? activeScope.siteId,
       };
       if (
-        selection.tenant_id === scope.tenantId &&
-        selection.legal_entity_id === scope.legalEntityId &&
-        selection.company_id === scope.companyId &&
-        selection.operating_site_id === scope.siteId
+        selection.tenant_id === activeScope.tenantId &&
+        selection.legal_entity_id === activeScope.legalEntityId &&
+        selection.company_id === activeScope.companyId &&
+        selection.operating_site_id === activeScope.siteId
       ) {
         return retainCurrentScope();
       }
       return select(selection);
     },
-    [scope, retainCurrentScope, select]
+    [activeScope, retainCurrentScope, select]
   );
 
   const value = useMemo<ScopeContextValue>(
-    () => ({ scope, tenants, status, error, setTenant, setCompany, setSite, setScope }),
-    [scope, tenants, status, error, setTenant, setCompany, setSite, setScope]
+    () => ({
+      scope: activeScope,
+      tenants,
+      status,
+      error,
+      setTenant,
+      setCompany,
+      setSite,
+      setScope,
+    }),
+    [activeScope, tenants, status, error, setTenant, setCompany, setSite, setScope]
   );
 
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;

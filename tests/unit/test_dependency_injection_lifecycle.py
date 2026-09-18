@@ -1,0 +1,369 @@
+import asyncio
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextvars import ContextVar
+
+import pytest
+
+from businessos.di import Container, DependencyKey, DependencyResolver, DependencyScope
+from businessos.errors import ConfigurationError
+
+
+@pytest.mark.asyncio
+async def test_request_cycle_crossing_transient_fails_without_deadlock() -> None:
+    first = DependencyKey[str]("cycle-request-a")
+    transient = DependencyKey[str]("cycle-transient")
+    second = DependencyKey[str]("cycle-request-b")
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def first_provider(resolver: DependencyResolver) -> str:
+        first_started.set()
+        await second_started.wait()
+        return await resolver.resolve(transient)
+
+    async def transient_provider(resolver: DependencyResolver) -> str:
+        return await resolver.resolve(second)
+
+    async def second_provider(resolver: DependencyResolver) -> str:
+        second_started.set()
+        await first_started.wait()
+        return await resolver.resolve(first)
+
+    container = Container()
+    container.register(first, first_provider, scope=DependencyScope.REQUEST)
+    container.register(transient, transient_provider, scope=DependencyScope.TRANSIENT)
+    container.register(second, second_provider, scope=DependencyScope.REQUEST)
+    async with container.request_scope() as scope:
+        results = await asyncio.wait_for(
+            asyncio.gather(scope.resolve(first), scope.resolve(second), return_exceptions=True),
+            timeout=1,
+        )
+    assert all(isinstance(result, ConfigurationError) for result in results)
+    assert all("Dependency cycle detected" in str(result) for result in results)
+    assert any("cycle-transient" in str(result) for result in results)
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_request_cycle_crossing_multiple_transients_fails_without_deadlock() -> None:
+    first = DependencyKey[str]("multi-request-a")
+    outer = DependencyKey[str]("multi-transient-outer")
+    inner = DependencyKey[str]("multi-transient-inner")
+    second = DependencyKey[str]("multi-request-b")
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def first_provider(resolver: DependencyResolver) -> str:
+        first_started.set()
+        await second_started.wait()
+        return await resolver.resolve(outer)
+
+    async def outer_provider(resolver: DependencyResolver) -> str:
+        return await resolver.resolve(inner)
+
+    async def inner_provider(resolver: DependencyResolver) -> str:
+        return await resolver.resolve(second)
+
+    async def second_provider(resolver: DependencyResolver) -> str:
+        second_started.set()
+        await first_started.wait()
+        return await resolver.resolve(first)
+
+    container = Container()
+    container.register(first, first_provider, scope=DependencyScope.REQUEST)
+    container.register(outer, outer_provider, scope=DependencyScope.TRANSIENT)
+    container.register(inner, inner_provider, scope=DependencyScope.TRANSIENT)
+    container.register(second, second_provider, scope=DependencyScope.REQUEST)
+    async with container.request_scope() as scope:
+        results = await asyncio.wait_for(
+            asyncio.gather(scope.resolve(first), scope.resolve(second), return_exceptions=True),
+            timeout=1,
+        )
+    assert all(isinstance(result, ConfigurationError) for result in results)
+    assert any("multi-transient-outer" in str(result) for result in results)
+    assert any("multi-transient-inner" in str(result) for result in results)
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_independent_concurrent_requests_do_not_report_false_cycle() -> None:
+    first = DependencyKey[str]("independent-a")
+    second = DependencyKey[str]("independent-b")
+    container = Container()
+    container.register(first, lambda _: "a", scope=DependencyScope.REQUEST)
+    container.register(second, lambda _: "b", scope=DependencyScope.REQUEST)
+    async with container.request_scope() as scope:
+        values = await asyncio.gather(scope.resolve(first), scope.resolve(second))
+        assert list(values) == ["a", "b"]
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_request_dependency_diamond_is_not_a_cycle() -> None:
+    leaf = DependencyKey[object]("diamond-leaf")
+    left = DependencyKey[object]("diamond-left")
+    right = DependencyKey[object]("diamond-right")
+    root = DependencyKey[tuple[object, object]]("diamond-root")
+    value = object()
+    container = Container()
+    container.register(leaf, lambda _: value, scope=DependencyScope.REQUEST)
+    container.register(left, lambda resolver: resolver.resolve(leaf), scope=DependencyScope.REQUEST)
+    container.register(
+        right, lambda resolver: resolver.resolve(leaf), scope=DependencyScope.REQUEST
+    )
+
+    async def root_provider(resolver: DependencyResolver) -> tuple[object, object]:
+        return await asyncio.gather(resolver.resolve(left), resolver.resolve(right))
+
+    container.register(root, root_provider, scope=DependencyScope.REQUEST)
+    async with container.request_scope() as scope:
+        left_value, right_value = await scope.resolve(root)
+        assert left_value is value
+        assert right_value is value
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_request_resource_uses_one_lifecycle_context() -> None:
+    key = DependencyKey[object]("context-owned-request")
+    marker: ContextVar[str] = ContextVar("request-resource-marker", default="outside")
+    value = object()
+    entered = 0
+    exited = 0
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        nonlocal entered, exited
+        entered += 1
+        token = marker.set("inside")
+        try:
+            yield value
+        finally:
+            assert marker.get() == "inside"
+            marker.reset(token)
+            exited += 1
+
+    container = Container()
+    container.register(key, resource, scope=DependencyScope.REQUEST)
+    async with container.request_scope() as scope:
+        values = await asyncio.gather(*(scope.resolve(key) for _ in range(20)))
+        assert all(item is value for item in values)
+    assert entered == 1
+    assert exited == 1
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_nested_request_resources_exit_in_reverse_order_in_their_contexts() -> None:
+    child = DependencyKey[str]("context-child")
+    parent = DependencyKey[str]("context-parent")
+    marker: ContextVar[str] = ContextVar("nested-resource-marker", default="outside")
+    timeline: list[str] = []
+
+    @asynccontextmanager
+    async def child_resource(_: DependencyResolver) -> AsyncGenerator[str]:
+        token = marker.set("child")
+        timeline.append("enter-child")
+        try:
+            yield "child"
+        finally:
+            assert marker.get() == "child"
+            timeline.append("exit-child")
+            marker.reset(token)
+
+    @asynccontextmanager
+    async def parent_resource(resolver: DependencyResolver) -> AsyncGenerator[str]:
+        assert await resolver.resolve(child) == "child"
+        token = marker.set("parent")
+        timeline.append("enter-parent")
+        try:
+            yield "parent"
+        finally:
+            assert marker.get() == "parent"
+            timeline.append("exit-parent")
+            marker.reset(token)
+
+    container = Container()
+    container.register(child, child_resource, scope=DependencyScope.REQUEST)
+    container.register(parent, parent_resource, scope=DependencyScope.REQUEST)
+    async with container.request_scope() as scope:
+        assert await scope.resolve(parent) == "parent"
+    assert timeline == ["enter-child", "enter-parent", "exit-parent", "exit-child"]
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_request_provider_failure_cleans_partially_acquired_resource() -> None:
+    resource_key = DependencyKey[str]("partial-resource")
+    failing_key = DependencyKey[str]("partial-failure")
+    marker: ContextVar[str] = ContextVar("partial-marker", default="outside")
+    timeline: list[str] = []
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[str]:
+        token = marker.set("resource")
+        timeline.append("enter")
+        try:
+            yield "resource"
+        finally:
+            assert marker.get() == "resource"
+            timeline.append("exit")
+            marker.reset(token)
+
+    async def failing(resolver: DependencyResolver) -> str:
+        await resolver.resolve(resource_key)
+        raise RuntimeError("provider failed")
+
+    container = Container()
+    container.register(resource_key, resource, scope=DependencyScope.TRANSIENT)
+    container.register(failing_key, failing, scope=DependencyScope.REQUEST)
+    with pytest.raises(RuntimeError, match="provider failed"):
+        async with container.request_scope() as scope:
+            await scope.resolve(failing_key)
+    assert timeline == ["enter", "exit"]
+    await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancellations", [1, 2, 5])
+async def test_request_teardown_survives_repeated_cancellation(cancellations: int) -> None:
+    key = DependencyKey[str](f"cancelled-cleanup-{cancellations}")
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[str]:
+        try:
+            yield "resource"
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            cleanup_finished.set()
+
+    container = Container()
+    container.register(key, resource, scope=DependencyScope.REQUEST)
+    scope = container.request_scope()
+    await scope.__aenter__()
+    assert await scope.resolve(key) == "resource"
+    closing = asyncio.create_task(scope.__aexit__(None, None, None))
+    await cleanup_started.wait()
+    for _ in range(cancellations):
+        closing.cancel()
+        await asyncio.sleep(0)
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert cleanup_finished.is_set()
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_request_teardown_closes_every_resource_when_one_exit_fails() -> None:
+    first = DependencyKey[str]("cleanup-first")
+    second = DependencyKey[str]("cleanup-second")
+    timeline: list[str] = []
+
+    def managed(
+        name: str, *, fail: bool = False
+    ) -> Callable[[DependencyResolver], AbstractAsyncContextManager[str]]:
+        @asynccontextmanager
+        async def resource(_: DependencyResolver) -> AsyncGenerator[str]:
+            timeline.append(f"enter-{name}")
+            try:
+                yield name
+            finally:
+                timeline.append(f"exit-{name}")
+                if fail:
+                    raise RuntimeError(f"{name} cleanup failed")
+
+        return resource
+
+    container = Container()
+    container.register(first, managed("first"), scope=DependencyScope.REQUEST)
+    container.register(second, managed("second", fail=True), scope=DependencyScope.REQUEST)
+    with pytest.raises(BaseExceptionGroup, match="Dependency cleanup failed"):
+        async with container.request_scope() as scope:
+            await scope.resolve(first)
+            await scope.resolve(second)
+    assert timeline == ["enter-first", "enter-second", "exit-second", "exit-first"]
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_request_teardown_closes_multiple_resources_in_reverse_order() -> None:
+    first = DependencyKey[str]("cancel-order-first")
+    second = DependencyKey[str]("cancel-order-second")
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    timeline: list[str] = []
+
+    def managed(
+        name: str, *, wait: bool = False
+    ) -> Callable[[DependencyResolver], AbstractAsyncContextManager[str]]:
+        @asynccontextmanager
+        async def resource(_: DependencyResolver) -> AsyncGenerator[str]:
+            timeline.append(f"enter-{name}")
+            try:
+                yield name
+            finally:
+                timeline.append(f"exit-{name}-start")
+                if wait:
+                    cleanup_started.set()
+                    await release_cleanup.wait()
+                timeline.append(f"exit-{name}-done")
+
+        return resource
+
+    container = Container()
+    container.register(first, managed("first"), scope=DependencyScope.REQUEST)
+    container.register(second, managed("second", wait=True), scope=DependencyScope.REQUEST)
+    scope = container.request_scope()
+    await scope.__aenter__()
+    await scope.resolve(first)
+    await scope.resolve(second)
+    closing = asyncio.create_task(scope.__aexit__(None, None, None))
+    await cleanup_started.wait()
+    closing.cancel()
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert timeline == [
+        "enter-first",
+        "enter-second",
+        "exit-second-start",
+        "exit-second-done",
+        "exit-first-start",
+        "exit-first-done",
+    ]
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_close_during_request_initialization_prevents_late_publication() -> None:
+    key = DependencyKey[str]("close-in-flight")
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def provider(_: DependencyResolver) -> str:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+        return "late"
+
+    container = Container()
+    container.register(key, provider, scope=DependencyScope.REQUEST)
+    scope = container.request_scope()
+    await scope.__aenter__()
+    resolving = asyncio.create_task(scope.resolve(key))
+    await started.wait()
+    await scope.__aexit__(None, None, None)
+    with pytest.raises(asyncio.CancelledError):
+        await resolving
+    assert cancelled.is_set()
+    with pytest.raises(ConfigurationError, match="must be entered"):
+        await scope.resolve(key)
+    await container.close()

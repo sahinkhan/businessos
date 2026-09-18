@@ -5,9 +5,10 @@ import inspect
 from asyncio import Task
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from contextvars import ContextVar
+from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass
 from enum import StrEnum
+from itertools import pairwise
 from types import TracebackType
 from typing import Any, Protocol, TypeVar, cast
 
@@ -34,6 +35,13 @@ class DependencyScope(StrEnum):
     TRANSIENT = "transient"
 
 
+class _RequestScopeState(StrEnum):
+    NEW = "new"
+    OPEN = "open"
+    CLOSING = "closing"
+    CLOSED = "closed"
+
+
 Provider = Callable[[DependencyResolver], object | Awaitable[object]]
 _resolution_path: ContextVar[tuple[DependencyKey[Any], ...]] = ContextVar(
     "businessos_dependency_resolution_path",
@@ -50,6 +58,27 @@ class _Registration:
     gate: ContributionGate | None = None
 
 
+@dataclass(slots=True)
+class _RequestResourceOwner:
+    """Own resource entry and exit in one explicit context."""
+
+    context: Context
+    stack: AsyncExitStack
+
+    async def close(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        closing = asyncio.create_task(
+            self.stack.__aexit__(exc_type, exc_value, traceback),
+            context=self.context,
+            name="businessos-di-request-resource-cleanup",
+        )
+        await closing
+
+
 class Container:
     """Application dependency registry; request scopes own their resource teardown."""
 
@@ -59,7 +88,7 @@ class Container:
         self._singleton_stacks: dict[DependencyKey[Any], AsyncExitStack] = {}
         self._singleton_order: list[DependencyKey[Any]] = []
         self._singleton_flights: dict[DependencyKey[Any], Task[object]] = {}
-        self._singleton_waits: dict[DependencyKey[Any], set[DependencyKey[Any]]] = {}
+        self._singleton_waits: dict[DependencyKey[Any], dict[DependencyKey[Any], int]] = {}
         self._closed = False
 
     def register(
@@ -147,10 +176,8 @@ class Container:
         key: DependencyKey[T],
         request_cache: dict[DependencyKey[Any], object],
         request_flights: dict[DependencyKey[Any], Task[object]],
-        request_waits: dict[DependencyKey[Any], set[DependencyKey[Any]]],
-        request_stack: AsyncExitStack,
-        resolver: DependencyResolver,
-        scope_is_active: Callable[[], bool],
+        request_waits: dict[DependencyKey[Any], dict[DependencyKey[Any], int]],
+        start_initialization: Callable[[DependencyKey[Any], _Registration, bool], Task[object]],
     ) -> T:
         registration = self._registration_for_resolution(key)
         if registration.scope is DependencyScope.SINGLETON:
@@ -158,33 +185,18 @@ class Container:
         if registration.scope is DependencyScope.REQUEST and key in request_cache:
             return cast(T, request_cache[key])
         if registration.scope is DependencyScope.REQUEST:
-            path = _resolution_path.get()
-            parent = path[-1] if path else None
-            if parent is not None:
-                self._add_wait(request_waits, parent, key)
+            wait_edges = self._add_wait_chain(request_waits, _resolution_path.get(), key)
             flight = request_flights.get(key)
             if flight is None:
-                flight = asyncio.create_task(
-                    self._initialize_request(
-                        key,
-                        registration,
-                        request_cache,
-                        request_flights,
-                        request_stack,
-                        resolver,
-                        scope_is_active,
-                    ),
-                    name=f"businessos-di-request:{key.name}",
-                )
+                flight = start_initialization(key, registration, True)
                 flight.add_done_callback(self._consume_flight_result)
                 request_flights[key] = flight
             try:
                 return cast(T, await asyncio.shield(flight))
             finally:
-                if parent is not None:
-                    self._remove_wait(request_waits, parent, key)
-        value = await self._provide(key, registration, resolver, request_stack)
-        return cast(T, value)
+                for source, target in reversed(wait_edges):
+                    self._remove_wait(request_waits, source, target)
+        return cast(T, await asyncio.shield(start_initialization(key, registration, False)))
 
     def _registration_for_resolution(self, key: DependencyKey[Any]) -> _Registration:
         if self._closed:
@@ -202,27 +214,6 @@ class Container:
             names = " -> ".join(item.name for item in cycle)
             raise ConfigurationError(f"Dependency cycle detected: {names}")
         return registration
-
-    async def _initialize_request(
-        self,
-        key: DependencyKey[Any],
-        registration: _Registration,
-        request_cache: dict[DependencyKey[Any], object],
-        request_flights: dict[DependencyKey[Any], Task[object]],
-        request_stack: AsyncExitStack,
-        resolver: DependencyResolver,
-        scope_is_active: Callable[[], bool],
-    ) -> object:
-        try:
-            value = await self._provide(key, registration, resolver, request_stack)
-            if not scope_is_active():
-                raise ConfigurationError("Dependency scope closed during resolution")
-            request_cache[key] = value
-            return value
-        finally:
-            current = asyncio.current_task()
-            if request_flights.get(key) is current:
-                request_flights.pop(key, None)
 
     async def _resolve_singleton(
         self,
@@ -289,6 +280,17 @@ class Container:
             return cast(T, await self._resolve_singleton(key, registration))
         return cast(T, await self._provide(key, registration, resolver, stack))
 
+    async def provide_for_request(
+        self,
+        key: DependencyKey[Any],
+        registration: _Registration,
+        resolver: DependencyResolver,
+        stack: AsyncExitStack,
+    ) -> object:
+        """Invoke a provider within its request-owned resource stack."""
+
+        return await self._provide(key, registration, resolver, stack)
+
     def _add_singleton_wait(
         self,
         source: DependencyKey[Any],
@@ -304,41 +306,62 @@ class Container:
         self._remove_wait(self._singleton_waits, source, target)
 
     @classmethod
+    def _add_wait_chain(
+        cls,
+        graph: dict[DependencyKey[Any], dict[DependencyKey[Any], int]],
+        ancestry: tuple[DependencyKey[Any], ...],
+        target: DependencyKey[Any],
+    ) -> tuple[tuple[DependencyKey[Any], DependencyKey[Any]], ...]:
+        chain = (*ancestry, target)
+        edges: list[tuple[DependencyKey[Any], DependencyKey[Any]]] = []
+        try:
+            for source, dependency in pairwise(chain):
+                cls._add_wait(graph, source, dependency)
+                edges.append((source, dependency))
+        except BaseException:
+            for source, dependency in reversed(edges):
+                cls._remove_wait(graph, source, dependency)
+            raise
+        return tuple(edges)
+
+    @classmethod
     def _add_wait(
         cls,
-        graph: dict[DependencyKey[Any], set[DependencyKey[Any]]],
+        graph: dict[DependencyKey[Any], dict[DependencyKey[Any], int]],
         source: DependencyKey[Any],
         target: DependencyKey[Any],
     ) -> None:
-        waits = graph.setdefault(source, set())
-        waits.add(target)
+        waits = graph.setdefault(source, {})
+        waits[target] = waits.get(target, 0) + 1
         path = cls._wait_path(graph, target, source, set())
         if path is None:
             return
-        waits.remove(target)
-        if not waits:
-            graph.pop(source, None)
+        cls._remove_wait(graph, source, target)
         cycle = (source, *path)
         names = " -> ".join(item.name for item in cycle)
         raise ConfigurationError(f"Dependency cycle detected: {names}")
 
     @staticmethod
     def _remove_wait(
-        graph: dict[DependencyKey[Any], set[DependencyKey[Any]]],
+        graph: dict[DependencyKey[Any], dict[DependencyKey[Any], int]],
         source: DependencyKey[Any],
         target: DependencyKey[Any],
     ) -> None:
         waits = graph.get(source)
         if waits is None:
             return
-        waits.discard(target)
+        count = waits.get(target, 0)
+        if count > 1:
+            waits[target] = count - 1
+        else:
+            waits.pop(target, None)
         if not waits:
             graph.pop(source, None)
 
     @classmethod
     def _wait_path(
         cls,
-        graph: dict[DependencyKey[Any], set[DependencyKey[Any]]],
+        graph: dict[DependencyKey[Any], dict[DependencyKey[Any], int]],
         current: DependencyKey[Any],
         target: DependencyKey[Any],
         visited: set[DependencyKey[Any]],
@@ -399,13 +422,16 @@ class RequestDependencyScope(
         self._container = container
         self._cache: dict[DependencyKey[Any], object] = {}
         self._flights: dict[DependencyKey[Any], Task[object]] = {}
-        self._waits: dict[DependencyKey[Any], set[DependencyKey[Any]]] = {}
-        self._exit_stack = AsyncExitStack()
-        self._entered = False
+        self._waits: dict[DependencyKey[Any], dict[DependencyKey[Any], int]] = {}
+        self._initializers: set[Task[object]] = set()
+        self._resource_owners: list[_RequestResourceOwner] = []
+        self._cleanup_task: Task[None] | None = None
+        self._state = _RequestScopeState.NEW
 
     async def __aenter__(self) -> "RequestDependencyScope":
-        await self._exit_stack.__aenter__()
-        self._entered = True
+        if self._state is not _RequestScopeState.NEW:
+            raise ConfigurationError("Dependency scope cannot be re-entered")
+        self._state = _RequestScopeState.OPEN
         return self
 
     async def __aexit__(
@@ -414,31 +440,104 @@ class RequestDependencyScope(
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self._entered = False
-        flights = tuple(self._flights.values())
-        for flight in flights:
-            flight.cancel()
-        if flights:
-            await asyncio.gather(*flights, return_exceptions=True)
+        self._state = _RequestScopeState.CLOSING
+        if self._cleanup_task is None:
+            self._cleanup_task = asyncio.create_task(
+                self._cleanup(exc_type, exc_value, traceback),
+                name="businessos-di-request-scope-cleanup",
+            )
+        cancelled = False
         try:
-            await self._exit_stack.__aexit__(exc_type, exc_value, traceback)
+            while True:
+                try:
+                    await asyncio.shield(self._cleanup_task)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
         finally:
             self._cache.clear()
             self._flights.clear()
             self._waits.clear()
+            self._initializers.clear()
+            self._resource_owners.clear()
+            self._state = _RequestScopeState.CLOSED
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def resolve(self, key: DependencyKey[T]) -> T:
-        if not self._entered:
+        if self._state is not _RequestScopeState.OPEN:
             raise ConfigurationError("Dependency scope must be entered before resolution")
         return await self._container.resolve_for_scope(
             key,
             self._cache,
             self._flights,
             self._waits,
-            self._exit_stack,
-            self,
-            lambda: self._entered,
+            self._start_initialization,
         )
+
+    def _start_initialization(
+        self,
+        key: DependencyKey[Any],
+        registration: _Registration,
+        cache_result: bool,
+    ) -> Task[object]:
+        owner = _RequestResourceOwner(copy_context(), AsyncExitStack())
+        task = asyncio.create_task(
+            self._initialize_owned(key, registration, cache_result, owner),
+            context=owner.context,
+            name=f"businessos-di-request:{key.name}",
+        )
+        self._initializers.add(task)
+        task.add_done_callback(self._initialization_finished)
+        return task
+
+    async def _initialize_owned(
+        self,
+        key: DependencyKey[Any],
+        registration: _Registration,
+        cache_result: bool,
+        owner: _RequestResourceOwner,
+    ) -> object:
+        await owner.stack.__aenter__()
+        try:
+            value = await self._container.provide_for_request(key, registration, self, owner.stack)
+            if self._state is not _RequestScopeState.OPEN:
+                raise ConfigurationError("Dependency scope closed during resolution")
+            if cache_result:
+                self._cache[key] = value
+            self._resource_owners.append(owner)
+            return value
+        except BaseException:
+            await owner.stack.aclose()
+            raise
+
+    def _initialization_finished(self, task: Task[object]) -> None:
+        self._initializers.discard(task)
+        if not task.cancelled():
+            task.exception()
+        for key, flight in tuple(self._flights.items()):
+            if flight is task:
+                self._flights.pop(key, None)
+
+    async def _cleanup(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        initializers = tuple(self._initializers)
+        for initializer in initializers:
+            initializer.cancel()
+        if initializers:
+            await asyncio.gather(*initializers, return_exceptions=True)
+        errors: list[BaseException] = []
+        for owner in reversed(self._resource_owners):
+            try:
+                await owner.close(exc_type, exc_value, traceback)
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            raise BaseExceptionGroup("Dependency cleanup failed", errors)
 
 
 class _SingletonDependencyResolver(DependencyResolver):

@@ -5,10 +5,44 @@ Audited `main` baseline: `3e551b8922397e03636db8d7ed7cf85d2477db83`.
 Accepted architecture checkpoint: `20e2c32d8a25e7959fcf474f70a77f5e8f96646e` on
 `fix/phase4.5-certification`.
 
-Status: **READY FOR INDEPENDENT RE-AUDIT**. Implementation remediation is complete and exact-head
-PR CI is green. PR #9 must not be merged or certified without separate authorization. Historical
-tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are unchanged.
+Status: **REMEDIATION IN PROGRESS — EXACT-HEAD CI REQUIRED**. The six findings from the
+2026-09-18 independent re-audit have local regression coverage and remediation. Exact-head PR CI
+and the final read-only review remain required before the branch can return to **READY FOR
+INDEPENDENT RE-AUDIT**. PR #9 must not be merged or certified without separate authorization.
+Historical tags `v0.4.5-ui-foundation` and `v0.4.6-ui-foundation` are unchanged.
 `v0.4.7-ui-foundation` must not be created in this step.
+
+## 2026-09-18 independent re-audit remediation
+
+The independent report remains intact in
+`PHASE-4.5-INDEPENDENT-REAUDIT-2026-09-18.md`. Its six findings were addressed as follows:
+
+- unauthenticated HTTP 401 bootstrap and provider failure now settle loading state, while explicit
+  reload remains recoverable and stale-request generation guards remain active;
+- scope initialization is keyed to stable tenant/principal identity, so same-principal CSRF,
+  expiry, and scope rotation do not restart hierarchy loading, while a true principal replacement
+  does;
+- Redis touch atomically checks the stored generation and live expiry, then updates activity fields
+  from the current stored document, so concurrent same-generation requests succeed without
+  weakening rotation or revocation protection;
+- the Organization hierarchy projection supplies trusted display names for backend-selected
+  company and operating-site identifiers;
+- modal focus lifecycle is tied to open/close state and uses a current callback reference, so
+  controlled-input rerenders preserve focus; and
+- official navigation contributions use translation resource keys, Sidebar and command-palette
+  presentation resolves those keys, and Modal accepts a translated close-control label used by the
+  session-expiry flow.
+
+Added evidence includes the four original frontend reproductions, bounded scope lifecycle coverage,
+auth bootstrap/recovery coverage, non-English navigation and reusable-control accessibility labels,
+a deterministic Redis concurrency regression, and a real Redis 24-way parallel touch integration
+case with post-rotation and post-revocation stale-touch denial.
+
+Local frontend gates pass: TypeScript, ESLint, Prettier, 19 test files / 59 tests, six automated
+accessibility tests, production build, and bundle budget. Focused backend session tests pass 11/11,
+and repository Ruff formatting/lint pass. This workstation has Python 3.12 rather than the required
+Python 3.13 and no running Docker daemon, so full Python unit/static/provider/deployment evidence is
+deferred to exact-head GitHub CI. No migration or public certified contract changed.
 
 ## ADR-009 implementation
 

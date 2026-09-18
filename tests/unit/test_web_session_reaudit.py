@@ -5,7 +5,6 @@ the Redis Lua contract; this is not a live Redis integration test.
 """
 
 import asyncio
-import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -38,13 +37,10 @@ class ConcurrentTouchRedis:
         _ttl: int,
         _now: str,
     ) -> int | str:
-        current = json.loads(self.raw)
-        if current["generation"] != expected_generation:
+        current = WebSession.model_validate_json(self.raw)
+        if current.generation != expected_generation:
             return 0
-        touched = json.loads(replacement)
-        current["last_seen_at"] = touched["last_seen_at"]
-        current["idle_expires_at"] = touched["idle_expires_at"]
-        self.raw = json.dumps(current)
+        self.raw = replacement
         return self.raw
 
 

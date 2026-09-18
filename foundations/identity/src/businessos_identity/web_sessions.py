@@ -636,12 +636,8 @@ class RedisWebSessionStore:
         local absolute_expiry = sortable_instant(current.absolute_expires_at)
         if not now or not idle_expiry or not absolute_expiry then return false end
         if idle_expiry <= now or absolute_expiry <= now then return false end
-        local touched = cjson.decode(ARGV[2])
-        current.last_seen_at = touched.last_seen_at
-        current.idle_expires_at = touched.idle_expires_at
-        local encoded = cjson.encode(current)
-        redis.call('SET', KEYS[1], encoded, 'EX', ARGV[3])
-        return encoded
+        redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+        return ARGV[2]
         """
         changed = await self._redis.eval(
             script,

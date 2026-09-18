@@ -1,11 +1,14 @@
 export interface NavItem {
   id: string;
-  label: string;
+  /** Translation resource key. Official contributions must provide this field. */
+  labelKey?: string;
+  /** Legacy/custom display label fallback for third-party contributions. */
+  label?: string;
   path: string;
   /** Optional reference to a registered route ID in RouteRegistry */
   routeId?: string;
   icon?: string;
-  group?: string;
+  groupKey?: string;
   order?: number;
   badge?: string | number;
   requiredPermission?: {
@@ -16,7 +19,8 @@ export interface NavItem {
 
 export interface NavGroup {
   id: string;
-  label: string;
+  labelKey?: string;
+  label?: string;
   order?: number;
   items: NavItem[];
 }

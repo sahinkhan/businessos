@@ -32,12 +32,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({
 }) => {
   const [session, setSession] = useState<SessionInfo | null>(initialSession);
   const [isLoading, setIsLoading] = useState(initialSession === null);
-  const user = session ? userFromSession(session) : null;
+  const user = useMemo(() => (session ? userFromSession(session) : null), [session]);
 
   const invalidateSession = useCallback(() => {
     securityContext.advance();
     queryCache.clear();
     setSession(null);
+    setIsLoading(false);
     apiClient.setCsrfTokenProvider(null);
   }, []);
 

@@ -73,11 +73,14 @@ function isActiveScope(value: unknown): value is ActiveScope {
 }
 
 export class HttpScopeAdapter implements ScopeAdapter {
+  private hierarchy: TenantScope[] = [];
+
   constructor(private readonly baseUrl = '/organization') {}
 
   public async fetchTenants(): Promise<TenantScope[]> {
     const response = hierarchyProjection(await apiClient.get<unknown>(`${this.baseUrl}/hierarchy`));
     if (!response) throw new Error('Malformed backend organization hierarchy response');
+    this.hierarchy = response;
     return response;
   }
 
@@ -98,16 +101,25 @@ export class HttpScopeAdapter implements ScopeAdapter {
       };
     }
     const scope = candidate.scope as Record<string, unknown>;
+    const tenant = this.hierarchy.find((item) => item.id === scope.tenant_id);
+    const group = tenant?.groups.find((item) => item.id === scope.enterprise_group_id);
+    const companies = tenant?.groups.flatMap((item) => item.companies) ?? [];
+    const company = companies.find(
+      (item) => item.id === (scope.company_id ?? scope.legal_entity_id)
+    );
+    const site = companies
+      .flatMap((item) => item.sites)
+      .find((item) => item.id === scope.operating_site_id);
     const active: ActiveScope = {
       tenantId: String(scope.tenant_id ?? ''),
-      tenantName: String(scope.tenant_id ?? ''),
+      tenantName: tenant?.name ?? String(scope.tenant_id ?? ''),
       groupId: typeof scope.enterprise_group_id === 'string' ? scope.enterprise_group_id : null,
-      groupName: null,
+      groupName: group?.name ?? null,
       legalEntityId: typeof scope.legal_entity_id === 'string' ? scope.legal_entity_id : null,
       companyId: typeof scope.company_id === 'string' ? scope.company_id : null,
-      companyName: null,
+      companyName: company?.name ?? null,
       siteId: typeof scope.operating_site_id === 'string' ? scope.operating_site_id : null,
-      siteName: null,
+      siteName: site?.name ?? null,
     };
     if (!isActiveScope(active)) return { valid: false, error: 'Malformed backend active scope' };
     const expiresAt =

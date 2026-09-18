@@ -14,6 +14,7 @@ export interface ModalProps {
   size?: ModalSize;
   closeOnBackdrop?: boolean;
   initialFocusRef?: React.RefObject<HTMLElement>;
+  closeLabel?: string;
 }
 
 const sizeWidths: Record<ModalSize, string> = {
@@ -34,10 +35,16 @@ export const Modal: React.FC<ModalProps> = ({
   size = 'md',
   closeOnBackdrop = true,
   initialFocusRef,
+  closeLabel = 'Close dialog',
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
   const titleId = useId();
   const descriptionId = useId();
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!isOpen) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
@@ -51,7 +58,7 @@ export const Modal: React.FC<ModalProps> = ({
     (initialFocusRef?.current ?? focusable()[0] ?? dialog)?.focus();
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key === 'Tab') {
@@ -77,7 +84,7 @@ export const Modal: React.FC<ModalProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       previouslyFocused?.focus();
     };
-  }, [initialFocusRef, isOpen, onClose]);
+  }, [initialFocusRef, isOpen]);
 
   if (!isOpen) return null;
 
@@ -162,7 +169,7 @@ export const Modal: React.FC<ModalProps> = ({
             </div>
             <IconButton
               icon={<X size={18} />}
-              aria-label="Close dialog"
+              aria-label={closeLabel}
               variant="ghost"
               size="sm"
               onClick={onClose}

@@ -14,55 +14,55 @@ export class NavigationRegistry {
       {
         id: 'nav_dashboard',
         routeId: 'route_dashboard',
-        label: 'Dashboard',
+        labelKey: 'nav.dashboard',
         path: '/',
         icon: 'LayoutDashboard',
-        group: 'Overview',
+        groupKey: 'nav.group.overview',
         order: 1,
       },
       {
         id: 'nav_showcase',
         routeId: 'route_showcase',
-        label: 'UI Components',
+        labelKey: 'nav.ui_components',
         path: '/showcase',
         icon: 'Layers',
-        group: 'Foundation Showcase',
+        groupKey: 'nav.group.foundation_showcase',
         order: 10,
       },
       {
         id: 'nav_datatable',
         routeId: 'route_datatable',
-        label: 'DataTable Demo',
+        labelKey: 'nav.datatable_demo',
         path: '/demo/datatable',
         icon: 'Table',
-        group: 'Foundation Showcase',
+        groupKey: 'nav.group.foundation_showcase',
         order: 11,
       },
       {
         id: 'nav_forms',
         routeId: 'route_forms',
-        label: 'Forms & Inputs',
+        labelKey: 'nav.forms_inputs',
         path: '/demo/forms',
         icon: 'CheckSquare',
-        group: 'Foundation Showcase',
+        groupKey: 'nav.group.foundation_showcase',
         order: 12,
       },
       {
         id: 'nav_layouts',
         routeId: 'route_layouts',
-        label: 'Page Layouts',
+        labelKey: 'nav.page_layouts',
         path: '/demo/layouts',
         icon: 'LayoutTemplate',
-        group: 'Foundation Showcase',
+        groupKey: 'nav.group.foundation_showcase',
         order: 13,
       },
       {
         id: 'nav_settings',
         routeId: 'route_settings',
-        label: 'System Settings',
+        labelKey: 'nav.system_settings',
         path: '/settings',
         icon: 'Settings',
-        group: 'Administration',
+        groupKey: 'nav.group.administration',
         order: 99,
       },
     ];
@@ -73,6 +73,9 @@ export class NavigationRegistry {
 
   public register(item: NavItem): void {
     if (!item.id.trim()) throw new Error('Navigation registration failed: invalid identifier.');
+    if (!item.labelKey?.trim() && !item.label?.trim()) {
+      throw new Error(`Navigation item "${item.id}" requires a translation key or label.`);
+    }
     if (this.items.has(item.id)) {
       throw new Error(`Navigation registration collision: item ID "${item.id}" already exists.`);
     }
@@ -104,12 +107,12 @@ export class NavigationRegistry {
   public getGroups(): NavGroup[] {
     const groupMap = new Map<string, NavItem[]>();
     for (const item of this.getAll()) {
-      const label = item.group || 'General';
-      groupMap.set(label, [...(groupMap.get(label) ?? []), item]);
+      const labelKey = item.groupKey ?? 'nav.group.general';
+      groupMap.set(labelKey, [...(groupMap.get(labelKey) ?? []), item]);
     }
-    return Array.from(groupMap, ([label, items]) => ({
-      id: label.toLowerCase().replace(/\s+/g, '_'),
-      label,
+    return Array.from(groupMap, ([labelKey, items]) => ({
+      id: labelKey.replace(/[^a-z0-9]+/gi, '_').toLowerCase(),
+      labelKey,
       items,
     }));
   }

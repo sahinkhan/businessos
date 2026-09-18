@@ -32,6 +32,7 @@ export const SessionExpiryModal: React.FC = () => {
     <Modal
       isOpen
       onClose={() => setShowWarning(false)}
+      closeLabel={t('modal.close')}
       title={t('auth.session.title')}
       footer={
         <>

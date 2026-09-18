@@ -62,7 +62,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobile = false, onNavigate }) 
                   letterSpacing: '0.05em',
                 }}
               >
-                {group.label}
+                {group.labelKey ? t(group.labelKey) : group.label}
               </div>
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '4px' }}>
@@ -86,10 +86,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobile = false, onNavigate }) 
                     backgroundColor: isActive ? 'var(--color-surface-subtle)' : 'transparent',
                     transition: 'all 150ms ease',
                   })}
-                  title={!mobile && isSidebarCollapsed ? item.label : undefined}
+                  title={
+                    !mobile && isSidebarCollapsed
+                      ? item.labelKey
+                        ? t(item.labelKey)
+                        : item.label
+                      : undefined
+                  }
                 >
                   <Icon name={item.icon || 'Circle'} size={18} />
-                  {(mobile || !isSidebarCollapsed) && <span style={{ flex: 1 }}>{item.label}</span>}
+                  {(mobile || !isSidebarCollapsed) && (
+                    <span style={{ flex: 1 }}>{item.labelKey ? t(item.labelKey) : item.label}</span>
+                  )}
                   {(mobile || !isSidebarCollapsed) && item.badge && (
                     <span
                       style={{

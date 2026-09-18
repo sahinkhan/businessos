@@ -56,6 +56,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
   adapter = defaultScopeAdapter,
 }) => {
   const { user, isAuthenticated, updateSessionSecurity } = useAuth();
+  const principalKey = isAuthenticated && user ? `${user.tenantId}:${user.id}` : null;
   const [tenants, setTenants] = useState<TenantScope[]>([]);
   const [scope, setScopeState] = useState<ActiveScope | null>(null);
   const [status, setStatus] = useState<ScopeStatus>('idle');
@@ -80,7 +81,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated || !user) {
+    if (!principalKey) {
       clearScope();
       localStorage.removeItem(SCOPE_PREFERENCE_KEY);
       return;
@@ -139,7 +140,7 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [adapter, applyTrustedScope, clearScope, isAuthenticated, updateSessionSecurity, user]);
+  }, [adapter, applyTrustedScope, clearScope, principalKey, updateSessionSecurity]);
 
   const select = useCallback(
     async (selection: ActiveScopeSelection) => {

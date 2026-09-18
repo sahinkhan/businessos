@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 from collections.abc import Callable
@@ -80,14 +81,20 @@ async def test_redis_web_sessions_rotate_revoke_and_consume_transactions_atomica
     try:
         first = await sessions.create(session())
         second = await sessions.create(session())
+        touched = await asyncio.gather(
+            *(sessions.touch(first, 1, now + timedelta(minutes=20)) for _ in range(24))
+        )
+        assert all(item is not None and item.generation == 1 for item in touched)
         rotated = await sessions.rotate(first, session(generation=2))
         assert await sessions.get(first) is None
+        assert await sessions.touch(first, 1, now + timedelta(minutes=20)) is None
         rotated_session = await sessions.get(rotated)
         assert rotated_session is not None
         assert rotated_session.generation == 2
         await sessions.revoke_principal(tenant_id, principal_id, "security-event")
         assert await sessions.get(rotated) is None
         assert await sessions.get(second) is None
+        assert await sessions.touch(rotated, 2, now + timedelta(minutes=20)) is None
 
         assert await transactions.allow_login("browser", 1, 60)
         assert not await transactions.allow_login("browser", 1, 60)

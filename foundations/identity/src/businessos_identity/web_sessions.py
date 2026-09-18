@@ -618,20 +618,41 @@ class RedisWebSessionStore:
             }
         )
         script = """
-        local old = redis.call('GET', KEYS[1])
-        if not old or old ~= ARGV[1] then return 0 end
-        redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
-        return 1
+        local function sortable_instant(value)
+            local year, month, day, hour, minute, second, fraction = string.match(
+                value,
+                '^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)%.?(%d*)'
+            )
+            if not year then return nil end
+            fraction = string.sub(fraction .. '000000', 1, 6)
+            return year .. month .. day .. hour .. minute .. second .. fraction
+        end
+        local raw = redis.call('GET', KEYS[1])
+        if not raw then return false end
+        local current = cjson.decode(raw)
+        if tonumber(current.generation) ~= tonumber(ARGV[1]) then return false end
+        local now = sortable_instant(ARGV[4])
+        local idle_expiry = sortable_instant(current.idle_expires_at)
+        local absolute_expiry = sortable_instant(current.absolute_expires_at)
+        if not now or not idle_expiry or not absolute_expiry then return false end
+        if idle_expiry <= now or absolute_expiry <= now then return false end
+        local touched = cjson.decode(ARGV[2])
+        current.last_seen_at = touched.last_seen_at
+        current.idle_expires_at = touched.idle_expires_at
+        local encoded = cjson.encode(current)
+        redis.call('SET', KEYS[1], encoded, 'EX', ARGV[3])
+        return encoded
         """
         changed = await self._redis.eval(
             script,
             1,
             self._key(opaque_session_id),
-            current.model_dump_json(),
+            expected_generation,
             replacement.model_dump_json(),
             self._ttl(replacement),
+            now.isoformat(timespec="microseconds"),
         )
-        return replacement if changed == 1 else None
+        return WebSession.model_validate_json(changed) if changed else None
 
     async def rotate(self, opaque_session_id: str, replacement: WebSession) -> str:
         handle = _opaque()

@@ -80,6 +80,13 @@ Codex and developers should start with these documents:
 - [`docs/adr/`](docs/adr/) - accepted architecture decisions
 - [`docs/adr/ADR-008-python-asgi-technology-baseline.md`](docs/adr/ADR-008-python-asgi-technology-baseline.md) - current Python/ASGI technology decision
 
+## Governance
+
+- [`docs/governance/RELEASES.md`](docs/governance/RELEASES.md) - release versions, channels, compatibility, eligibility, approvals, and immutable tags
+- [`docs/governance/ADR-GOVERNANCE.md`](docs/governance/ADR-GOVERNANCE.md) - ADR lifecycle, acceptance authority, evidence, and supersession
+- [`docs/governance/MAINTAINERS.md`](docs/governance/MAINTAINERS.md) - accountable roles and required review ownership
+- [`.github/CODEOWNERS`](.github/CODEOWNERS) - path-based review routing to valid repository owners
+
 ## Roadmaps
 
 - [`docs/roadmap/FULL-SYSTEM.md`](docs/roadmap/FULL-SYSTEM.md) - authoritative complete system roadmap

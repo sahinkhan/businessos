@@ -1,5 +1,9 @@
 # BusinessOS Security Architecture Baseline
 
+The accountable Security Maintainer, required cross-boundary reviews, and escalation rules are
+defined in [MAINTAINERS.md](../governance/MAINTAINERS.md). Security-sensitive release approval and
+release-blocking criteria are defined in [RELEASES.md](../governance/RELEASES.md).
+
 ## Security Principles
 
 - tenant isolation by design

@@ -1,5 +1,10 @@
 # BusinessOS Upgrade and Compatibility Architecture
 
+Release versioning, channel promises, compatibility classification, approval authority, and
+release eligibility are governed by
+[RELEASES.md](../governance/RELEASES.md). This document defines the technical upgrade model that
+implements that policy.
+
 ## Objective
 
 Enterprise customers must be able to upgrade BusinessOS without maintaining permanent core forks and without silently activating incompatible customer modules.
@@ -40,12 +45,9 @@ Discover release
 
 ## Release Channels
 
-Target channels:
-
-- preview
-- stable
-- LTS
-- security-only maintenance where commercially supported
+The governed channels are development, preview, stable, LTS, and explicitly offered
+security-only maintenance. Their guarantees and eligibility gates are defined in
+[RELEASES.md](../governance/RELEASES.md). A channel label alone does not create a support promise.
 
 ## Module Compatibility
 
@@ -93,3 +95,6 @@ Every deprecated public contract must document:
 - earliest removal version
 
 Breaking changes require explicit major-version or contract-version treatment and compatibility planning.
+Pre-1.0 versions are governed by the same compatibility analysis and may not silently break a
+published or frozen contract. The complete support-window and removal gates are defined in
+[RELEASES.md](../governance/RELEASES.md).

@@ -45,6 +45,12 @@ Do not use long-lived customer forks of protected core.
 
 Prefer pull requests into `main` with CI and review.
 
+Review ownership and accountable roles are defined in
+[`docs/governance/MAINTAINERS.md`](../governance/MAINTAINERS.md). A pull request must collect the
+union of applicable role reviews when it crosses ownership, security, tenancy, migration, SDK, or
+public-contract boundaries. CODEOWNERS provides routing; the pull-request record provides the
+review evidence.
+
 ## Commit Style
 
 Use clear conventional-style prefixes where practical:
@@ -59,6 +65,9 @@ chore: update CI toolchain
 
 ## Architecture Decision Records
 
+ADR lifecycle, approval authority, acceptance evidence, and supersession are governed by
+[`docs/governance/ADR-GOVERNANCE.md`](../governance/ADR-GOVERNANCE.md).
+
 Create/propose an ADR when a change affects:
 
 - protected kernel boundaries
@@ -71,6 +80,9 @@ Create/propose an ADR when a change affects:
 - major infrastructure dependency
 
 Implementation convenience alone is not sufficient reason to bypass an accepted ADR.
+
+Green CI or GitHub mergeability does not change an ADR to `ACCEPTED`. Acceptance requires the
+accountable role approvals and exact-revision evidence defined by the governance policy.
 
 ## Validation Expectations
 

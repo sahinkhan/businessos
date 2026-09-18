@@ -413,6 +413,19 @@ async def test_authenticated_organization_and_policy_http_facades(
                 headers=rotated_headers,
             )
             assert approval.status_code == 200
+
+            stale_logout = await client.post("/api/v1/auth/logout", headers=headers)
+            assert stale_logout.status_code == 403
+            assert stale_logout.json()["code"] == "invalid_csrf"
+            reconciled = await client.get("/api/v1/auth/session")
+            assert reconciled.status_code == 200
+            assert reconciled.json()["active_scope"]["company_id"] == str(company_id)
+            confirmed_logout = await client.post(
+                "/api/v1/auth/logout",
+                headers={**headers, "x-csrf-token": reconciled.json()["csrf_token"]},
+            )
+            assert confirmed_logout.status_code == 204
+            assert (await client.get("/api/v1/auth/session")).status_code == 401
     finally:
         await application.shutdown()
         application.runtime.migrations.downgrade(postgres_database.migration_url)

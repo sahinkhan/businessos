@@ -179,35 +179,59 @@ export const ScopeProvider: React.FC<ScopeProviderProps> = ({
     [adapter, applyTrustedScope, scope, updateSessionSecurity]
   );
 
-  const setTenant = useCallback((tenantId: string) => select({ tenant_id: tenantId }), [select]);
+  const retainCurrentScope = useCallback(() => {
+    if (scope && status === 'switching') {
+      securityContext.advance();
+      setStatus('ready');
+      setError(null);
+    }
+    return Promise.resolve();
+  }, [scope, status]);
+
+  const setTenant = useCallback(
+    (tenantId: string) =>
+      scope?.tenantId === tenantId ? retainCurrentScope() : select({ tenant_id: tenantId }),
+    [scope?.tenantId, retainCurrentScope, select]
+  );
   const setCompany = useCallback(
     (companyId: string) =>
-      scope ? select({ tenant_id: scope.tenantId, company_id: companyId }) : Promise.resolve(),
-    [scope, select]
+      scope && scope.companyId !== companyId
+        ? select({ tenant_id: scope.tenantId, company_id: companyId })
+        : retainCurrentScope(),
+    [scope, retainCurrentScope, select]
   );
   const setSite = useCallback(
     (siteId: string) =>
-      scope
+      scope && scope.siteId !== siteId
         ? select({
             tenant_id: scope.tenantId,
             legal_entity_id: scope.legalEntityId,
             company_id: scope.companyId ?? undefined,
             operating_site_id: siteId,
           })
-        : Promise.resolve(),
-    [scope, select]
+        : retainCurrentScope(),
+    [scope, retainCurrentScope, select]
   );
   const setScope = useCallback(
-    (partial: Partial<ActiveScope>) =>
-      scope
-        ? select({
-            tenant_id: partial.tenantId ?? scope.tenantId,
-            legal_entity_id: partial.legalEntityId ?? scope.legalEntityId,
-            company_id: partial.companyId ?? scope.companyId ?? undefined,
-            operating_site_id: partial.siteId ?? scope.siteId,
-          })
-        : Promise.resolve(),
-    [scope, select]
+    (partial: Partial<ActiveScope>) => {
+      if (!scope) return Promise.resolve();
+      const selection = {
+        tenant_id: partial.tenantId ?? scope.tenantId,
+        legal_entity_id: partial.legalEntityId ?? scope.legalEntityId,
+        company_id: partial.companyId ?? scope.companyId ?? undefined,
+        operating_site_id: partial.siteId ?? scope.siteId,
+      };
+      if (
+        selection.tenant_id === scope.tenantId &&
+        selection.legal_entity_id === scope.legalEntityId &&
+        selection.company_id === scope.companyId &&
+        selection.operating_site_id === scope.siteId
+      ) {
+        return retainCurrentScope();
+      }
+      return select(selection);
+    },
+    [scope, retainCurrentScope, select]
   );
 
   const value = useMemo<ScopeContextValue>(

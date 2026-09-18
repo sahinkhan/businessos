@@ -185,7 +185,8 @@ describe('independent Phase 4.5 re-audit', () => {
     const input = screen.getByRole('textbox', { name: 'Name' });
     input.focus();
     fireEvent.change(input, { target: { value: 'A' } });
-    expect(input).toHaveValue('A');
+    fireEvent.change(input, { target: { value: 'AB' } });
+    expect(input).toHaveValue('AB');
     expect(input).toHaveFocus();
   });
 });

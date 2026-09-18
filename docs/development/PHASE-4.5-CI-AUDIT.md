@@ -33,12 +33,13 @@ The independent report remains intact in
   presentation resolves those keys, and Modal accepts a translated close-control label used by the
   session-expiry flow.
 
-Added evidence includes the four original frontend reproductions, bounded scope lifecycle coverage,
+Added evidence includes the four original frontend reproductions, bounded scope lifecycle coverage
+for same-scope no-ops, company/site switching, invalid selection, reload, logout, and principal replacement,
 auth bootstrap/recovery coverage, non-English navigation and reusable-control accessibility labels,
 a deterministic Redis concurrency regression, and a real Redis 24-way parallel touch integration
 case with post-rotation and post-revocation stale-touch denial.
 
-Local frontend gates pass: TypeScript, ESLint, Prettier, 19 test files / 59 tests, six automated
+Local frontend gates pass: TypeScript, ESLint, Prettier, 19 test files / 60 tests, six automated
 accessibility tests, production build, and bundle budget. Focused backend session tests pass 11/11,
 and repository Ruff formatting/lint pass. This workstation has Python 3.12 rather than the required
 Python 3.13 and no running Docker daemon, so full Python unit/static/provider/deployment evidence is
@@ -154,7 +155,7 @@ implementation head `7fed8d8f99e39e11a2da624fe144c832eba8a97e` and completed suc
 | Gate | Result |
 | --- | --- |
 | `web-quality` | PASS |
-| Frontend typecheck, lint, format, 59 tests, accessibility, build, and bundle budget | PASS |
+| Frontend typecheck, lint, format, 60 tests, accessibility, build, and bundle budget | PASS |
 | `python-quality` | PASS |
 | Ruff format and lint | PASS |
 | Static typing | PASS |
@@ -176,7 +177,7 @@ The frontend validation uses the committed lockfile:
 | `npm run typecheck` | PASS |
 | `npm run lint` | PASS, zero warnings |
 | `npm run format:check` | PASS |
-| `npm test` | PASS, 19 files / 59 tests |
+| `npm test` | PASS, 19 files / 60 tests |
 | `npm run test:a11y` | PASS, 6 tests |
 | `npm run build` | PASS |
 | `npm run bundle:check` | PASS, within configured budget |

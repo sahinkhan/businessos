@@ -8,17 +8,20 @@ import { MockScopeAdapter } from '../../src/scope/mockScopeAdapter';
 import { TEST_SESSION, TEST_TENANTS, TEST_USER } from '../fixtures/security';
 
 const Consumer = () => {
-  const { scope, status, error, setCompany, setTenant } = useScope();
+  const { scope, status, error, setCompany, setSite, setTenant } = useScope();
   return (
     <div>
       <span data-testid="status">{status}</span>
       <span data-testid="tenant">{scope?.tenantName ?? 'none'}</span>
       <span data-testid="company">{scope?.companyName ?? 'none'}</span>
+      <span data-testid="site">{scope?.siteName ?? 'none'}</span>
       <span data-testid="error">{error ?? 'none'}</span>
       <button onClick={() => void setCompany('company_two')}>Company two</button>
       <button onClick={() => void setCompany('company_one')}>Company one</button>
       <button onClick={() => void setCompany('rejected_company')}>Rejected</button>
       <button onClick={() => void setTenant('tenant_two')}>Tenant two</button>
+      <button onClick={() => void setSite('site_two')}>Site two</button>
+      <button onClick={() => void setSite('rejected_site')}>Rejected site</button>
     </div>
   );
 };
@@ -59,6 +62,39 @@ describe('backend-authoritative scope boundary', () => {
     fireEvent.click(screen.getByText('Rejected'));
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('Company rejected'));
     expect(screen.getByTestId('company')).toHaveTextContent('Company One');
+  });
+
+  it('keeps scope selection idempotent and preserves site labels through switching and reload', async () => {
+    const mock = new MockScopeAdapter(TEST_TENANTS);
+    const adapter: ScopeAdapter = {
+      fetchTenants: vi.fn(() => mock.fetchTenants()),
+      selectActiveScope: vi.fn((selection) => mock.selectActiveScope(selection)),
+      validateScope: vi.fn((scope) => mock.validateScope(scope)),
+    };
+    const first = renderScope(adapter);
+    await waitFor(() => expect(screen.getByTestId('site')).toHaveTextContent('Site One'));
+    expect(adapter.selectActiveScope).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('Company one'));
+    await Promise.resolve();
+    expect(adapter.selectActiveScope).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('Site two'));
+    await waitFor(() => expect(screen.getByTestId('site')).toHaveTextContent('Site Two'));
+    expect(adapter.selectActiveScope).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByText('Rejected site'));
+    await waitFor(() =>
+      expect(screen.getByTestId('error')).toHaveTextContent('Operating site rejected')
+    );
+    expect(screen.getByTestId('site')).toHaveTextContent('Site Two');
+    expect(adapter.selectActiveScope).toHaveBeenCalledTimes(3);
+
+    first.unmount();
+    renderScope(adapter);
+    await waitFor(() => expect(screen.getByTestId('site')).toHaveTextContent('Site Two'));
+    expect(adapter.fetchTenants).toHaveBeenCalledTimes(2);
+    expect(adapter.selectActiveScope).toHaveBeenCalledTimes(4);
   });
 
   it('does not apply a late scope response after a newer selection', async () => {

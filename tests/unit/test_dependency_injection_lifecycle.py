@@ -758,3 +758,137 @@ async def test_close_during_request_initialization_prevents_late_publication() -
     with pytest.raises(ConfigurationError, match="must be entered"):
         await scope.resolve(key)
     await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("after_publication", [False, True])
+async def test_parent_revalidates_acquired_child_and_retries(after_publication: bool) -> None:
+    child_key = DependencyKey[dict[str, bool]]("required-child")
+    parent_key = DependencyKey[dict[str, bool]]("dependent-parent")
+    fail = asyncio.Event()
+    closed = asyncio.Event()
+    entries = 0
+    exits = 0
+
+    async def worker(*, task_status: anyio.abc.TaskStatus[None]) -> None:
+        task_status.started()
+        await fail.wait()
+        raise RuntimeError("required-child-failed")
+
+    @asynccontextmanager
+    async def child(_: DependencyResolver) -> AsyncGenerator[dict[str, bool]]:
+        nonlocal entries, exits
+        entries += 1
+        value = {"open": True}
+        try:
+            if entries == 1:
+                async with anyio.create_task_group() as group:
+                    await group.start(worker)
+                    try:
+                        yield value
+                    finally:
+                        value["open"] = False
+                        closed.set()
+            else:
+                yield value
+        finally:
+            value["open"] = False
+            exits += 1
+
+    async def parent(resolver: DependencyResolver) -> dict[str, bool]:
+        value = await resolver.resolve(child_key)
+        if entries == 1 and not after_publication:
+            fail.set()
+            await closed.wait()
+        return value
+
+    container = Container()
+    container.register(child_key, child)
+    container.register(parent_key, parent, scope=DependencyScope.REQUEST)
+    scope = await container.request_scope().__aenter__()
+    if after_publication:
+        assert (await scope.resolve(parent_key))["open"]
+        fail.set()
+        await closed.wait()
+    with pytest.raises(ConfigurationError, match="terminated after publication"):
+        await scope.resolve(parent_key)
+    healthy = await scope.resolve(parent_key)
+    assert healthy["open"]
+    assert await scope.resolve(parent_key) is healthy
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await scope.__aexit__(None, None, None)
+    assert "required-child-failed" in repr(raised.value)
+    assert entries == exits == 2
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_cached_owner_cannot_use_replacement_generation() -> None:
+    from businessos.activation import ContributionGate
+
+    gate = ContributionGate()
+    original = gate.reserve("replacement-owner")
+    gate.publish(original)
+    key = DependencyKey[object]("generation-resource")
+    container = Container()
+    container.register(
+        key, lambda _: object(), scope=DependencyScope.REQUEST, generation=original, gate=gate
+    )
+    async with container.request_scope() as scope:
+        old = await scope.resolve(key)
+        await gate.close_and_drain(original, timeout_seconds=1)
+        await container.remove_owner_generation(original)
+        replacement = gate.reserve("replacement-owner")
+        gate.publish(replacement)
+        container.register(
+            key,
+            lambda _: object(),
+            scope=DependencyScope.REQUEST,
+            generation=replacement,
+            gate=gate,
+        )
+        with pytest.raises(ConfigurationError, match="registration is no longer active"):
+            await scope.resolve(key)
+        assert await scope.resolve(key) is not old
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_inflight_owner_rejects_draining_generation() -> None:
+    from businessos.activation import ContributionGate, ContributionState
+
+    gate = ContributionGate()
+    generation = gate.reserve("draining-owner")
+    gate.publish(generation)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    exits = 0
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        nonlocal exits
+        entered.set()
+        await release.wait()
+        try:
+            yield object()
+        finally:
+            exits += 1
+
+    container = Container()
+    key = DependencyKey[object]("draining-resource")
+    container.register(
+        key, resource, scope=DependencyScope.REQUEST, generation=generation, gate=gate
+    )
+    async with container.request_scope() as scope:
+        resolving = asyncio.create_task(scope.resolve(key))
+        await entered.wait()
+        draining = asyncio.create_task(gate.close_and_drain(generation, timeout_seconds=1))
+        await asyncio.sleep(0)
+        assert gate.state(generation) is ContributionState.DRAINING
+        release.set()
+        with pytest.raises(ConfigurationError, match="not active"):
+            await resolving
+        await draining
+        await container.remove_owner_generation(generation)
+    assert exits == 1
+    await container.close()

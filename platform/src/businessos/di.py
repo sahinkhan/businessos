@@ -6,7 +6,7 @@ from asyncio import Future, Task
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from contextvars import Context, ContextVar, copy_context
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import pairwise
 from types import TracebackType
@@ -66,6 +66,11 @@ class _RequestResourceOwner:
     stack: AsyncExitStack
     result: Future[object]
     close_requested: asyncio.Event
+    key: DependencyKey[Any]
+    registration: _Registration
+    dependencies: list["_RequestResourceOwner"] = field(
+        default_factory=lambda: list[_RequestResourceOwner]()
+    )
     task: Task[None] | None = None
     published: bool = False
     cache_result: bool = False
@@ -88,6 +93,11 @@ class _RequestResourceOwner:
     ) -> None:
         self.exit_details = (exc_type, exc_value, traceback)
         self.close_requested.set()
+
+
+_request_owner: ContextVar[_RequestResourceOwner | None] = ContextVar(
+    "businessos_request_owner", default=None
+)
 
 
 class Container:
@@ -216,6 +226,14 @@ class Container:
         value = await asyncio.shield(flight)
         validate_initialization(key, flight)
         return cast(T, value)
+
+    def validate_registration(self, key: DependencyKey[Any], registration: _Registration) -> None:
+        if self._closed or self._registrations.get(key) is not registration:
+            raise ConfigurationError(f"Dependency registration is no longer active: {key.name}")
+        if registration.gate is not None and not registration.gate.is_active(
+            registration.generation
+        ):
+            raise ConfigurationError(f"Dependency is not active: {key.name}")
 
     def _registration_for_resolution(self, key: DependencyKey[Any]) -> _Registration:
         if self._closed:
@@ -491,6 +509,16 @@ class RequestDependencyScope(
 
     async def resolve(self, key: DependencyKey[T]) -> T:
         self._ensure_resolution_valid(key)
+        cached_owner = self._published_owners.get(key)
+        if cached_owner is not None:
+            try:
+                self._validate_owner(cached_owner, set())
+            except ConfigurationError:
+                self._cache.pop(key, None)
+                self._published_owners.pop(key, None)
+                self._flights.pop(key, None)
+                raise
+            self._retain_dependency(cached_owner)
         value = await self._container.resolve_for_scope(
             key,
             self._cache,
@@ -517,10 +545,26 @@ class RequestDependencyScope(
         owner = self._result_owners.get(result)
         if owner is None:
             raise ConfigurationError("Dependency scope closed during resolution")
-        if not owner.failed_after_publication:
+        self._validate_owner(owner, set())
+        self._retain_dependency(owner)
+
+    @staticmethod
+    def _retain_dependency(owner: _RequestResourceOwner) -> None:
+        parent = _request_owner.get()
+        if parent is not None and parent is not owner:
+            if all(dependency is not owner for dependency in parent.dependencies):
+                parent.dependencies.append(owner)
+
+    def _validate_owner(self, owner: _RequestResourceOwner, visited: set[int]) -> None:
+        if id(owner) in visited:
             return
-        failure = owner.terminal_failure or owner.resource_cleanup_error
-        raise ConfigurationError("Dependency owner terminated after publication") from failure
+        visited.add(id(owner))
+        self._container.validate_registration(owner.key, owner.registration)
+        if owner.failed_after_publication:
+            failure = owner.terminal_failure or owner.resource_cleanup_error
+            raise ConfigurationError("Dependency owner terminated after publication") from failure
+        for dependency in owner.dependencies:
+            self._validate_owner(dependency, visited)
 
     def _start_initialization(
         self,
@@ -534,6 +578,8 @@ class RequestDependencyScope(
             AsyncExitStack(),
             result,
             asyncio.Event(),
+            key=key,
+            registration=registration,
             cache_result=cache_result,
         )
         task = asyncio.create_task(
@@ -556,6 +602,7 @@ class RequestDependencyScope(
         owner: _RequestResourceOwner,
     ) -> None:
         entered = False
+        _request_owner.set(owner)
         try:
             await owner.stack.__aenter__()
             entered = True
@@ -563,6 +610,7 @@ class RequestDependencyScope(
                 value = await self._container.provide_for_request(
                     key, registration, self, owner.stack
                 )
+                self._validate_owner(owner, set())
             except asyncio.CancelledError:
                 if not owner.result.done():
                     owner.result.cancel()

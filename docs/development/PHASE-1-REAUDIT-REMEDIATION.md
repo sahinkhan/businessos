@@ -386,3 +386,25 @@ native Windows typing, and web validation.
 This remediation corrects Phase 1 runtime behavior without rewriting certified history or claiming
 Phase 1 certification. Independent review remains the acceptance gate, and PR #11 remains open and
 unmerged.
+
+
+## Seventh remediation: dependency chains and generation delivery
+
+Audit head `61f9651b51722ea2fd91c86434718e1afe699e50` retained two P2 failures:
+a parent could publish a child that failed during further initialization, and a result could be
+delivered after its module generation stopped. Both portable auditor reproductions now reject
+resolution with ConfigurationError; neither delivers the invalid value.
+
+Each request-owned initializer retains the exact owners acquired by its provider, including
+transient instances and cached request dependencies. Publication, awaited delivery and cached reuse
+validate that owner graph and its original registration/generation. Invalid cached parents are
+evicted before reporting failure so a later healthy attempt can retry. Validation uses registration
+identity and the original generation gate, so replacement registrations cannot authorize old values.
+Resource cleanup remains on its owner task and original failures remain owned by scope teardown.
+
+Four regression cases cover failure during parent initialization, failure after parent caching,
+healthy parent retry, generation replacement, and draining during initialization. Native Windows
+validation: 27 lifecycle tests, 208 isolated unit tests, 13 independent probe scenarios passed;
+both additional audit reproductions reject invalid delivery. Mypy passed for 163 source files.
+The final CI run is recorded externally against the final commit. These results do not constitute
+independent certification. PR #11 remains unmerged, and PR #9 remains on hold.

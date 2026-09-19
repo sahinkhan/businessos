@@ -433,3 +433,59 @@ The combined broad suite was not rerun locally; its previously audited inherited
 are outside this correction. Exact-head CI results are recorded externally against the final commit.
 
 Independent acceptance remains required. PR #11 is not merged; PR #9 remains untouched and on hold.
+
+
+## Ninth remediation: full Phase 1 certification findings
+
+The full independent audit of `65684ccbffff68ee667835a1c60884f1c8aff1b7` superseded the
+earlier narrow acceptance result. It identified eight Phase 1 P2 findings and one missing external
+proof demonstration. This bounded remediation addresses that complete set without exempting
+findings that were already present on the branch base.
+
+Singleton resources now remain in one framework-owned task and copied context from acquisition
+through release. Container shutdown and module-generation removal shield and drain owned cleanup,
+preserve real initializer and finalizer errors, validate the exact registration and generation
+before and after awaited delivery, and reject cycles using the full dependency ancestry. Permanent
+regressions exercise ContextVar and AnyIO task affinity, initializer unwind failures, repeated
+shutdown cancellation, generation-drain delivery, and a singleton cycle through transient
+dependencies.
+
+Migration logging preserves existing runtime loggers. Framework HTTP failure logging temporarily
+binds the trusted response context so correlation, trace, and tenant fields survive handler unwind
+without including exception text. Disconnect handling distinguishes ordinary handler cancellation
+from a real cleanup failure and records the latter with the same safe contextual fields.
+
+The external proof module now registers and consumes a typed, request-scoped dependency through the
+published SDK and verifies its lifecycle and removal. The Phase 1 roadmap, full-system gate, and
+development architecture now consistently define its UI proof as a versioned declarative metadata
+contribution. Executable shell rendering remains assigned to Phase 4.5 and the metadata-driven
+renderer to Phase 5.
+
+## Full-audit remediation local validation
+
+| Gate | Result |
+| --- | --- |
+| Full auditor probe set on Windows Python 3.13.15 | PASS - 11/11 |
+| Focused dependency/application regressions | PASS - 90 |
+| Unit suite | PASS - 222 |
+| Linux PostgreSQL proof-module conformance | PASS - 3/3, 0 skipped |
+| Linux integration and conformance without optional provider services | 60 passed; the only failure and six skips require Redis, NATS, or S3 test endpoints |
+| Same-process Linux migration/logging probe | PASS - 3/3 |
+| Ruff formatting and lint | PASS - 164 files |
+| Python 3.13 mypy | PASS - 163 source files |
+| CI-equivalent Pyright source check | PASS - 0 errors, 0 warnings |
+| Test collection | PASS - 289 collected |
+
+Exact-head CI remains required for the complete provider-backed integration suite, wheel and image
+validation, production migration replay, native Windows typing, and web validation. These local
+results establish a candidate for a fresh independent full audit; they do not certify Phase 1 or
+authorize merging PR #11.
+
+## Full-audit remediation compatibility and data impact
+
+- Public SDK exports changed: **NO**. The proof consumes already published dependency APIs.
+- Public contract versions changed: **NO**.
+- Database schema or Alembic revisions changed: **NO**.
+- Historical tags changed: **NO**.
+- PR #9 / Phase 4.5 changed: **NO**.
+- Phase 5 started: **NO**.

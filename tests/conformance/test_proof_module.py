@@ -5,11 +5,12 @@ import httpx
 import psycopg
 import pytest
 from businessos_proof import ProofModule
-from businessos_proof.module import ProofStored
+from businessos_proof.module import PROOF_DEPENDENCY, ProofDependency, ProofStored
 
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
+from businessos.errors import ConfigurationError
 from businessos.modules import ModuleState, discover_modules
 from businessos.security import Authorizer, RequestIdentity
 
@@ -47,6 +48,34 @@ class FixedContextResolver:
 
 def _settings(database_url: str) -> Settings:
     return Settings(environment="test", database_url=database_url, database_pool_size=2)
+
+
+@pytest.mark.asyncio
+async def test_external_module_registers_typed_dependency_through_public_sdk() -> None:
+    module = ProofModule()
+    storage = InMemoryObjectStorage()
+    app = create_application(
+        _settings("postgresql+psycopg://unused:unused@localhost/unused"),
+        modules=(module,),
+        infrastructure_providers={"object-storage": storage},
+    )
+    assert app.runtime is not None
+    await app.runtime.lifecycle.install_all()
+    await app.runtime.lifecycle.enable_all()
+
+    async with app.container.request_scope() as dependencies:
+        proof_dependency = await dependencies.resolve(PROOF_DEPENDENCY)
+        assert isinstance(proof_dependency, ProofDependency)
+        assert proof_dependency.label == "phase1-public-sdk"
+        assert module.dependencies_started == 1
+        assert module.dependencies_stopped == 0
+    assert module.dependencies_stopped == 1
+
+    await app.runtime.lifecycle.disable(module.manifest.module_id)
+    async with app.container.request_scope() as dependencies:
+        with pytest.raises(ConfigurationError, match="not registered"):
+            await dependencies.resolve(PROOF_DEPENDENCY)
+    await app.container.close()
 
 
 @pytest.mark.integration
@@ -158,6 +187,16 @@ async def test_external_module_conforms_without_protected_core_edits(
     assert loaded.status_code == 200
     assert loaded.json() == {"value": "external-module"}
     assert invalid.status_code == 422
+    assert module.dependencies_started == 3
+    assert module.dependencies_stopped == 3
+
+    async with app.container.request_scope() as dependencies:
+        proof_dependency = await dependencies.resolve(PROOF_DEPENDENCY)
+        assert isinstance(proof_dependency, ProofDependency)
+        assert proof_dependency.label == "phase1-public-sdk"
+        assert module.dependencies_started == 4
+        assert module.dependencies_stopped == 3
+    assert module.dependencies_stopped == 4
 
     connection_url = postgres_migration_database_url.replace(
         "postgresql+psycopg://", "postgresql://", 1

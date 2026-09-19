@@ -116,7 +116,7 @@ Before broad vertical development, build an external demo module that can:
 - own/create its schema through migrations
 - register permissions
 - expose a supported API
-- contribute supported UI
+- contribute versioned declarative UI metadata through the published SDK
 - read trusted TenantContext
 - publish an event
 - consume an event idempotently
@@ -126,5 +126,9 @@ Before broad vertical development, build an external demo module that can:
 - uninstall/retire according to lifecycle rules
 
 It must do this without modifying protected kernel source.
+
+This Phase 1 proof validates registration and resolution of the UI declaration. Executable
+backoffice rendering is accepted with the shared shell in Phase 4.5 and the metadata-driven
+renderer in Phase 5; it is not a Phase 1 requirement to create either implementation early.
 
 This is the architecture proof that BusinessOS is an extensible platform rather than a monolithic application with documentation claiming modularity.

@@ -6,6 +6,7 @@ from contextvars import ContextVar
 import anyio
 import pytest
 
+from businessos.activation import ContributionGate
 from businessos.di import Container, DependencyKey, DependencyResolver, DependencyScope
 from businessos.errors import ConfigurationError
 
@@ -961,4 +962,205 @@ async def test_rejected_owner_cleanup_is_drained(cleanup_failure: bool, cancel_c
     assert completed == 1
     assert tasks[0] is tasks[1]
     await draining
+    await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup", ["container", "generation"])
+@pytest.mark.parametrize("resource_kind", ["contextvar", "anyio"])
+async def test_singleton_resource_keeps_task_affinity(cleanup: str, resource_kind: str) -> None:
+    key = DependencyKey[object](f"singleton-affinity-{cleanup}-{resource_kind}")
+    tasks: list[asyncio.Task[object] | None] = []
+    context = ContextVar[str]("singleton-affinity")
+    gate = ContributionGate()
+    generation = gate.reserve("singleton-affinity")
+    gate.publish(generation)
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        token = context.set("owned")
+        tasks.append(asyncio.current_task())
+        try:
+            if resource_kind == "anyio":
+                async with anyio.create_task_group():
+                    yield object()
+            else:
+                yield object()
+        finally:
+            tasks.append(asyncio.current_task())
+            context.reset(token)
+
+    container = Container()
+    container.register(
+        key,
+        resource,
+        scope=DependencyScope.SINGLETON,
+        owner="singleton-affinity",
+        generation=generation,
+        gate=gate,
+    )
+    async with container.request_scope() as scope:
+        await scope.resolve(key)
+    if cleanup == "generation":
+        await gate.close_and_drain(generation, timeout_seconds=1)
+        await container.remove_owner_generation(generation)
+        await container.close()
+    else:
+        await container.close()
+
+    assert tasks[0] is tasks[1]
+
+
+@pytest.mark.asyncio
+async def test_singleton_initializer_cleanup_error_is_preserved() -> None:
+    key = DependencyKey[object]("singleton-initializer-cleanup-error")
+    entered = asyncio.Event()
+    original = RuntimeError("singleton-initializer-cleanup")
+
+    async def provider(_: DependencyResolver) -> object:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            raise original
+
+    container = Container()
+    container.register(key, provider, scope=DependencyScope.SINGLETON)
+    scope = await container.request_scope().__aenter__()
+    resolving = asyncio.create_task(scope.resolve(key))
+    await entered.wait()
+    resolving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await resolving
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await container.close()
+    assert raised.value.exceptions == (original,)
+    await scope.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_singleton_cleanup_is_drained_under_repeated_close_cancellation() -> None:
+    key = DependencyKey[object]("singleton-cancellation-safe-close")
+    finalizing = asyncio.Event()
+    release = asyncio.Event()
+    completed = 0
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        nonlocal completed
+        try:
+            yield object()
+        finally:
+            finalizing.set()
+            await release.wait()
+            completed += 1
+
+    container = Container()
+    container.register(key, resource, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        await scope.resolve(key)
+    closing = asyncio.create_task(container.close())
+    await finalizing.wait()
+    for _ in range(10):
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not closing.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert completed == 1
+
+
+@pytest.mark.asyncio
+async def test_singleton_generation_drain_rejects_closed_first_delivery() -> None:
+    gate = ContributionGate()
+    generation = gate.reserve("singleton-generation-race")
+    gate.publish(generation)
+    key = DependencyKey[dict[str, bool]]("singleton-generation-race")
+    entering = asyncio.Event()
+    release = asyncio.Event()
+    value = {"closed": False}
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[dict[str, bool]]:
+        entering.set()
+        await release.wait()
+        try:
+            yield value
+        finally:
+            value["closed"] = True
+
+    container = Container()
+    container.register(
+        key,
+        resource,
+        scope=DependencyScope.SINGLETON,
+        owner="singleton-generation-race",
+        generation=generation,
+        gate=gate,
+    )
+    async with container.request_scope() as scope:
+        resolving = asyncio.create_task(scope.resolve(key))
+        await entering.wait()
+
+        async def disable() -> None:
+            await gate.close_and_drain(generation, timeout_seconds=1)
+            await container.remove_owner_generation(generation)
+
+        disabling = asyncio.create_task(disable())
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(ConfigurationError, match="not active"):
+            await resolving
+        await disabling
+    assert value["closed"]
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_singleton_cycle_through_transients_is_rejected() -> None:
+    first = DependencyKey[object]("singleton-cycle-first")
+    first_transient = DependencyKey[object]("singleton-cycle-first-transient")
+    second_transient = DependencyKey[object]("singleton-cycle-second-transient")
+    second = DependencyKey[object]("singleton-cycle-second")
+    barrier = asyncio.Event()
+    arrived = 0
+
+    async def rendezvous() -> None:
+        nonlocal arrived
+        arrived += 1
+        if arrived == 2:
+            barrier.set()
+        await barrier.wait()
+
+    async def first_provider(resolver: DependencyResolver) -> object:
+        await rendezvous()
+        return await resolver.resolve(first_transient)
+
+    async def first_transient_provider(resolver: DependencyResolver) -> object:
+        return await resolver.resolve(second_transient)
+
+    async def second_transient_provider(resolver: DependencyResolver) -> object:
+        return await resolver.resolve(second)
+
+    async def second_provider(resolver: DependencyResolver) -> object:
+        await rendezvous()
+        return await resolver.resolve(first)
+
+    container = Container()
+    container.register(first, first_provider, scope=DependencyScope.SINGLETON)
+    container.register(first_transient, first_transient_provider)
+    container.register(second_transient, second_transient_provider)
+    container.register(second, second_provider, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                scope.resolve(first),
+                scope.resolve(second),
+                return_exceptions=True,
+            ),
+            timeout=1,
+        )
+    assert all(isinstance(result, ConfigurationError) for result in results)
+    assert all("cycle" in str(result).lower() for result in results)
     await container.close()

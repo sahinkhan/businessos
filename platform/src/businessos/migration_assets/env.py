@@ -14,7 +14,7 @@ from businessos.persistence import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 database_url = config.attributes.get("database_url") or os.getenv("BOS_MIGRATION_DATABASE_URL")
 if database_url:

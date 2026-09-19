@@ -157,6 +157,12 @@ It must demonstrate:
 
 No protected kernel edits are permitted to make the demo module work.
 
+For Phase 1, the UI demonstration is a versioned declarative metadata contribution registered and
+resolved through the public SDK. Executable rendering is intentionally outside this phase: the
+shared application shell and UI contribution contracts belong to Phase 4.5, and the metadata-driven
+renderer belongs to Phase 5. Phase 1 therefore proves that an external module can publish the UI
+declaration without adding a premature private shell or renderer.
+
 The proof module is a first-party test of the published Python SDK. Customer/marketplace executable code remains isolated by default under ADR-004.
 
 ## Phase 1 Definition of Done

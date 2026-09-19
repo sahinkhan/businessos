@@ -56,7 +56,10 @@ Deliver:
 - pytest/Ruff/mypy CI baseline with approved Pyright support
 - external Python SDK proof module
 
-Gate: external proof module installs, migrates, runs tenant-aware API/event/UI/provider flow, upgrades and retires without protected-core edits.
+Gate: external proof module installs, migrates, runs tenant-aware API/event/provider flow,
+registers a versioned declarative UI contribution, upgrades and retires without protected-core
+edits. Executable rendering of that contribution is gated by the Phase 4.5 shell and Phase 5
+metadata renderer.
 
 ## Phase 2 - Identity, Tenant and Organization Foundations
 

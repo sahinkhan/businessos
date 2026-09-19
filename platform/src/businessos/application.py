@@ -16,7 +16,7 @@ from asgiref.typing import (
 from pydantic import ValidationError
 
 from businessos.config import Settings
-from businessos.context import RequestContext
+from businessos.context import RequestContext, bind_request_context
 from businessos.dependencies import AUTHORIZER
 from businessos.di import Container, RequestDependencyScope
 from businessos.errors import BusinessOSError, ClientDisconnectedError
@@ -407,7 +407,13 @@ class BusinessOSApplication:
                     request,
                     receive,
                 )
-        except ClientDisconnectedError:
+        except ClientDisconnectedError as exc:
+            if exc.__cause__ is not None:
+                with bind_request_context(response_context):
+                    self._logger.error(
+                        "Request cleanup failed after client disconnect",
+                        extra={"error_type": type(exc.__cause__).__name__},
+                    )
             return
         except BusinessOSError as exc:
             if not exc.public:
@@ -431,10 +437,11 @@ class BusinessOSApplication:
                 status_code=422,
             )
         except Exception as exc:
-            self._logger.error(
-                "Unhandled request failure",
-                extra={"error_type": type(exc).__name__},
-            )
+            with bind_request_context(response_context):
+                self._logger.error(
+                    "Unhandled request failure",
+                    extra={"error_type": type(exc).__name__},
+                )
             response = Response.json(
                 {"code": "internal_error", "message": "Internal server error"},
                 status_code=500,
@@ -480,7 +487,9 @@ class BusinessOSApplication:
             await asyncio.gather(disconnected, return_exceptions=True)
             return handler.result()
         handler.cancel()
-        await asyncio.gather(handler, return_exceptions=True)
+        outcome = (await asyncio.gather(handler, return_exceptions=True))[0]
+        if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+            raise ClientDisconnectedError from outcome
         raise ClientDisconnectedError
 
     @staticmethod

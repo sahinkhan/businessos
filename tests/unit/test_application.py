@@ -1,9 +1,11 @@
 import asyncio
 import io
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -12,7 +14,7 @@ from pydantic import BaseModel, field_validator, model_validator
 from businessos.application import ApplicationState, BusinessOSApplication
 from businessos.bootstrap import create_application
 from businessos.config import Settings
-from businessos.context import RequestContext
+from businessos.context import RequestContext, TenantContext
 from businessos.di import Container
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import CallNext
@@ -157,6 +159,133 @@ async def test_disconnect_after_body_cancels_handler_and_releases_request() -> N
     assert handler_cancelled.is_set()
     assert outbound == []
     await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unhandled_failure_log_retains_trusted_request_context() -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    correlation_id = "retained-error-correlation"
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+
+    async def failure(_: Request, __: object) -> Response:
+        raise RuntimeError("private-handler-detail")
+
+    app.router.add_route("GET", "/contextual-failure", failure)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    try:
+        transport = httpx.ASGITransport(app=cast(Any, app))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/contextual-failure",
+                headers={"x-correlation-id": correlation_id},
+            )
+    finally:
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert response.status_code == 500
+    assert response.headers["x-correlation-id"] == correlation_id
+    assert record["correlation_id"] == correlation_id
+    assert record["tenant_id"] == str(tenant.tenant_id)
+    assert record["error_type"] == "RuntimeError"
+    assert "private-handler-detail" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_logs_handler_unwind_failure_with_request_context() -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+    handler_started = asyncio.Event()
+    inbound: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    outbound: list[dict[str, object]] = []
+
+    async def failure(_: Request, __: object) -> Response:
+        handler_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            raise RuntimeError("private-disconnect-cleanup-detail")
+
+    async def receive() -> dict[str, object]:
+        return await inbound.get()
+
+    async def send(message: dict[str, object]) -> None:
+        outbound.append(message)
+
+    app.router.add_route("GET", "/disconnect-failure", failure)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    await inbound.put({"type": "http.request", "body": b"", "more_body": False})
+    request_task = asyncio.create_task(
+        app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/disconnect-failure",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"disconnect-correlation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    )
+    try:
+        await handler_started.wait()
+        await inbound.put({"type": "http.disconnect"})
+        await request_task
+    finally:
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert outbound == []
+    assert record["message"] == "Request cleanup failed after client disconnect"
+    assert record["error_type"] == "RuntimeError"
+    assert record["correlation_id"] == "disconnect-correlation"
+    assert record["tenant_id"] == str(tenant.tenant_id)
+    assert "private-disconnect-cleanup-detail" not in stream.getvalue()
 
 
 @pytest.mark.asyncio

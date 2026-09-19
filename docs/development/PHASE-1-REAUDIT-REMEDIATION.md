@@ -383,6 +383,56 @@ native Windows typing, and web validation.
 - Historical tags changed: **NO**.
 - Phase 5 started: **NO**.
 
+## Tenth remediation: fresh full-audit concurrency and cancellation findings
+
+The fresh full audit of `61641bd4aa6a1fdd9419622241b4804aceec622f` found three P2
+failures in adjacent concurrency schedules. This remediation closes all three without changing
+public SDK exports, public contract versions, migrations, or database schemas.
+
+Singleton-owned transient resources now receive a dedicated framework owner task and copied
+context. The acquiring singleton retains that exact owner in its dependency graph, validates its
+registration and generation before delivery, and closes and drains nested transient owners in
+reverse acquisition order. Resource entry and exit therefore run in the same concrete task and
+context even when a singleton provider resolves dependencies through `asyncio.gather()`.
+
+Completed singleton attempts are retained for shutdown reporting only when they carry cleanup
+evidence. A cleanly unwound provider failure is removed from the active flight and its task,
+future, traceback, and provider locals can be reclaimed; initializer and finalizer failures remain
+aggregated during container shutdown.
+
+The completed-handler ASGI branch now consumes the handler's terminal outcome after draining the
+disconnect watcher. If caller cancellation arrives during that drain, a completed non-cancellation
+failure is logged with trusted request context and a safe error type before caller cancellation is
+preserved.
+
+Permanent regressions cover parallel ContextVar and AnyIO resource affinity, forty failed
+singleton retries with weak-reference-observable payloads, and repeated cancellation during
+watcher cleanup after an already-completed handler failure.
+
+## Fresh full-audit remediation local validation
+
+| Gate | Result |
+| --- | --- |
+| Fresh independent DI matrix | PASS - 75/75 |
+| Fresh independent minimal DI diagnostics | PASS - parallel affinity; 0/40 retry payloads retained |
+| Fresh independent HTTP matrix | PASS - 4/4 |
+| Focused lifecycle and application regressions | PASS - 78 |
+| Unit suite | PASS - 236 |
+| Test collection | PASS - 303 collected |
+| External-module conformance without configured database | PASS - 9; 5 database cases skipped |
+| Ruff formatting and lint | PASS |
+| Python 3.13 mypy | PASS - 163 source files |
+| Pyright | PASS - 0 errors, 0 warnings |
+
+The complete provider-backed integration suite requires the Linux CI execution environment. A
+native Windows attempt reached the migration subprocess but did not produce a terminal result and
+was stopped; no product assertion failure was observed. Exact-head CI remains required for the
+full integration, conformance, wheel, image, migration-replay, Windows typing, and web gates.
+
+These results establish a new candidate for independent full Phase 1 re-audit. They do not certify
+Phase 1 or authorize merging PR #11. PR #9 remains untouched and on hold; Phase 5 remains
+unstarted.
+
 
 ## Tenth remediation: retained dependency graphs and HTTP cancellation drains
 

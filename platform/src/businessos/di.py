@@ -124,6 +124,7 @@ class _SingletonResourceOwner:
     finalizing: bool = False
     initialization_cleanup_error: BaseException | None = None
     resource_cleanup_error: BaseException | None = None
+    owned_transient: bool = False
 
     def request_close(self) -> None:
         self.close_requested.set()
@@ -352,7 +353,7 @@ class Container:
             await owner.stack.__aenter__()
             entered = True
             try:
-                resolver = _SingletonDependencyResolver(self, owner.stack, key)
+                resolver = _SingletonDependencyResolver(self, key)
                 value = await self._provide(key, registration, resolver, owner.stack)
                 self._validate_owner_graph(owner, set(), require_published=False)
             except asyncio.CancelledError:
@@ -378,13 +379,11 @@ class Container:
             await owner.close_requested.wait()
         finally:
             owner.finalizing = True
-            if entered:
-                try:
-                    await owner.stack.aclose()
-                except BaseException as error:
-                    owner.resource_cleanup_error = error
-                    raise
-            _resource_owner.reset(owner_token)
+            try:
+                if entered:
+                    await self._finalize_singleton_owner(owner)
+            finally:
+                _resource_owner.reset(owner_token)
 
     def _singleton_owner_finished(
         self,
@@ -393,7 +392,12 @@ class Container:
         task: Task[None],
     ) -> None:
         self._singleton_owner_tasks.pop(task, None)
-        if not owner.published:
+        task_error = None if task.cancelled() else task.exception()
+        if not owner.published and (
+            owner.initialization_cleanup_error is not None
+            or owner.resource_cleanup_error is not None
+            or task_error is not None
+        ):
             self._singleton_terminal_owners.append(owner)
         if not owner.published and self._singleton_flights.get(key) is owner.result:
             self._singleton_flights.pop(key, None)
@@ -402,11 +406,36 @@ class Container:
         if task.cancelled():
             owner.result.cancel()
             return
-        error = task.exception()
-        if error is not None:
-            owner.result.set_exception(error)
+        if task_error is not None:
+            owner.result.set_exception(task_error)
             return
         owner.result.set_exception(ConfigurationError("Dependency owner terminated before result"))
+
+    async def _finalize_singleton_owner(self, owner: _SingletonResourceOwner) -> None:
+        errors: list[BaseException] = []
+        seen: set[int] = set()
+        for dependency in reversed(owner.dependencies):
+            retained_owner = dependency.owner
+            if not isinstance(retained_owner, _SingletonResourceOwner):
+                continue
+            if not retained_owner.owned_transient:
+                continue
+            retained_owner.shutdown_requested = True
+            task = retained_owner.task
+            if not retained_owner.published and task is not None and not retained_owner.finalizing:
+                task.cancel()
+            else:
+                retained_owner.request_close()
+            await self._drain_singleton_owner(retained_owner, errors, seen)
+        try:
+            await owner.stack.aclose()
+        except BaseException as error:
+            owner.resource_cleanup_error = error
+            self._record_singleton_cleanup_error(errors, seen, error)
+        if errors:
+            if len(errors) == 1:
+                raise errors[0]
+            raise BaseExceptionGroup("Dependency cleanup failed", errors)
 
     def _validate_singleton_owner(self, owner: _SingletonResourceOwner) -> None:
         self._validate_owner_graph(owner, set(), require_published=True)
@@ -583,8 +612,6 @@ class Container:
     async def resolve_for_singleton(
         self,
         key: DependencyKey[T],
-        stack: AsyncExitStack,
-        resolver: DependencyResolver,
         owner: DependencyKey[Any],
     ) -> T:
         registration = self._registration_for_resolution(key)
@@ -595,9 +622,100 @@ class Container:
             )
         if registration.scope is DependencyScope.SINGLETON:
             return cast(T, await self._resolve_singleton(key, registration))
-        value = await self._provide(key, registration, resolver, stack)
-        self._retain_dependency(_DependencyReference(key, registration))
+        result, resource_owner = self._start_singleton_transient(key, registration, owner)
+        self._retain_dependency(resource_owner)
+        value = await asyncio.shield(result)
+        self._validate_owner_graph(resource_owner, set(), require_published=True)
         return cast(T, value)
+
+    def _start_singleton_transient(
+        self,
+        key: DependencyKey[Any],
+        registration: _Registration,
+        graph_owner: DependencyKey[Any],
+    ) -> tuple[Future[object], _SingletonResourceOwner]:
+        result = asyncio.get_running_loop().create_future()
+        owner = _SingletonResourceOwner(
+            copy_context(),
+            AsyncExitStack(),
+            result,
+            asyncio.Event(),
+            key,
+            registration,
+            owned_transient=True,
+        )
+        task = asyncio.create_task(
+            self._initialize_singleton_transient(owner, graph_owner),
+            context=owner.context,
+            name=f"businessos-di-singleton-transient:{key.name}",
+        )
+        owner.task = task
+        task.add_done_callback(lambda completed: self._owned_transient_finished(owner, completed))
+        result.add_done_callback(self._consume_flight_result)
+        return result, owner
+
+    async def _initialize_singleton_transient(
+        self,
+        owner: _SingletonResourceOwner,
+        graph_owner: DependencyKey[Any],
+    ) -> None:
+        entered = False
+        owner_token = _resource_owner.set(owner)
+        try:
+            await owner.stack.__aenter__()
+            entered = True
+            try:
+                resolver = _SingletonDependencyResolver(self, graph_owner)
+                value = await self._provide(
+                    owner.key,
+                    owner.registration,
+                    resolver,
+                    owner.stack,
+                )
+                self._validate_owner_graph(owner, set(), require_published=False)
+            except asyncio.CancelledError:
+                if not owner.result.done():
+                    owner.result.cancel()
+                return
+            except BaseException as error:
+                if owner.shutdown_requested:
+                    owner.initialization_cleanup_error = error
+                if not owner.result.done():
+                    owner.result.set_exception(error)
+                return
+            if self._closed:
+                if not owner.result.done():
+                    owner.result.set_exception(ConfigurationError("Dependency container is closed"))
+                return
+            owner.published = True
+            if not owner.result.done():
+                owner.result.set_result(value)
+            await owner.close_requested.wait()
+        finally:
+            owner.finalizing = True
+            try:
+                if entered:
+                    await self._finalize_singleton_owner(owner)
+            finally:
+                _resource_owner.reset(owner_token)
+
+    @staticmethod
+    def _owned_transient_finished(
+        owner: _SingletonResourceOwner,
+        task: Task[None],
+    ) -> None:
+        if task.cancelled():
+            if not owner.result.done():
+                owner.result.cancel()
+            return
+        error = task.exception()
+        if not owner.result.done():
+            if error is not None:
+                owner.result.set_exception(error)
+            else:
+                owner.result.set_exception(
+                    ConfigurationError("Dependency owner terminated before result")
+                )
 
     async def provide_for_request(
         self,
@@ -1022,12 +1140,10 @@ class _SingletonDependencyResolver(DependencyResolver):
     def __init__(
         self,
         container: Container,
-        stack: AsyncExitStack,
         owner: DependencyKey[Any],
     ) -> None:
         self._container = container
-        self._stack = stack
         self._owner = owner
 
     async def resolve(self, key: DependencyKey[T]) -> T:
-        return await self._container.resolve_for_singleton(key, self._stack, self, self._owner)
+        return await self._container.resolve_for_singleton(key, self._owner)

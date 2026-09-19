@@ -496,9 +496,20 @@ class BusinessOSApplication:
             raise
         if handler in done:
             _, cancelled = await self._cancel_and_drain_tasks(disconnected)
+            try:
+                response = handler.result()
+            except BaseException as error:
+                if cancelled and not isinstance(error, asyncio.CancelledError):
+                    with bind_request_context(request.context):
+                        self._logger.error(
+                            "Request cleanup failed during cancellation",
+                            extra={"error_type": type(error).__name__},
+                        )
+                    raise asyncio.CancelledError from None
+                raise
             if cancelled:
                 raise asyncio.CancelledError
-            return handler.result()
+            return response
         outcomes, cancelled = await self._cancel_and_drain_tasks(handler)
         outcome = outcomes[0]
         if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):

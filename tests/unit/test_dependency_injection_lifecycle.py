@@ -1,4 +1,6 @@
 import asyncio
+import gc
+import weakref
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
@@ -1313,3 +1315,84 @@ async def test_completed_singleton_initializer_retains_cleanup_failure() -> None
     with pytest.raises(BaseExceptionGroup) as raised:
         await container.close()
     assert raised.value.exceptions == (cleanup_error,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource_kind", ["contextvar", "anyio"])
+async def test_parallel_singleton_transients_keep_resource_task_affinity(
+    resource_kind: str,
+) -> None:
+    first = DependencyKey[str]("parallel-singleton-transient-first")
+    second = DependencyKey[str]("parallel-singleton-transient-second")
+    parent = DependencyKey[tuple[str, str]]("parallel-singleton-transient-parent")
+    marker = ContextVar[str]("parallel-singleton-transient-marker", default="outside")
+    observations: list[tuple[str, str, asyncio.Task[object] | None]] = []
+
+    def resource_provider(
+        name: str,
+    ) -> Callable[[DependencyResolver], AbstractAsyncContextManager[str]]:
+        @asynccontextmanager
+        async def resource(_: DependencyResolver) -> AsyncGenerator[str]:
+            entered_task = asyncio.current_task()
+            token = marker.set(name)
+            observations.append(("enter", name, entered_task))
+            try:
+                if resource_kind == "anyio":
+                    async with anyio.create_task_group():
+                        yield name
+                else:
+                    yield name
+            finally:
+                observations.append(("exit", marker.get(), asyncio.current_task()))
+                marker.reset(token)
+
+        return resource
+
+    async def parent_provider(resolver: DependencyResolver) -> tuple[str, str]:
+        first_value, second_value = await asyncio.gather(
+            resolver.resolve(first),
+            resolver.resolve(second),
+        )
+        return first_value, second_value
+
+    container = Container()
+    container.register(first, resource_provider("first"))
+    container.register(second, resource_provider("second"))
+    container.register(parent, parent_provider, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        assert await scope.resolve(parent) == ("first", "second")
+    await container.close()
+
+    for name in ("first", "second"):
+        entered = next(item for item in observations if item[:2] == ("enter", name))
+        exited = next(item for item in observations if item[:2] == ("exit", name))
+        assert entered[2] is exited[2]
+
+
+@pytest.mark.asyncio
+async def test_clean_failed_singleton_attempts_release_provider_locals() -> None:
+    class Payload:
+        def __init__(self) -> None:
+            self.data = bytearray(256 * 1024)
+
+    key = DependencyKey[object]("failed-singleton-payload")
+    references: list[weakref.ReferenceType[Payload]] = []
+
+    async def provider(_: DependencyResolver) -> object:
+        payload = Payload()
+        references.append(weakref.ref(payload))
+        raise ValueError("temporary singleton failure")
+
+    container = Container()
+    container.register(key, provider, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        for _ in range(40):
+            try:
+                await scope.resolve(key)
+            except ValueError:
+                pass
+            await asyncio.sleep(0)
+
+    gc.collect()
+    assert all(reference() is None for reference in references)
+    await container.close()

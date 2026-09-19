@@ -386,6 +386,102 @@ async def test_outer_cancellation_drains_and_logs_handler_cleanup_failure(
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_watcher_drain_consumes_completed_handler_failure() -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
+    watcher_cleanup_started = asyncio.Event()
+    release_watcher_cleanup = asyncio.Event()
+    watcher_cleanup_completed = 0
+    inbound: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    outbound: list[dict[str, object]] = []
+
+    async def failure(_: Request, __: object) -> Response:
+        handler_started.set()
+        await release_handler.wait()
+        raise RuntimeError("private-completed-handler-detail")
+
+    async def receive() -> dict[str, object]:
+        nonlocal watcher_cleanup_completed
+        try:
+            return await inbound.get()
+        except asyncio.CancelledError:
+            watcher_cleanup_started.set()
+            await release_watcher_cleanup.wait()
+            watcher_cleanup_completed += 1
+            raise
+
+    async def send(message: dict[str, object]) -> None:
+        outbound.append(message)
+
+    app.router.add_route("GET", "/completed-handler-cancellation", failure)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    await inbound.put({"type": "http.request", "body": b"", "more_body": False})
+    request_task = asyncio.create_task(
+        app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/completed-handler-cancellation",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"completed-handler-cancellation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    )
+    try:
+        await handler_started.wait()
+        release_handler.set()
+        await watcher_cleanup_started.wait()
+        for _ in range(10):
+            request_task.cancel()
+            await asyncio.sleep(0)
+            assert not request_task.done()
+        release_watcher_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+    finally:
+        release_watcher_cleanup.set()
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert watcher_cleanup_completed == 1
+    assert outbound == []
+    assert record["message"] == "Request cleanup failed during cancellation"
+    assert record["error_type"] == "RuntimeError"
+    assert record["correlation_id"] == "completed-handler-cancellation"
+    assert record["tenant_id"] == str(tenant.tenant_id)
+    assert "private-completed-handler-detail" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_middleware_order_and_lifecycle_are_deterministic() -> None:
     app = create_application(_settings())
     events: list[str] = []

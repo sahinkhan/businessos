@@ -8,8 +8,11 @@
 - First-remediation audit head: `306dfafba7e5abdccbf13889258b32875bfa4704`
 - Second-remediation implementation commit: `c76445ceec9531f4c6bad18eb4841974f2e756e3`
 - Third-remediation implementation commit: `c0ac4924fc8a75189355f468e3afa62c4584d6ea`
+- Fourth-remediation audit head: `f87806c92da974f86a664cc2708bf41cc3b67788`
+- Fourth-remediation implementation commit: `b20a442e6bb68f1a776255effc14bdc92e7c6d2f`
 - Implementation exact-head CI: `35375774996` - PASS
-- Third-remediation final-head CI: pending after the evidence commit
+- Third-remediation final-head CI: `35425280164` - PASS
+- Fourth-remediation final-head CI: pending after the evidence commit
 - Status: **READY FOR INDEPENDENT PHASE 1 RE-AUDIT**
 - Scope exclusions: PR #9 and `fix/phase4.5-certification`, Phase 4.5 production code,
   Phase 5, historical tags, public SDK exports, and all migrations.
@@ -205,6 +208,73 @@ fresh-image integration-suite failure was the inherited event-delivery receipt t
 `test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_idempotency`; it passed on the
 immediate isolated rerun. New branch-caused suite failures: **0**. Exact-head CI remains the
 authoritative Linux, Windows, wheel, production-replay, and web gate for the final PR head.
+
+## Independent re-audit result and fourth remediation
+
+The independent review of exact head
+`f87806c92da974f86a664cc2708bf41cc3b67788` confirmed the task-affine owner model and
+identified two new P2 defects plus one inherited acceptance gap. All three were reproduced on the
+audited source before this remediation.
+
+### Published cleanup cancellation was discarded
+
+`RequestDependencyScope._cleanup` treated every `CancelledError` from a published owner as normal
+shutdown control flow. A resource that explicitly raised `CancelledError` from `__aexit__` could
+therefore disappear from the final cleanup result. Resource owners now retain their exact
+`AsyncExitStack` failure before task termination. Scope teardown reports that failure alongside
+ordinary cleanup errors and deduplicates multiple observations of the same exception object.
+
+### A failed published owner could leave a closed cached value
+
+An AnyIO child failure can interrupt a long-lived resource owner and finalize the resource while
+the request scope remains open. The old cache still returned that closed value. An unexpected
+published-owner exit now invalidates its request cache and flight before resource finalization is
+awaited. Later resolution fails closed instead of republishing or returning the finalized object,
+while teardown retains the original owner failure.
+
+### Cancelled initializer unwinding errors could remain only on abandoned futures
+
+When request shutdown cancelled an unfinished provider and its `finally` block raised, the error
+was stored only on the resolution future. With no remaining waiter, a callback consumed that future
+and scope close succeeded. Owners now mark shutdown before cancellation and retain any resulting
+initializer/unwinding error as a scope-owned terminal outcome. Teardown drains every owner and
+aggregates those outcomes before clearing tracking state.
+
+Permanent regressions cover:
+
+- explicit `CancelledError` plus `RuntimeError` cleanup aggregation;
+- AnyIO child failure, cache invalidation, fail-closed re-resolution, and final error retention;
+- three abandoned cancelled initializers with three independently preserved unwinding failures.
+
+## Fourth-remediation local validation
+
+The following checks ran against implementation commit
+`b20a442e6bb68f1a776255effc14bdc92e7c6d2f` before the evidence-only commit:
+
+| Gate | Result |
+| --- | --- |
+| Three independent auditor defect probes | PASS |
+| Focused lifecycle tests | PASS - 20 |
+| Ruff formatting | PASS - 164 files |
+| Ruff lint | PASS |
+| Linux Python 3.13 mypy | PASS - 163 source files |
+| Pyright | PASS - 0 errors, 0 warnings |
+| Unit tests | PASS - 201 |
+| Test collection | PASS - 266 collected |
+| Database-backed conformance | PASS - 13 |
+| PostgreSQL/provider integration | 49 PASS / 3 migration timing failures; failed group passed 4/4 in isolation |
+| Broad Python suite | 262 PASS / 4 FAIL |
+| Development image build | PASS |
+| Production image build | PASS |
+| Migration-smoke image build and installed-wheel plan | PASS |
+| Patch whitespace | PASS |
+
+The broad failures comprise the two independently reproduced baseline logging-capture failures and
+two migration cancellation timing/process-baseline failures. All four parametrized migration
+cancellation cases passed together on immediate isolated rerun before the broad run. No failure
+touches the DI change, and new branch-caused committed-suite failures remain **0**. Exact-head CI
+is the authoritative Linux, Windows, integration, wheel, replay, and web gate for the final PR
+head.
 
 ## Downstream regression classification
 

@@ -1,5 +1,6 @@
 """Public module SDK contracts exposed by the protected framework."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
@@ -107,13 +108,17 @@ class ModuleRegistration:
     async def rollback(self) -> None:
         if self._finished:
             return
-        await self._remove_contributions()
+        await self._remove_contributions(propagate_cancellation=False)
 
     def retire_owner(self) -> None:
         self._gate.retire(self.owner)
 
-    async def _remove_contributions(self) -> None:
-        await self._container.remove_owner_generation(self.generation)
+    async def _remove_contributions(self, *, propagate_cancellation: bool = True) -> None:
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            await self._container.remove_owner_generation(self.generation)
+        except asyncio.CancelledError as error:
+            cancellation = error
         self._router.remove_owner_generation(self.generation)
         self._contracts.remove_owner_generation(self.generation)
         self._metadata.remove_owner_generation(self.generation)
@@ -127,6 +132,8 @@ class ModuleRegistration:
         self._jobs.remove_owner_generation(self.generation)
         self._gate.discard(self.generation)
         self._finished = True
+        if cancellation is not None and propagate_cancellation:
+            raise cancellation
 
     def route(
         self,

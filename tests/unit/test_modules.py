@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from businessos.activation import ContributionState
-from businessos.bootstrap import create_application
+from businessos.bootstrap import configured_infrastructure_providers, create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
 from businessos.di import DependencyKey, DependencyScope
@@ -23,6 +23,7 @@ from businessos.modules import (
     ModuleRegistration,
     ModuleRegistry,
     ModuleState,
+    UpgradeCoordinator,
 )
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence import UnitOfWork
@@ -228,6 +229,102 @@ def test_module_registry_rejects_duplicate_and_incompatible_modules() -> None:
     other = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
     with pytest.raises(ConfigurationError, match="incompatible"):
         other.add(incompatible)
+
+
+def test_upgrade_plan_validates_complete_proposed_dependency_graph() -> None:
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    foundation = ProofModule("example.foundation", migrations=())
+    dependent = ProofModule(
+        "example.dependent",
+        dependencies=(ModuleDependency(module_id="example.foundation", version="<2"),),
+        migrations=(),
+    )
+    registry.add(foundation)
+    registry.add(dependent)
+
+    incompatible_foundation = foundation.manifest.model_copy(update={"version": "2.0.0"})
+    with pytest.raises(ConfigurationError, match=r"requires 'example.foundation' <2"):
+        UpgradeCoordinator(registry).plan((incompatible_foundation,))
+
+    missing_dependency = foundation.manifest.model_copy(
+        update={
+            "version": "1.1.0",
+            "dependencies": (ModuleDependency(module_id="example.missing", version=">=1"),),
+        }
+    )
+    with pytest.raises(ConfigurationError, match=r"missing module 'example.missing'"):
+        UpgradeCoordinator(registry).plan((missing_dependency,))
+
+
+def test_upgrade_plan_orders_and_rejects_cycles_from_target_manifests() -> None:
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    first = ProofModule("example.first", migrations=())
+    second = ProofModule("example.second", migrations=())
+    registry.add(first)
+    registry.add(second)
+
+    first_after = first.manifest.model_copy(
+        update={
+            "version": "1.1.0",
+            "dependencies": (ModuleDependency(module_id="example.second", version=">=1"),),
+        }
+    )
+    plan = UpgradeCoordinator(registry).plan((first_after,))
+    assert plan.ordered_module_ids == ("example.second", "example.first")
+
+    second_after = second.manifest.model_copy(
+        update={
+            "version": "1.1.0",
+            "dependencies": (ModuleDependency(module_id="example.first", version=">=1"),),
+        }
+    )
+    with pytest.raises(ConfigurationError, match="Circular module dependency"):
+        UpgradeCoordinator(registry).plan((first_after, second_after))
+
+
+def test_upgrade_plan_accepts_compatible_multi_target_graph_deterministically() -> None:
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    first = ProofModule("example.first", migrations=())
+    second = ProofModule("example.second", migrations=())
+    registry.add(first)
+    registry.add(second)
+    first_after = first.manifest.model_copy(
+        update={
+            "version": "2.0.0",
+            "dependencies": (ModuleDependency(module_id="example.second", version=">=2"),),
+        }
+    )
+    second_after = second.manifest.model_copy(update={"version": "2.0.0"})
+
+    plan = UpgradeCoordinator(registry).plan((first_after, second_after))
+
+    assert plan.ordered_module_ids == ("example.second", "example.first")
+
+
+def test_upgrade_plan_rejects_unknown_duplicate_downgrade_and_incompatible_targets() -> None:
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    module = ProofModule("example.current", version="2.0.0", migrations=())
+    registry.add(module)
+    coordinator = UpgradeCoordinator(registry)
+
+    unknown = ProofModule("example.unknown", migrations=()).manifest
+    with pytest.raises(ConfigurationError, match="unknown modules"):
+        coordinator.plan((unknown,))
+    with pytest.raises(ConflictError, match="unique module IDs"):
+        coordinator.plan((module.manifest, module.manifest))
+
+    downgrade = module.manifest.model_copy(update={"version": "1.0.0"})
+    with pytest.raises(ConfigurationError, match="cannot downgrade"):
+        coordinator.plan((downgrade,))
+
+    for compatibility in (
+        {"platform": ">=99"},
+        {"sdk": ">=99"},
+        {"python": ">=99"},
+    ):
+        incompatible = module.manifest.model_copy(update={"version": "2.1.0", **compatibility})
+        with pytest.raises(ConfigurationError, match="incompatible"):
+            coordinator.plan((incompatible,))
 
 
 @pytest.mark.asyncio
@@ -723,6 +820,29 @@ async def test_required_provider_capability_fails_closed_before_module_registrat
     app = create_application(_settings(), modules=(module,))
 
     with pytest.raises(ConfigurationError, match="missing capability 'object-storage'"):
+        await app.startup()
+
+    assert module.lifecycle == []
+    assert app.runtime is not None
+    assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_production_composition_without_storage_fails_closed_deterministically() -> None:
+    module = ProofModule("example.production-capability", migrations=())
+    module.manifest = module.manifest.model_copy(update={"capabilities": ("object-storage",)})
+    settings = Settings(
+        environment="production",
+        database_url="postgresql+psycopg://test:test@db/test",
+        database_readiness_enabled=False,
+    )
+    app = create_application(
+        settings,
+        modules=(module,),
+        infrastructure_providers=configured_infrastructure_providers(settings),
+    )
+
+    with pytest.raises(ConfigurationError, match=r"missing capability 'object-storage'"):
         await app.startup()
 
     assert module.lifecycle == []

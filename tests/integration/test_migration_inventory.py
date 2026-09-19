@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import io
 import logging
 import multiprocessing
 import shutil
@@ -297,6 +298,47 @@ async def _assert_cancelled_migration_is_terminal(
     await asyncio.sleep(0.25)
     assert _migration_sessions(database_url, application_name) == 0
     assert _database_snapshot(database_url, table) == baseline_snapshot
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_synchronous_migration_preserves_existing_runtime_loggers(
+    tmp_path: Path,
+    postgres_migration_database_url: str,
+) -> None:
+    history = tmp_path / "logging-history"
+    _revision(
+        history,
+        "0001.py",
+        "logging_history_0001",
+        parent="0001_phase1_kernel",
+        label="module_history",
+    )
+    runtime_logger = logging.getLogger("businessos.application")
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    previous = (
+        runtime_logger.handlers,
+        runtime_logger.propagate,
+        runtime_logger.disabled,
+        runtime_logger.level,
+    )
+    runtime_logger.handlers = [handler]
+    runtime_logger.propagate = False
+    runtime_logger.disabled = False
+    runtime_logger.setLevel(logging.ERROR)
+    try:
+        _coordinator(history).upgrade(postgres_migration_database_url)
+        runtime_logger.error("runtime logging remains active")
+    finally:
+        (
+            runtime_logger.handlers,
+            runtime_logger.propagate,
+            runtime_logger.disabled,
+            runtime_logger.level,
+        ) = previous
+
+    assert stream.getvalue() == "runtime logging remains active\n"
 
 
 @pytest.mark.integration

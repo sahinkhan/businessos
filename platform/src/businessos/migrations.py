@@ -16,10 +16,9 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from importlib.metadata import packages_distributions
 from importlib.resources import as_file, files
-from multiprocessing.connection import Connection as ProcessConnection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Self, cast
+from typing import Any, Protocol, Self, cast
 
 import psycopg
 from alembic import command
@@ -52,6 +51,18 @@ DISTRIBUTION_PATTERN = r"^(?:python-distribution|python-package|module):[a-z0-9]
 FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
 
 logger = logging.getLogger("businessos.migrations")
+
+
+class _ProcessConnection(Protocol):
+    """Structural pipe endpoint shared by POSIX and Windows multiprocessing."""
+
+    def close(self) -> None: ...
+
+    def poll(self, timeout: float = 0.0) -> bool: ...
+
+    def recv(self) -> Any: ...
+
+    def send(self, obj: object) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -618,7 +629,7 @@ class MigrationCoordinator:
         database_url: str,
         operation: str,
         revision: str,
-        protocol: ProcessConnection | None = None,
+        protocol: _ProcessConnection | None = None,
     ) -> None:
         with self._resolved_sources() as resolved:
             plan = self._build_plan(resolved)
@@ -659,7 +670,7 @@ class MigrationCoordinator:
         resolved: Sequence[_ResolvedSource],
         plan: MigrationPlan,
         connection: Connection,
-        protocol: ProcessConnection | None,
+        protocol: _ProcessConnection | None,
     ) -> None:
         self._lock_migrations(connection)
         if protocol is not None:
@@ -680,7 +691,7 @@ class MigrationCoordinator:
 
     @staticmethod
     def _process_checkpoint(
-        protocol: ProcessConnection,
+        protocol: _ProcessConnection,
         phase: str,
         expected_response: str = "continue",
     ) -> None:
@@ -794,7 +805,7 @@ class MigrationCoordinator:
         database_url: str,
         backend_pid: int | None,
         process: BaseProcess,
-        protocol: ProcessConnection,
+        protocol: _ProcessConnection,
         phase_callback: Callable[[str], Awaitable[None]] | None,
     ) -> tuple[str, ...]:
         """Own terminal cleanup without allowing diagnostics to replace its outcome."""
@@ -884,7 +895,7 @@ class MigrationCoordinator:
             raise RuntimeError("Migration child did not reach a terminal state")
 
     @classmethod
-    async def _stop_process(cls, process: BaseProcess, protocol: ProcessConnection) -> None:
+    async def _stop_process(cls, process: BaseProcess, protocol: _ProcessConnection) -> None:
         if process.is_alive():
             try:
                 protocol.send("abort")
@@ -916,7 +927,7 @@ class MigrationCoordinator:
         process.join(0)
 
     @staticmethod
-    def _drain_backend_pid(protocol: ProcessConnection, current: int | None) -> int | None:
+    def _drain_backend_pid(protocol: _ProcessConnection, current: int | None) -> int | None:
         backend_pid = current
         try:
             while protocol.poll():
@@ -979,7 +990,7 @@ class MigrationCoordinator:
         database_url: str,
         operation: str,
         revision: str,
-        protocol: ProcessConnection,
+        protocol: _ProcessConnection,
     ) -> None:
         """Run one migration transaction and return only after its durable outcome."""
 

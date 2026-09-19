@@ -28,6 +28,11 @@ modules, exposed through typed SDK dependency keys and included in readiness. An
 provider has no startup or readiness effect, while an absent or unhealthy required capability fails
 closed before the module publishes contributions.
 
+The shipped `businessos.asgi:application` composition configures the required S3-compatible
+object-storage provider from `BOS_S3_*` settings. Development without overrides uses the committed
+local MinIO defaults. Production does not inherit those defaults: its bucket and any endpoint or
+credentials must be supplied by the deployment, and bucket provisioning is rejected in production.
+
 ## Docker Development
 
 Copy `.env.example` to `.env` only when local overrides are needed. The committed Compose defaults are development-only credentials.

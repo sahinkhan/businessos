@@ -892,3 +892,73 @@ async def test_inflight_owner_rejects_draining_generation() -> None:
         await container.remove_owner_generation(generation)
     assert exits == 1
     await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+@pytest.mark.parametrize("cancel_close", [False, True])
+async def test_rejected_owner_cleanup_is_drained(cleanup_failure: bool, cancel_close: bool) -> None:
+    from businessos.activation import ContributionGate
+
+    gate = ContributionGate()
+    generation = gate.reserve("slow-rejected-owner")
+    gate.publish(generation)
+    acquiring = asyncio.Event()
+    acquired = asyncio.Event()
+    finalizing = asyncio.Event()
+    finish = asyncio.Event()
+    completed = 0
+    tasks: list[asyncio.Task[object] | None] = []
+    original = RuntimeError("rejected-resource-cleanup-failure")
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        nonlocal completed
+        tasks.append(asyncio.current_task())
+        acquiring.set()
+        await acquired.wait()
+        try:
+            yield object()
+        finally:
+            finalizing.set()
+            await finish.wait()
+            tasks.append(asyncio.current_task())
+            completed += 1
+            if cleanup_failure:
+                raise original
+
+    container = Container()
+    key = DependencyKey[object]("slow-rejected-resource")
+    container.register(
+        key, resource, scope=DependencyScope.REQUEST, generation=generation, gate=gate
+    )
+    scope = await container.request_scope().__aenter__()
+    resolving = asyncio.create_task(scope.resolve(key))
+    await acquiring.wait()
+    draining = asyncio.create_task(gate.close_and_drain(generation, timeout_seconds=1))
+    await asyncio.sleep(0)
+    acquired.set()
+    with pytest.raises(ConfigurationError, match="not active"):
+        await resolving
+    await finalizing.wait()
+    closing = asyncio.create_task(scope.__aexit__(None, None, None))
+    for _ in range(5):
+        await asyncio.sleep(0)
+        if cancel_close:
+            closing.cancel()
+    assert not closing.done()
+    assert completed == 0
+    finish.set()
+    if cleanup_failure:
+        with pytest.raises(BaseExceptionGroup) as raised:
+            await closing
+        assert raised.value.exceptions == (original,)
+    elif cancel_close:
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+    else:
+        await closing
+    assert completed == 1
+    assert tasks[0] is tasks[1]
+    await draining
+    await container.close()

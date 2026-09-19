@@ -75,6 +75,7 @@ class _RequestResourceOwner:
     published: bool = False
     cache_result: bool = False
     shutdown_requested: bool = False
+    finalizing: bool = False
     failed_after_publication: bool = False
     initialization_cleanup_error: BaseException | None = None
     resource_cleanup_error: BaseException | None = None
@@ -636,6 +637,7 @@ class RequestDependencyScope(
                 owner.result.set_result(value)
             await owner.close_requested.wait()
         finally:
+            owner.finalizing = True
             if entered:
                 if owner.published and not owner.close_requested.is_set():
                     self._invalidate_published_owner(key, owner)
@@ -739,7 +741,7 @@ class RequestDependencyScope(
         )
         for owner in initializers:
             owner.shutdown_requested = True
-            if owner.task is not None:
+            if owner.task is not None and not owner.finalizing:
                 owner.task.cancel()
         for owner in initializers:
             await self._drain_owner(owner, errors, seen)

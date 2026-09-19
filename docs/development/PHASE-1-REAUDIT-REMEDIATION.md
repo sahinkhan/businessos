@@ -408,3 +408,28 @@ validation: 27 lifecycle tests, 208 isolated unit tests, 13 independent probe sc
 both additional audit reproductions reject invalid delivery. Mypy passed for 163 source files.
 The final CI run is recorded externally against the final commit. These results do not constitute
 independent certification. PR #11 remains unmerged, and PR #9 remains on hold.
+
+
+## Eighth remediation: drain rejected resource finalizers
+
+Audit head `a61a6d76494dfd262d55562deb8be579a66ba577` exposed an unpublished
+owner already running resource cleanup after validation rejected its acquired value. Scope
+teardown treated that owner as an active initializer and cancelled its finalizer.
+
+Owners now explicitly record entry into finalization before awaiting stack exit. Scope teardown
+still cancels active initialization, but drains owners already finalizing without interrupting
+their cleanup. Fail-closed delivery, owner-task affinity, and original cleanup-error aggregation
+are preserved. No public contract, schema, migration, or SDK export changes are required.
+
+Four regression cases cover delayed cleanup after generation rejection, successful and failing
+cleanup, and repeated cancellation of the caller closing the scope. Cleanup completes exactly
+once on the entering task; the original cleanup exception remains observable.
+
+Native Windows validation: 31 lifecycle tests and 212 isolated unit tests passed; 277 tests
+collected. All 13 retained independent probe scenarios passed. Both auditor reproductions
+(the normal LifecycleManager.disable path and natural child failure during parent initialization)
+now report cleanup completion. Ruff formatting/lint, mypy (163 source files), and Pyright passed.
+The combined broad suite was not rerun locally; its previously audited inherited logging failures
+are outside this correction. Exact-head CI results are recorded externally against the final commit.
+
+Independent acceptance remains required. PR #11 is not merged; PR #9 remains untouched and on hold.

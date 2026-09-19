@@ -5,7 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from asgiref.typing import (
     ASGIReceiveCallable,
@@ -478,19 +478,52 @@ class BusinessOSApplication:
                 return_when=asyncio.FIRST_COMPLETED,
             )
         except BaseException:
-            handler.cancel()
-            disconnected.cancel()
-            await asyncio.gather(handler, disconnected, return_exceptions=True)
+            outcomes, _ = await self._cancel_and_drain_tasks(handler, disconnected)
+            failures = tuple(
+                outcome
+                for outcome in outcomes
+                if isinstance(outcome, BaseException)
+                and not isinstance(outcome, asyncio.CancelledError)
+            )
+            if failures:
+                with bind_request_context(request.context):
+                    self._logger.error(
+                        "Request cleanup failed during cancellation",
+                        extra={
+                            "error_type": ",".join(type(failure).__name__ for failure in failures)
+                        },
+                    )
             raise
         if handler in done:
-            disconnected.cancel()
-            await asyncio.gather(disconnected, return_exceptions=True)
+            _, cancelled = await self._cancel_and_drain_tasks(disconnected)
+            if cancelled:
+                raise asyncio.CancelledError
             return handler.result()
-        handler.cancel()
-        outcome = (await asyncio.gather(handler, return_exceptions=True))[0]
+        outcomes, cancelled = await self._cancel_and_drain_tasks(handler)
+        outcome = outcomes[0]
         if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
             raise ClientDisconnectedError from outcome
+        if cancelled:
+            raise asyncio.CancelledError
         raise ClientDisconnectedError
+
+    @staticmethod
+    async def _cancel_and_drain_tasks(
+        *tasks: asyncio.Task[Any],
+    ) -> tuple[tuple[Any | BaseException, ...], bool]:
+        """Cancel owned work once, then shield its terminal cleanup from caller cancellation."""
+
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        drain = asyncio.gather(*tasks, return_exceptions=True)
+        cancelled = False
+        while True:
+            try:
+                outcomes = await asyncio.shield(drain)
+                return tuple(outcomes), cancelled
+            except asyncio.CancelledError:
+                cancelled = True
 
     @staticmethod
     async def _wait_for_disconnect(receive: ASGIReceiveCallable) -> None:

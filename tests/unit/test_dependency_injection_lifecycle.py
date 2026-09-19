@@ -1164,3 +1164,152 @@ async def test_concurrent_singleton_cycle_through_transients_is_rejected() -> No
     assert all(isinstance(result, ConfigurationError) for result in results)
     assert all("cycle" in str(result).lower() for result in results)
     await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parent_scope",
+    [DependencyScope.REQUEST, DependencyScope.SINGLETON],
+)
+@pytest.mark.parametrize("first_delivery", [False, True])
+async def test_parent_rejects_failed_retained_singleton(
+    parent_scope: DependencyScope,
+    first_delivery: bool,
+) -> None:
+    child_key = DependencyKey[dict[str, bool]]("retained-failing-singleton")
+    parent_key = DependencyKey[dict[str, dict[str, bool]]]("retaining-parent")
+    fail = asyncio.Event()
+    child_closed = asyncio.Event()
+    parent_acquired = asyncio.Event()
+    release_parent = asyncio.Event()
+    child = {"closed": False}
+
+    @asynccontextmanager
+    async def child_provider(
+        _: DependencyResolver,
+    ) -> AsyncGenerator[dict[str, bool]]:
+        async with anyio.create_task_group() as task_group:
+
+            async def fail_child() -> None:
+                await fail.wait()
+                raise RuntimeError("retained-singleton-failed")
+
+            task_group.start_soon(fail_child)
+            try:
+                yield child
+            finally:
+                child["closed"] = True
+                child_closed.set()
+
+    async def parent_provider(
+        resolver: DependencyResolver,
+    ) -> dict[str, dict[str, bool]]:
+        value = await resolver.resolve(child_key)
+        parent_acquired.set()
+        if first_delivery:
+            await release_parent.wait()
+        return {"child": value}
+
+    container = Container()
+    container.register(
+        child_key,
+        child_provider,
+        scope=DependencyScope.SINGLETON,
+    )
+    container.register(parent_key, parent_provider, scope=parent_scope)
+    scope = await container.request_scope().__aenter__()
+    resolving = asyncio.create_task(scope.resolve(parent_key))
+    await parent_acquired.wait()
+    if not first_delivery:
+        await resolving
+    fail.set()
+    await child_closed.wait()
+    await asyncio.sleep(0)
+    release_parent.set()
+    with pytest.raises(ConfigurationError, match="no longer active"):
+        if first_delivery:
+            await resolving
+        else:
+            await scope.resolve(parent_key)
+    await scope.__aexit__(None, None, None)
+    with pytest.raises(BaseExceptionGroup):
+        await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parent_scope", "child_scope"),
+    [
+        (DependencyScope.REQUEST, DependencyScope.SINGLETON),
+        (DependencyScope.SINGLETON, DependencyScope.SINGLETON),
+        (DependencyScope.SINGLETON, DependencyScope.TRANSIENT),
+    ],
+)
+async def test_parent_rejects_removed_retained_generation(
+    parent_scope: DependencyScope,
+    child_scope: DependencyScope,
+) -> None:
+    gate = ContributionGate()
+    generation = gate.reserve("retained-generation")
+    gate.publish(generation)
+    child_key = DependencyKey[object]("retained-generation-child")
+    parent_key = DependencyKey[object]("retained-generation-parent")
+
+    @asynccontextmanager
+    async def child_provider(_: DependencyResolver) -> AsyncGenerator[object]:
+        yield object()
+
+    async def parent_provider(resolver: DependencyResolver) -> object:
+        return await resolver.resolve(child_key)
+
+    container = Container()
+    container.register(
+        child_key,
+        child_provider,
+        scope=child_scope,
+        owner=generation.owner,
+        generation=generation,
+        gate=gate,
+    )
+    container.register(parent_key, parent_provider, scope=parent_scope)
+    scope = await container.request_scope().__aenter__()
+    await scope.resolve(parent_key)
+    await gate.close_and_drain(generation, timeout_seconds=1)
+    await container.remove_owner_generation(generation)
+    with pytest.raises(ConfigurationError, match="registration is no longer active"):
+        await scope.resolve(parent_key)
+    await scope.__aexit__(None, None, None)
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_completed_singleton_initializer_retains_cleanup_failure() -> None:
+    child_key = DependencyKey[object]("completed-failed-singleton-child")
+    parent_key = DependencyKey[object]("completed-failed-singleton-parent")
+    cleanup_error = RuntimeError("completed-singleton-cleanup-failure")
+
+    @asynccontextmanager
+    async def child_provider(_: DependencyResolver) -> AsyncGenerator[object]:
+        try:
+            yield object()
+        finally:
+            raise cleanup_error
+
+    async def parent_provider(resolver: DependencyResolver) -> object:
+        await resolver.resolve(child_key)
+        raise ValueError("singleton-initialization-failure")
+
+    container = Container()
+    container.register(child_key, child_provider)
+    container.register(
+        parent_key,
+        parent_provider,
+        scope=DependencyScope.SINGLETON,
+    )
+    async with container.request_scope() as scope:
+        with pytest.raises(ValueError, match="singleton-initialization-failure"):
+            await scope.resolve(parent_key)
+    await asyncio.sleep(0)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await container.close()
+    assert raised.value.exceptions == (cleanup_error,)

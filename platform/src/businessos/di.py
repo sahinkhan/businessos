@@ -58,6 +58,15 @@ class _Registration:
     gate: ContributionGate | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _DependencyReference:
+    """Exact registration retained by an owner for a task-affine transient."""
+
+    key: DependencyKey[Any]
+    registration: _Registration
+    owner: object | None = None
+
+
 @dataclass(slots=True)
 class _RequestResourceOwner:
     """Own resource entry and exit in one explicit context and task."""
@@ -68,8 +77,8 @@ class _RequestResourceOwner:
     close_requested: asyncio.Event
     key: DependencyKey[Any]
     registration: _Registration
-    dependencies: list["_RequestResourceOwner"] = field(
-        default_factory=lambda: list[_RequestResourceOwner]()
+    dependencies: list[_DependencyReference] = field(
+        default_factory=lambda: list[_DependencyReference]()
     )
     task: Task[None] | None = None
     published: bool = False
@@ -106,6 +115,9 @@ class _SingletonResourceOwner:
     close_requested: asyncio.Event
     key: DependencyKey[Any]
     registration: _Registration
+    dependencies: list[_DependencyReference] = field(
+        default_factory=lambda: list[_DependencyReference]()
+    )
     task: Task[None] | None = None
     published: bool = False
     shutdown_requested: bool = False
@@ -117,8 +129,11 @@ class _SingletonResourceOwner:
         self.close_requested.set()
 
 
-_request_owner: ContextVar[_RequestResourceOwner | None] = ContextVar(
-    "businessos_request_owner", default=None
+type _ResourceOwner = _RequestResourceOwner | _SingletonResourceOwner
+
+
+_resource_owner: ContextVar[_ResourceOwner | None] = ContextVar(
+    "businessos_resource_owner", default=None
 )
 
 
@@ -132,6 +147,7 @@ class Container:
         self._singleton_order: list[DependencyKey[Any]] = []
         self._singleton_flights: dict[DependencyKey[Any], Future[object]] = {}
         self._singleton_owner_tasks: dict[Task[None], _SingletonResourceOwner] = {}
+        self._singleton_terminal_owners: list[_SingletonResourceOwner] = []
         self._singleton_waits: dict[DependencyKey[Any], dict[DependencyKey[Any], int]] = {}
         self._cleanup_task: Task[None] | None = None
         self._closed = False
@@ -272,7 +288,9 @@ class Container:
     ) -> object:
         cached = self._singletons.get(key)
         if cached is not None or key in self._singletons:
-            self._validate_singleton_owner(self._singleton_owners[key])
+            cached_owner = self._singleton_owners[key]
+            self._validate_singleton_owner(cached_owner)
+            self._retain_dependency(cached_owner)
             return cached
         path = _resolution_path.get()
         wait_edges = self._add_wait_chain(self._singleton_waits, path, key)
@@ -288,6 +306,7 @@ class Container:
             if owner is None:
                 raise ConfigurationError(f"Dependency owner is no longer active: {key.name}")
             self._validate_singleton_owner(owner)
+            self._retain_dependency(owner)
             return value
         finally:
             for source, target in reversed(wait_edges):
@@ -328,13 +347,14 @@ class Container:
         owner: _SingletonResourceOwner,
     ) -> None:
         entered = False
+        owner_token = _resource_owner.set(owner)
         try:
             await owner.stack.__aenter__()
             entered = True
             try:
                 resolver = _SingletonDependencyResolver(self, owner.stack, key)
                 value = await self._provide(key, registration, resolver, owner.stack)
-                self.validate_registration(key, registration)
+                self._validate_owner_graph(owner, set(), require_published=False)
             except asyncio.CancelledError:
                 if not owner.result.done():
                     owner.result.cancel()
@@ -364,6 +384,7 @@ class Container:
                 except BaseException as error:
                     owner.resource_cleanup_error = error
                     raise
+            _resource_owner.reset(owner_token)
 
     def _singleton_owner_finished(
         self,
@@ -372,6 +393,8 @@ class Container:
         task: Task[None],
     ) -> None:
         self._singleton_owner_tasks.pop(task, None)
+        if not owner.published:
+            self._singleton_terminal_owners.append(owner)
         if not owner.published and self._singleton_flights.get(key) is owner.result:
             self._singleton_flights.pop(key, None)
         if owner.result.done():
@@ -386,9 +409,62 @@ class Container:
         owner.result.set_exception(ConfigurationError("Dependency owner terminated before result"))
 
     def _validate_singleton_owner(self, owner: _SingletonResourceOwner) -> None:
+        self._validate_owner_graph(owner, set(), require_published=True)
+
+    def _validate_owner_graph(
+        self,
+        owner: _ResourceOwner,
+        visited: set[int],
+        *,
+        require_published: bool,
+    ) -> None:
+        if id(owner) in visited:
+            return
+        visited.add(id(owner))
         self.validate_registration(owner.key, owner.registration)
-        if not owner.published or owner.finalizing:
-            raise ConfigurationError(f"Dependency owner is no longer active: {owner.key.name}")
+        if isinstance(owner, _SingletonResourceOwner):
+            if owner.finalizing or (require_published and not owner.published):
+                raise ConfigurationError(f"Dependency owner is no longer active: {owner.key.name}")
+        else:
+            if owner.failed_after_publication or owner.finalizing:
+                failure = owner.terminal_failure or owner.resource_cleanup_error
+                raise ConfigurationError(
+                    f"Dependency owner terminated after publication: {owner.key.name}"
+                ) from failure
+            if require_published and not owner.published:
+                raise ConfigurationError(f"Dependency owner is no longer active: {owner.key.name}")
+        for dependency in owner.dependencies:
+            self.validate_registration(dependency.key, dependency.registration)
+            retained_owner = dependency.owner
+            if isinstance(
+                retained_owner,
+                (_RequestResourceOwner, _SingletonResourceOwner),
+            ):
+                self._validate_owner_graph(
+                    retained_owner,
+                    visited,
+                    require_published=True,
+                )
+
+    @staticmethod
+    def _retain_dependency(dependency: _ResourceOwner | _DependencyReference) -> None:
+        parent = _resource_owner.get()
+        if parent is None or parent is dependency:
+            return
+        if isinstance(dependency, _DependencyReference):
+            retained = dependency
+        else:
+            retained = _DependencyReference(
+                dependency.key,
+                dependency.registration,
+                dependency,
+            )
+        if all(
+            existing.owner is not retained.owner
+            or existing.registration is not retained.registration
+            for existing in parent.dependencies
+        ):
+            parent.dependencies.append(retained)
 
     @staticmethod
     def _record_singleton_cleanup_error(
@@ -428,11 +504,14 @@ class Container:
             for task, owner in self._singleton_owner_tasks.items()
             if task not in published_tasks
         )
+        completed_initializers = tuple(self._singleton_terminal_owners)
         for owner in initializers:
             owner.shutdown_requested = True
             if owner.task is not None and not owner.finalizing:
                 owner.task.cancel()
         for owner in initializers:
+            await self._drain_singleton_owner(owner, errors, seen)
+        for owner in completed_initializers:
             await self._drain_singleton_owner(owner, errors, seen)
         for key in reversed(self._singleton_order):
             published_owner = self._singleton_owners.get(key)
@@ -458,8 +537,16 @@ class Container:
             for owner in self._singleton_owner_tasks.values()
             if owner.key in key_set and not owner.published
         )
+        completed_initializers = tuple(
+            owner
+            for owner in self._singleton_terminal_owners
+            if owner.registration.generation == generation
+        )
         for owner in initializers:
             await self._drain_singleton_owner(owner, errors, seen)
+        for owner in completed_initializers:
+            await self._drain_singleton_owner(owner, errors, seen)
+            self._singleton_terminal_owners.remove(owner)
         for key in reversed(self._singleton_order):
             if key not in key_set:
                 continue
@@ -490,6 +577,7 @@ class Container:
         self._singletons.clear()
         self._singleton_flights.clear()
         self._singleton_owner_tasks.clear()
+        self._singleton_terminal_owners.clear()
         self._singleton_waits.clear()
 
     async def resolve_for_singleton(
@@ -507,7 +595,9 @@ class Container:
             )
         if registration.scope is DependencyScope.SINGLETON:
             return cast(T, await self._resolve_singleton(key, registration))
-        return cast(T, await self._provide(key, registration, resolver, stack))
+        value = await self._provide(key, registration, resolver, stack)
+        self._retain_dependency(_DependencyReference(key, registration))
+        return cast(T, value)
 
     async def provide_for_request(
         self,
@@ -726,23 +816,15 @@ class RequestDependencyScope(
         self._validate_owner(owner, set())
         self._retain_dependency(owner)
 
-    @staticmethod
-    def _retain_dependency(owner: _RequestResourceOwner) -> None:
-        parent = _request_owner.get()
-        if parent is not None and parent is not owner:
-            if all(dependency is not owner for dependency in parent.dependencies):
-                parent.dependencies.append(owner)
+    def _retain_dependency(self, owner: _ResourceOwner) -> None:
+        self._container._retain_dependency(owner)  # pyright: ignore[reportPrivateUsage]
 
     def _validate_owner(self, owner: _RequestResourceOwner, visited: set[int]) -> None:
-        if id(owner) in visited:
-            return
-        visited.add(id(owner))
-        self._container.validate_registration(owner.key, owner.registration)
-        if owner.failed_after_publication:
-            failure = owner.terminal_failure or owner.resource_cleanup_error
-            raise ConfigurationError("Dependency owner terminated after publication") from failure
-        for dependency in owner.dependencies:
-            self._validate_owner(dependency, visited)
+        self._container._validate_owner_graph(  # pyright: ignore[reportPrivateUsage]
+            owner,
+            visited,
+            require_published=True,
+        )
 
     def _start_initialization(
         self,
@@ -780,7 +862,7 @@ class RequestDependencyScope(
         owner: _RequestResourceOwner,
     ) -> None:
         entered = False
-        _request_owner.set(owner)
+        owner_token = _resource_owner.set(owner)
         try:
             await owner.stack.__aenter__()
             entered = True
@@ -788,7 +870,11 @@ class RequestDependencyScope(
                 value = await self._container.provide_for_request(
                     key, registration, self, owner.stack
                 )
-                self._validate_owner(owner, set())
+                self._container._validate_owner_graph(  # pyright: ignore[reportPrivateUsage]
+                    owner,
+                    set(),
+                    require_published=False,
+                )
             except asyncio.CancelledError:
                 if not owner.result.done():
                     owner.result.cancel()
@@ -825,6 +911,7 @@ class RequestDependencyScope(
                     if owner.failed_after_publication:
                         owner.terminal_failure = error
                     raise
+            _resource_owner.reset(owner_token)
 
     @staticmethod
     def _consume_resolution_result(result: Future[object]) -> None:

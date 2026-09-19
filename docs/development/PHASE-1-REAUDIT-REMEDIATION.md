@@ -383,6 +383,54 @@ native Windows typing, and web validation.
 - Historical tags changed: **NO**.
 - Phase 5 started: **NO**.
 
+
+## Tenth remediation: retained dependency graphs and HTTP cancellation drains
+
+The full independent audit of `133ada1d3c9eaf5cd3166f1092189cf3989e8e1c` found four
+remaining P2 blockers. Parent resources did not validate retained singleton dependencies or
+singleton-owned transient registrations, completed failed singleton initializers could lose their
+cleanup errors, and outer ASGI cancellation could both discard handler unwind failures and interrupt
+cleanup under repeated cancellation.
+
+Every request or singleton owner now retains concrete links to the exact registrations and owner
+instances acquired while its provider runs. Validation recursively checks those links before
+publication, first delivery, and cached delivery. Singleton-owned transient links retain their exact
+registration even though their cleanup remains correctly tied to the singleton's task-affine exit
+stack. This rejects failed, finalized, removed, or replaced dependency graphs without invalidating
+an unrelated healthy instance.
+
+Completed unpublished singleton owners remain available to terminal cleanup until their unwind
+evidence is collected. A provider's original initialization failure still reaches its resolver,
+while a later cleanup failure is preserved for container or generation teardown aggregation.
+
+The HTTP runtime now cancels each owned handler and disconnect watcher once, then shields and drains
+their terminal outcomes. Repeated cancellation of the outer ASGI task cannot re-cancel a running
+handler finalizer. Cancellation is still propagated to the caller after cleanup completes, and any
+non-cancellation unwind failure is recorded with trusted correlation, trace, and tenant context;
+exception text remains excluded from the diagnostic.
+
+Permanent regressions cover request and singleton parents, first and cached singleton-child
+delivery, request/singleton/transient generation removal edges, completed failed singleton unwind,
+single outer cancellation, and repeated outer cancellation.
+
+## Tenth-remediation local validation
+
+| Gate | Result |
+| --- | --- |
+| Fresh independent DI probe | PASS - 28/28 |
+| Fresh independent DI race probe | PASS - 5/5 |
+| Independent HTTP/proof probe | PASS - 3/3 |
+| Focused lifecycle and application regressions | PASS - 74 |
+| Unit suite | PASS - 232 |
+| Test collection | PASS - 299 collected |
+| Ruff formatting and lint | PASS - 164 files |
+| Python 3.13 mypy | PASS - 163 source files |
+| CI-equivalent Pyright source check | PASS - 0 errors, 0 warnings |
+
+Exact-head CI and a fresh independent full Phase 1 audit remain required. These results do not
+certify Phase 1 or authorize merging PR #11. PR #9 remains untouched and on hold; Phase 5 remains
+unstarted.
+
 This remediation corrects Phase 1 runtime behavior without rewriting certified history or claiming
 Phase 1 certification. Independent review remains the acceptance gate, and PR #11 remains open and
 unmerged.

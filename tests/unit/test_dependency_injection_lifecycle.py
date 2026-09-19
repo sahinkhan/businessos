@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from contextvars import ContextVar
 
+import anyio
 import pytest
 
 from businessos.di import Container, DependencyKey, DependencyResolver, DependencyScope
@@ -147,10 +148,151 @@ async def test_concurrent_request_resource_uses_one_lifecycle_context() -> None:
     container = Container()
     container.register(key, resource, scope=DependencyScope.REQUEST)
     async with container.request_scope() as scope:
-        values = await asyncio.gather(*(scope.resolve(key) for _ in range(20)))
+        values = await asyncio.gather(*(scope.resolve(key) for _ in range(60)))
         assert all(item is value for item in values)
     assert entered == 1
     assert exited == 1
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_task_affine_request_resource_enters_and_exits_in_owner_task() -> None:
+    key = DependencyKey[object]("task-affine-request")
+    enter_task: asyncio.Task[object] | None = None
+    exit_task: asyncio.Task[object] | None = None
+    exited = asyncio.Event()
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        nonlocal enter_task, exit_task
+        enter_task = asyncio.current_task()
+        async with anyio.create_task_group() as task_group:
+            try:
+                yield task_group
+            finally:
+                exit_task = asyncio.current_task()
+        exited.set()
+
+    container = Container()
+    container.register(key, resource, scope=DependencyScope.REQUEST)
+    async with container.request_scope() as scope:
+        task_group = await scope.resolve(key)
+        assert task_group is not None
+    assert exited.is_set()
+    assert enter_task is not None
+    assert enter_task is exit_task
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_inflight_owner_cleanup_failure_is_reported_by_scope_close() -> None:
+    key = DependencyKey[object]("late-critical-close-failure")
+    started = asyncio.Event()
+    cancellation_observed = asyncio.Event()
+
+    @asynccontextmanager
+    async def failing_resource() -> AsyncGenerator[object]:
+        try:
+            yield object()
+        finally:
+            raise RuntimeError("critical-close-failure")
+
+    async def provider(_: DependencyResolver) -> object:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_observed.set()
+        return failing_resource()
+
+    container = Container()
+    container.register(key, provider, scope=DependencyScope.REQUEST)
+    scope = container.request_scope()
+    await scope.__aenter__()
+    waiter = asyncio.create_task(scope.resolve(key))
+    await started.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    with pytest.raises(BaseExceptionGroup, match="Dependency cleanup failed") as raised:
+        await scope.__aexit__(None, None, None)
+    assert cancellation_observed.is_set()
+    assert "critical-close-failure" in str(raised.value.exceptions[0])
+    with pytest.raises(ConfigurationError, match="must be entered"):
+        await scope.resolve(key)
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_multiple_owner_cleanup_failures_are_aggregated_once() -> None:
+    first = DependencyKey[str]("multiple-cleanup-first")
+    second = DependencyKey[str]("multiple-cleanup-second")
+    exits: list[str] = []
+
+    def managed(name: str) -> Callable[[DependencyResolver], AbstractAsyncContextManager[str]]:
+        @asynccontextmanager
+        async def resource(_: DependencyResolver) -> AsyncGenerator[str]:
+            try:
+                yield name
+            finally:
+                exits.append(name)
+                raise RuntimeError(f"{name}-close-failure")
+
+        return resource
+
+    container = Container()
+    container.register(first, managed("first"), scope=DependencyScope.REQUEST)
+    container.register(second, managed("second"), scope=DependencyScope.REQUEST)
+    with pytest.raises(BaseExceptionGroup, match="Dependency cleanup failed") as raised:
+        async with container.request_scope() as scope:
+            await scope.resolve(first)
+            await scope.resolve(second)
+    assert exits == ["second", "first"]
+    assert len(raised.value.exceptions) == 2
+    assert {str(error) for error in raised.value.exceptions} == {
+        "first-close-failure",
+        "second-close-failure",
+    }
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_task_affine_cleanup_survives_repeated_cancellation() -> None:
+    key = DependencyKey[object]("task-affine-cancelled-cleanup")
+    enter_task: asyncio.Task[object] | None = None
+    exit_task: asyncio.Task[object] | None = None
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        nonlocal enter_task, exit_task
+        enter_task = asyncio.current_task()
+        async with anyio.create_task_group() as task_group:
+            try:
+                yield task_group
+            finally:
+                exit_task = asyncio.current_task()
+                cleanup_started.set()
+                await release_cleanup.wait()
+        cleanup_finished.set()
+
+    container = Container()
+    container.register(key, resource, scope=DependencyScope.REQUEST)
+    scope = container.request_scope()
+    await scope.__aenter__()
+    await scope.resolve(key)
+    closing = asyncio.create_task(scope.__aexit__(None, None, None))
+    await cleanup_started.wait()
+    for _ in range(5):
+        closing.cancel()
+        await asyncio.sleep(0)
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert cleanup_finished.is_set()
+    assert enter_task is exit_task
     await container.close()
 
 

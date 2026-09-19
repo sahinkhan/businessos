@@ -7,7 +7,9 @@
 - Authoritative starting `main`: `1decf4b030ce0663632d298b70dc5c290970ca88`
 - First-remediation audit head: `306dfafba7e5abdccbf13889258b32875bfa4704`
 - Second-remediation implementation commit: `c76445ceec9531f4c6bad18eb4841974f2e756e3`
+- Third-remediation implementation commit: `c0ac4924fc8a75189355f468e3afa62c4584d6ea`
 - Implementation exact-head CI: `35375774996` - PASS
+- Third-remediation final-head CI: pending after the evidence commit
 - Status: **READY FOR INDEPENDENT PHASE 1 RE-AUDIT**
 - Scope exclusions: PR #9 and `fix/phase4.5-certification`, Phase 4.5 production code,
   Phase 5, historical tags, public SDK exports, and all migrations.
@@ -83,6 +85,38 @@ cleanup task, cancels and drains active initializers, closes every resource owne
 state, and rejects late publication. The caller shields that operation and continues waiting across
 repeated `CancelledError`; once cleanup reaches a terminal state, cancellation is re-raised.
 
+## Independent re-audit result and third remediation
+
+The next independent review confirmed the prior seven remediations and found two additional P2
+request-resource ownership defects at exact head
+`d5122b4e541e0902b817ee88fcd671e07638117a`. Both were reproduced before the third production
+change.
+
+### Task-affine resources could exit in a different task
+
+The second remediation preserved a copied `Context`, but it still entered a request resource in an
+initializer task and exited it in a separate cleanup task. Task-affine async context managers, such
+as a real AnyIO task group, reject that lifecycle with `RuntimeError` because their cancel scope
+must exit in the task that entered it.
+
+Each request resource now has one long-lived owner task. The owner enters its `AsyncExitStack`,
+invokes and publishes the provider result, waits for a close signal, and exits the stack. Entry and
+exit therefore execute in the same task and the same copied context. The scope stores a separate
+result future so concurrent waiters can share initialization without acquiring ownership of the
+resource lifecycle.
+
+### In-flight owner cleanup failures could be discarded
+
+When scope close cancelled an initializer that later acquired a resource, the initializer's done
+callback consumed its terminal exception. A cleanup error such as `critical-close-failure` could
+therefore be lost while scope close reported success.
+
+The scope now retains every owner task through terminal teardown. Unpublished owners are cancelled
+and drained explicitly; published owners are signalled and awaited in reverse acquisition order.
+Every non-cancellation cleanup failure is collected once and returned in the scope's
+`BaseExceptionGroup`. The result-future callback consumes initialization outcomes only and cannot
+discard owner cleanup failures.
+
 ## Permanent regression tests
 
 `tests/unit/test_dependency_injection_lifecycle.py` permanently covers:
@@ -97,6 +131,10 @@ repeated `CancelledError`; once cleanup reaches a terminal state, cancellation i
 - reverse teardown of multiple resources under cancellation;
 - cleanup continuation when one resource exit fails;
 - close during initialization and rejection of late publication.
+- real AnyIO task-group entry and exit in the same owner task;
+- preservation of an in-flight owner's late `critical-close-failure`;
+- reverse-order aggregation of multiple cleanup failures exactly once;
+- task-affine cleanup across five repeated caller cancellations.
 
 The existing DI suite continues to cover singleton cycles, singleton lifetime rejection through
 transient chains, request isolation, waiter cancellation, retry, and container cleanup.
@@ -138,6 +176,35 @@ the previously documented order-dependent logging-capture tests:
 
 Both reproduce on the baseline SHA and pass in their prescribed isolated unit job. New failures
 caused by this branch: **0**. The combined suite is not represented as fully passing.
+
+## Third-remediation local validation
+
+The following checks ran against implementation commit
+`c0ac4924fc8a75189355f468e3afa62c4584d6ea` before the evidence-only commit:
+
+| Gate | Result |
+| --- | --- |
+| Focused DI regressions | PASS - 43 |
+| Ruff formatting | PASS - 164 files |
+| Ruff lint | PASS |
+| Linux Python 3.13 mypy | PASS - 163 source files |
+| Pyright | PASS - 0 errors, 0 warnings |
+| Unit tests | PASS - 198 |
+| Test collection | PASS - 263 collected |
+| External module conformance | PASS - 13 |
+| PostgreSQL/provider integration | 51 PASS; one inherited timing race passed on immediate isolated rerun |
+| Development image build | PASS |
+| Production image build | PASS |
+| Migration-smoke image build and installed-wheel plan | PASS |
+| Real shipped ASGI startup/readiness | PASS in integration coverage |
+| Patch whitespace | PASS |
+
+The broad Python run reports **261 passed and 2 failed**. Its two failures are the same
+order-dependent logging-capture tests listed above and reproduced on the branch baseline. The sole
+fresh-image integration-suite failure was the inherited event-delivery receipt timing race
+`test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_idempotency`; it passed on the
+immediate isolated rerun. New branch-caused suite failures: **0**. Exact-head CI remains the
+authoritative Linux, Windows, wheel, production-replay, and web gate for the final PR head.
 
 ## Downstream regression classification
 

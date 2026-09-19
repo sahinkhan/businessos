@@ -392,6 +392,81 @@ async def test_inflight_resolution_rejects_owner_that_failed_after_publication()
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("nested", [False, True])
+async def test_failed_transient_owner_is_rejected_before_delivery(nested: bool) -> None:
+    class Resource:
+        def __init__(self) -> None:
+            self.open = True
+            self.closed = asyncio.Event()
+
+        def use(self) -> str:
+            if not self.open:
+                raise RuntimeError("resource already finalized")
+            return "usable"
+
+    transient = DependencyKey[Resource]("failed-transient-owner")
+    parent = DependencyKey[Resource]("request-parent-with-transient")
+    values: list[Resource] = []
+    entries = 0
+    exits = 0
+
+    async def child(*, task_status: anyio.abc.TaskStatus[None]) -> None:
+        task_status.started()
+        raise RuntimeError("transient-child-failed-after-started")
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[Resource]:
+        nonlocal entries, exits
+        value = Resource()
+        values.append(value)
+        entries += 1
+        try:
+            if entries == 1:
+                async with anyio.create_task_group() as task_group:
+                    await task_group.start(child)
+                    yield value
+            else:
+                yield value
+        finally:
+            value.open = False
+            value.closed.set()
+            exits += 1
+
+    container = Container()
+    container.register(transient, resource)
+    container.register(
+        parent,
+        lambda resolver: resolver.resolve(transient),
+        scope=DependencyScope.REQUEST,
+    )
+    scope = container.request_scope()
+    await scope.__aenter__()
+    key = parent if nested else transient
+
+    with pytest.raises(ConfigurationError, match="terminated after publication"):
+        await scope.resolve(key)
+    await values[0].closed.wait()
+    assert not values[0].open
+
+    resolved = await scope.resolve(key)
+    assert resolved is values[1]
+    assert resolved.use() == "usable"
+    if nested:
+        assert await scope.resolve(parent) is resolved
+    else:
+        another = await scope.resolve(transient)
+        assert another is values[2]
+        assert another.use() == "usable"
+
+    with pytest.raises(BaseExceptionGroup, match="Dependency cleanup failed") as raised:
+        await scope.__aexit__(None, None, None)
+    assert "transient-child-failed-after-started" in repr(raised.value)
+    assert entries == exits
+    assert all(not value.open for value in values)
+    await container.close()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_initializers_preserve_unwinding_failures() -> None:
     keys = [DependencyKey[object](f"initializer-cleanup-{index}") for index in range(3)]
     started = [asyncio.Event() for _ in keys]

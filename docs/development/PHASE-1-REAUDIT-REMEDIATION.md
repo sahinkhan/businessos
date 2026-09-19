@@ -317,6 +317,50 @@ The permanent regression uses the natural AnyIO `TaskGroup.start()` path and ver
 Exact-head CI remains required for the final Linux, native Windows typing, integration, wheel,
 image, replay, whitespace, and web gates.
 
+## Third independent re-audit and sixth remediation
+
+The independent review of exact head
+`ef40d3614c25c1c6c346131f664c4948b923bfd0` confirmed the direct REQUEST first-resolver fix and
+found the same failure path for default TRANSIENT resources. A failed transient owner could
+finalize its value before the first waiter resumed, yet key-level validation did not identify that
+non-cached owner. A REQUEST provider could consequently receive and cache the finalized transient
+value. The defect was also present on `b72020c`, while the original branch base returned a usable
+resource.
+
+Request scopes now associate every initialization result future with its exact resource owner.
+Container resolution validates that owner immediately after each shielded request or transient
+initialization await and before delivering the value to either an external caller or a parent
+provider. This instance-level validation rejects only the failed transient attempt: a later healthy
+transient with the same key remains independently resolvable, and a REQUEST parent can retry and
+cache that healthy value.
+
+Permanent parameterized regressions cover direct TRANSIENT resolution and a REQUEST parent that
+depends on the transient. They verify that:
+
+- the first finalized transient is rejected before delivery;
+- the parent cannot cache the failed child's value;
+- a later healthy transient remains usable;
+- a successfully retried REQUEST parent caches only the healthy instance;
+- every entered resource exits exactly once; and
+- teardown retains the original AnyIO child failure.
+
+## Sixth-remediation local validation
+
+| Gate | Result |
+| --- | --- |
+| Fresh independent correctness groups | PASS - 9/9 |
+| Independent transient variants | PASS - direct, nested, and healthy controls |
+| Focused lifecycle tests | PASS - 23 |
+| Ruff formatting | PASS - 164 files |
+| Ruff lint | PASS |
+| Python 3.13 mypy | PASS - 163 source files |
+| Pyright | PASS - 0 errors, 0 warnings |
+| Unit tests | PASS - 204 |
+| Test collection | PASS - 269 collected |
+
+Exact-head CI remains required for integration, conformance, wheel, image, replay, whitespace,
+native Windows typing, and web validation.
+
 ## Downstream regression classification
 
 - Phase 2: **TARGETED REGRESSION COMPLETE** through unit, integration, and public-boundary tests;

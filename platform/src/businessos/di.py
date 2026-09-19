@@ -189,6 +189,7 @@ class Container:
         request_flights: dict[DependencyKey[Any], Future[object]],
         request_waits: dict[DependencyKey[Any], dict[DependencyKey[Any], int]],
         start_initialization: Callable[[DependencyKey[Any], _Registration, bool], Future[object]],
+        validate_initialization: Callable[[DependencyKey[Any], Future[object]], None],
     ) -> T:
         registration = self._registration_for_resolution(key)
         if registration.scope is DependencyScope.SINGLETON:
@@ -205,11 +206,16 @@ class Container:
                 flight = start_initialization(key, registration, True)
                 request_flights[key] = flight
             try:
-                return cast(T, await asyncio.shield(flight))
+                value = await asyncio.shield(flight)
+                validate_initialization(key, flight)
+                return cast(T, value)
             finally:
                 for source, target in reversed(wait_edges):
                     self._remove_wait(request_waits, source, target)
-        return cast(T, await asyncio.shield(start_initialization(key, registration, False)))
+        flight = start_initialization(key, registration, False)
+        value = await asyncio.shield(flight)
+        validate_initialization(key, flight)
+        return cast(T, value)
 
     def _registration_for_resolution(self, key: DependencyKey[Any]) -> _Registration:
         if self._closed:
@@ -437,6 +443,7 @@ class RequestDependencyScope(
         self._flights: dict[DependencyKey[Any], Future[object]] = {}
         self._waits: dict[DependencyKey[Any], dict[DependencyKey[Any], int]] = {}
         self._owner_tasks: dict[Task[None], _RequestResourceOwner] = {}
+        self._result_owners: dict[Future[object], _RequestResourceOwner] = {}
         self._resource_owners: list[_RequestResourceOwner] = []
         self._published_owners: dict[DependencyKey[Any], _RequestResourceOwner] = {}
         self._failed_owners: dict[DependencyKey[Any], _RequestResourceOwner] = {}
@@ -474,6 +481,7 @@ class RequestDependencyScope(
             self._flights.clear()
             self._waits.clear()
             self._owner_tasks.clear()
+            self._result_owners.clear()
             self._resource_owners.clear()
             self._published_owners.clear()
             self._failed_owners.clear()
@@ -489,6 +497,7 @@ class RequestDependencyScope(
             self._flights,
             self._waits,
             self._start_initialization,
+            self._ensure_initialization_valid,
         )
         self._ensure_resolution_valid(key)
         return value
@@ -502,6 +511,16 @@ class RequestDependencyScope(
             raise ConfigurationError(
                 f"Dependency owner terminated after publication: {key.name}"
             ) from failure
+
+    def _ensure_initialization_valid(self, key: DependencyKey[Any], result: Future[object]) -> None:
+        self._ensure_resolution_valid(key)
+        owner = self._result_owners.get(result)
+        if owner is None:
+            raise ConfigurationError("Dependency scope closed during resolution")
+        if not owner.failed_after_publication:
+            return
+        failure = owner.terminal_failure or owner.resource_cleanup_error
+        raise ConfigurationError("Dependency owner terminated after publication") from failure
 
     def _start_initialization(
         self,
@@ -524,6 +543,7 @@ class RequestDependencyScope(
         )
         owner.task = task
         self._owner_tasks[task] = owner
+        self._result_owners[result] = owner
         task.add_done_callback(lambda completed: self._owner_finished(key, owner, completed))
         result.add_done_callback(self._consume_resolution_result)
         return result

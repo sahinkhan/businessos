@@ -257,6 +257,139 @@ async def test_multiple_owner_cleanup_failures_are_aggregated_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_published_cleanup_cancelled_error_is_aggregated() -> None:
+    cancelled = DependencyKey[str]("cancelled-cleanup")
+    failed = DependencyKey[str]("runtime-cleanup")
+    exits: list[str] = []
+
+    def managed(
+        name: str, error: BaseException
+    ) -> Callable[[DependencyResolver], AbstractAsyncContextManager[str]]:
+        @asynccontextmanager
+        async def resource(_: DependencyResolver) -> AsyncGenerator[str]:
+            try:
+                yield name
+            finally:
+                exits.append(name)
+                raise error
+
+        return resource
+
+    container = Container()
+    container.register(
+        cancelled,
+        managed("cancelled", asyncio.CancelledError("cancel-cleanup-marker")),
+        scope=DependencyScope.REQUEST,
+    )
+    container.register(
+        failed,
+        managed("runtime", RuntimeError("runtime-cleanup-marker")),
+        scope=DependencyScope.REQUEST,
+    )
+    with pytest.raises(BaseExceptionGroup, match="Dependency cleanup failed") as raised:
+        async with container.request_scope() as scope:
+            await scope.resolve(cancelled)
+            await scope.resolve(failed)
+
+    group: BaseExceptionGroup[BaseException] = raised.value
+    observed = {(type(error).__name__, str(error)) for error in group.exceptions}
+    assert exits == ["runtime", "cancelled"]
+    assert observed == {
+        ("CancelledError", "cancel-cleanup-marker"),
+        ("RuntimeError", "runtime-cleanup-marker"),
+    }
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_published_owner_invalidates_cached_resource() -> None:
+    key = DependencyKey[object]("failed-background-owner")
+    trigger = asyncio.Event()
+    closed = asyncio.Event()
+
+    class Resource:
+        open = False
+
+        def use(self) -> str:
+            if not self.open:
+                raise RuntimeError("resource already closed")
+            return "usable"
+
+    value = Resource()
+
+    async def child() -> None:
+        await trigger.wait()
+        raise RuntimeError("background-worker-failed")
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(child)
+            value.open = True
+            try:
+                yield value
+            finally:
+                value.open = False
+                closed.set()
+
+    container = Container()
+    container.register(key, resource, scope=DependencyScope.REQUEST)
+    scope = container.request_scope()
+    await scope.__aenter__()
+    resolved = await scope.resolve(key)
+    assert resolved is value
+    assert value.use() == "usable"
+    trigger.set()
+    await closed.wait()
+
+    with pytest.raises(ConfigurationError, match="terminated after publication"):
+        await scope.resolve(key)
+    with pytest.raises(BaseExceptionGroup, match="Dependency cleanup failed") as raised:
+        await scope.__aexit__(None, None, None)
+    assert "background-worker-failed" in repr(raised.value)
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_initializers_preserve_unwinding_failures() -> None:
+    keys = [DependencyKey[object](f"initializer-cleanup-{index}") for index in range(3)]
+    started = [asyncio.Event() for _ in keys]
+    cleanup: list[int] = []
+
+    def provider(index: int) -> Callable[[DependencyResolver], object]:
+        async def initialize(_: DependencyResolver) -> object:
+            started[index].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup.append(index)
+                raise RuntimeError(f"initializer-cleanup-{index}")
+
+        return initialize
+
+    container = Container()
+    for index, key in enumerate(keys):
+        container.register(key, provider(index), scope=DependencyScope.REQUEST)
+    scope = container.request_scope()
+    await scope.__aenter__()
+    waiters = [asyncio.create_task(scope.resolve(key)) for key in keys]
+    await asyncio.gather(*(event.wait() for event in started))
+    for waiter in waiters:
+        waiter.cancel()
+    await asyncio.gather(*waiters, return_exceptions=True)
+
+    with pytest.raises(BaseExceptionGroup, match="Dependency cleanup failed") as raised:
+        await scope.__aexit__(None, None, None)
+    assert sorted(cleanup) == [0, 1, 2]
+    assert {str(error) for error in raised.value.exceptions} == {
+        "initializer-cleanup-0",
+        "initializer-cleanup-1",
+        "initializer-cleanup-2",
+    }
+    await container.close()
+
+
+@pytest.mark.asyncio
 async def test_task_affine_cleanup_survives_repeated_cancellation() -> None:
     key = DependencyKey[object]("task-affine-cancelled-cleanup")
     enter_task: asyncio.Task[object] | None = None

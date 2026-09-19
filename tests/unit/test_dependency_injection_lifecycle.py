@@ -351,6 +351,47 @@ async def test_failed_published_owner_invalidates_cached_resource() -> None:
 
 
 @pytest.mark.asyncio
+async def test_inflight_resolution_rejects_owner_that_failed_after_publication() -> None:
+    key = DependencyKey[object]("failed-started-child-owner")
+    closed = asyncio.Event()
+
+    class Resource:
+        open = True
+
+    value = Resource()
+
+    async def child(*, task_status: anyio.abc.TaskStatus[None]) -> None:
+        task_status.started()
+        raise RuntimeError("child-failed-after-started")
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        async with anyio.create_task_group() as task_group:
+            await task_group.start(child)
+            try:
+                yield value
+            finally:
+                value.open = False
+                closed.set()
+
+    container = Container()
+    container.register(key, resource, scope=DependencyScope.REQUEST)
+    scope = container.request_scope()
+    await scope.__aenter__()
+
+    with pytest.raises(ConfigurationError, match="terminated after publication"):
+        await scope.resolve(key)
+    assert closed.is_set()
+    assert not value.open
+    with pytest.raises(ConfigurationError, match="terminated after publication"):
+        await scope.resolve(key)
+    with pytest.raises(BaseExceptionGroup, match="Dependency cleanup failed") as raised:
+        await scope.__aexit__(None, None, None)
+    assert "child-failed-after-started" in repr(raised.value)
+    await container.close()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_initializers_preserve_unwinding_failures() -> None:
     keys = [DependencyKey[object](f"initializer-cleanup-{index}") for index in range(3)]
     started = [asyncio.Event() for _ in keys]

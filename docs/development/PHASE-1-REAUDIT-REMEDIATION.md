@@ -276,6 +276,47 @@ touches the DI change, and new branch-caused committed-suite failures remain **0
 is the authoritative Linux, Windows, integration, wheel, replay, and web gate for the final PR
 head.
 
+## Second independent re-audit and fifth remediation
+
+The independent review of exact head
+`b72020c730cbcfb7b22bdba9ed849825f4a008ce` confirmed that the three fourth-remediation
+reproductions pass. It found one remaining P2 path in which an AnyIO child reported started and
+then failed: the owner finalized its resource before the first waiting `resolve()` resumed, but
+that waiter returned the already completed result future without rechecking the owner's terminal
+state. The same behavior was reproduced on the earlier `f87806c` revision, so this was an
+incomplete remediation rather than a newly introduced regression.
+
+`RequestDependencyScope.resolve()` now validates the scope and failed-owner state both before and
+after awaiting container resolution. A waiter may receive a value only while its request scope is
+still open and the corresponding published owner remains valid. If the owner terminates and
+finalizes the resource before delivery, the waiting resolution fails closed with
+`ConfigurationError`; later resolution remains rejected and scope teardown still reports the
+original owner failure.
+
+The permanent regression uses the natural AnyIO `TaskGroup.start()` path and verifies:
+
+- the child reports started and then raises;
+- the resource finalizer runs before the first waiter resumes;
+- the first and later resolutions both fail closed;
+- the finalized resource is never delivered; and
+- teardown retains the original child failure.
+
+## Fifth-remediation local validation
+
+| Gate | Result |
+| --- | --- |
+| Independent natural AnyIO reproduction | PASS - first and later resolves rejected |
+| Focused lifecycle tests | PASS - 21 |
+| Ruff formatting | PASS - 164 files |
+| Ruff lint | PASS |
+| Python 3.13 mypy | PASS - 163 source files |
+| Pyright | PASS - 0 errors, 0 warnings |
+| Unit tests | PASS - 202 |
+| Test collection | PASS - 267 collected |
+
+Exact-head CI remains required for the final Linux, native Windows typing, integration, wheel,
+image, replay, whitespace, and web gates.
+
 ## Downstream regression classification
 
 - Phase 2: **TARGETED REGRESSION COMPLETE** through unit, integration, and public-boundary tests;

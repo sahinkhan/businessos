@@ -482,6 +482,18 @@ class RequestDependencyScope(
             raise asyncio.CancelledError
 
     async def resolve(self, key: DependencyKey[T]) -> T:
+        self._ensure_resolution_valid(key)
+        value = await self._container.resolve_for_scope(
+            key,
+            self._cache,
+            self._flights,
+            self._waits,
+            self._start_initialization,
+        )
+        self._ensure_resolution_valid(key)
+        return value
+
+    def _ensure_resolution_valid(self, key: DependencyKey[Any]) -> None:
         if self._state is not _RequestScopeState.OPEN:
             raise ConfigurationError("Dependency scope must be entered before resolution")
         failed_owner = self._failed_owners.get(key)
@@ -490,13 +502,6 @@ class RequestDependencyScope(
             raise ConfigurationError(
                 f"Dependency owner terminated after publication: {key.name}"
             ) from failure
-        return await self._container.resolve_for_scope(
-            key,
-            self._cache,
-            self._flights,
-            self._waits,
-            self._start_initialization,
-        )
 
     def _start_initialization(
         self,

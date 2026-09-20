@@ -1,9 +1,11 @@
 import asyncio
 import io
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -12,7 +14,7 @@ from pydantic import BaseModel, field_validator, model_validator
 from businessos.application import ApplicationState, BusinessOSApplication
 from businessos.bootstrap import create_application
 from businessos.config import Settings
-from businessos.context import RequestContext
+from businessos.context import RequestContext, TenantContext
 from businessos.di import Container
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import CallNext
@@ -157,6 +159,506 @@ async def test_disconnect_after_body_cancels_handler_and_releases_request() -> N
     assert handler_cancelled.is_set()
     assert outbound == []
     await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unhandled_failure_log_retains_trusted_request_context() -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    correlation_id = "retained-error-correlation"
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+
+    async def failure(_: Request, __: object) -> Response:
+        raise RuntimeError("private-handler-detail")
+
+    app.router.add_route("GET", "/contextual-failure", failure)
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    try:
+        transport = httpx.ASGITransport(app=cast(Any, app))
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/contextual-failure",
+                headers={"x-correlation-id": correlation_id},
+            )
+    finally:
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert response.status_code == 500
+    assert response.headers["x-correlation-id"] == correlation_id
+    assert record["correlation_id"] == correlation_id
+    assert record["tenant_id"] == str(tenant.tenant_id)
+    assert record["error_type"] == "RuntimeError"
+    assert "private-handler-detail" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_logs_handler_unwind_failure_with_request_context() -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+    handler_started = asyncio.Event()
+    inbound: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    outbound: list[dict[str, object]] = []
+
+    async def failure(_: Request, __: object) -> Response:
+        handler_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            raise RuntimeError("private-disconnect-cleanup-detail")
+
+    async def receive() -> dict[str, object]:
+        return await inbound.get()
+
+    async def send(message: dict[str, object]) -> None:
+        outbound.append(message)
+
+    app.router.add_route("GET", "/disconnect-failure", failure)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    await inbound.put({"type": "http.request", "body": b"", "more_body": False})
+    request_task = asyncio.create_task(
+        app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/disconnect-failure",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"disconnect-correlation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    )
+    try:
+        await handler_started.wait()
+        await inbound.put({"type": "http.disconnect"})
+        await request_task
+    finally:
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert outbound == []
+    assert record["message"] == "Request cleanup failed after client disconnect"
+    assert record["error_type"] == "RuntimeError"
+    assert record["correlation_id"] == "disconnect-correlation"
+    assert record["tenant_id"] == str(tenant.tenant_id)
+    assert "private-disconnect-cleanup-detail" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_failure", [False, True])
+async def test_watcher_first_failure_is_retrieved_and_logged(
+    handler_failure: bool,
+) -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+    handler_started = asyncio.Event()
+    outbound: list[dict[str, object]] = []
+    unhandled: list[dict[str, object]] = []
+    receive_calls = 0
+
+    async def endpoint(_: Request, __: object) -> Response:
+        handler_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            if handler_failure:
+                raise ValueError("private-handler-unwind")
+        raise AssertionError("Watcher-first test handler unexpectedly resumed")
+
+    async def receive() -> dict[str, object]:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await handler_started.wait()
+        try:
+            return {"type": "http.disconnect"}
+        finally:
+            raise RuntimeError("private-watcher-unwind")
+
+    async def send(message: dict[str, object]) -> None:
+        outbound.append(message)
+
+    app.router.add_route("GET", "/watcher-first", endpoint)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous_logger = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    loop = asyncio.get_running_loop()
+    previous_exception_handler = loop.get_exception_handler()
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    await app.startup()
+    try:
+        await app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/watcher-first",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"watcher-first-correlation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+        await asyncio.sleep(0)
+    finally:
+        await app.shutdown()
+        loop.set_exception_handler(previous_exception_handler)
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous_logger
+
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    error_types = {record["error_type"] for record in records}
+    assert "RuntimeError" in error_types
+    if handler_failure:
+        assert "ValueError" in error_types
+    assert all(record["correlation_id"] == "watcher-first-correlation" for record in records)
+    assert all(record["tenant_id"] == str(tenant.tenant_id) for record in records)
+    assert outbound == []
+    assert unhandled == []
+    assert "private-watcher-unwind" not in stream.getvalue()
+    assert "private-handler-unwind" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeated_cancellation", [False, True])
+async def test_completed_handler_logs_disconnect_watcher_cleanup_failure(
+    repeated_cancellation: bool,
+) -> None:
+    app = create_application(_settings())
+    handler_started = asyncio.Event()
+    complete_handler = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    inbound: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+    async def success(_: Request, __: object) -> Response:
+        handler_started.set()
+        await complete_handler.wait()
+        return Response.text("ok")
+
+    async def receive() -> dict[str, object]:
+        try:
+            return await inbound.get()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise RuntimeError("private-watcher-cleanup-detail") from None
+
+    async def send(_: dict[str, object]) -> None:
+        return None
+
+    app.router.add_route("GET", "/watcher-cleanup", success)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    await inbound.put({"type": "http.request", "body": b"", "more_body": False})
+    request_task = asyncio.create_task(
+        app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/watcher-cleanup",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"watcher-correlation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    )
+    try:
+        await handler_started.wait()
+        complete_handler.set()
+        await cleanup_started.wait()
+        if repeated_cancellation:
+            for _ in range(8):
+                request_task.cancel()
+                await asyncio.sleep(0)
+        release_cleanup.set()
+        if repeated_cancellation:
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+        else:
+            await request_task
+    finally:
+        release_cleanup.set()
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert record["message"] == "Request disconnect watcher cleanup failed"
+    assert record["error_type"] == "RuntimeError"
+    assert record["correlation_id"] == "watcher-correlation"
+    assert "private-watcher-cleanup-detail" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeated_cancellation", [False, True])
+async def test_outer_cancellation_drains_and_logs_handler_cleanup_failure(
+    repeated_cancellation: bool,
+) -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+    handler_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_completed = 0
+    inbound: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    outbound: list[dict[str, object]] = []
+
+    async def failure(_: Request, __: object) -> Response:
+        nonlocal cleanup_completed
+        handler_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            cleanup_completed += 1
+            raise RuntimeError("private-cancelled-cleanup-detail")
+
+    async def receive() -> dict[str, object]:
+        return await inbound.get()
+
+    async def send(message: dict[str, object]) -> None:
+        outbound.append(message)
+
+    app.router.add_route("GET", "/outer-cancellation", failure)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    await inbound.put({"type": "http.request", "body": b"", "more_body": False})
+    request_task = asyncio.create_task(
+        app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/outer-cancellation",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"outer-cancellation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    )
+    try:
+        await handler_started.wait()
+        request_task.cancel()
+        await cleanup_started.wait()
+        if repeated_cancellation:
+            for _ in range(10):
+                request_task.cancel()
+                await asyncio.sleep(0)
+                assert not request_task.done()
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+    finally:
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert cleanup_completed == 1
+    assert outbound == []
+    assert record["message"] == "Request cleanup failed during cancellation"
+    assert record["error_type"] == "RuntimeError"
+    assert record["correlation_id"] == "outer-cancellation"
+    assert record["tenant_id"] == str(tenant.tenant_id)
+    assert "private-cancelled-cleanup-detail" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_watcher_drain_consumes_completed_handler_failure() -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
+    watcher_cleanup_started = asyncio.Event()
+    release_watcher_cleanup = asyncio.Event()
+    watcher_cleanup_completed = 0
+    inbound: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+    outbound: list[dict[str, object]] = []
+
+    async def failure(_: Request, __: object) -> Response:
+        handler_started.set()
+        await release_handler.wait()
+        raise RuntimeError("private-completed-handler-detail")
+
+    async def receive() -> dict[str, object]:
+        nonlocal watcher_cleanup_completed
+        try:
+            return await inbound.get()
+        except asyncio.CancelledError:
+            watcher_cleanup_started.set()
+            await release_watcher_cleanup.wait()
+            watcher_cleanup_completed += 1
+            raise
+
+    async def send(message: dict[str, object]) -> None:
+        outbound.append(message)
+
+    app.router.add_route("GET", "/completed-handler-cancellation", failure)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    await inbound.put({"type": "http.request", "body": b"", "more_body": False})
+    request_task = asyncio.create_task(
+        app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/completed-handler-cancellation",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"completed-handler-cancellation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    )
+    try:
+        await handler_started.wait()
+        release_handler.set()
+        await watcher_cleanup_started.wait()
+        for _ in range(10):
+            request_task.cancel()
+            await asyncio.sleep(0)
+            assert not request_task.done()
+        release_watcher_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+    finally:
+        release_watcher_cleanup.set()
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert watcher_cleanup_completed == 1
+    assert outbound == []
+    assert record["message"] == "Request cleanup failed during cancellation"
+    assert record["error_type"] == "RuntimeError"
+    assert record["correlation_id"] == "completed-handler-cancellation"
+    assert record["tenant_id"] == str(tenant.tenant_id)
+    assert "private-completed-handler-detail" not in stream.getvalue()
 
 
 @pytest.mark.asyncio
@@ -447,6 +949,7 @@ async def test_startup_timeout_repeatedly_cancels_resistant_hook_and_rolls_back(
         database_url="postgresql+psycopg://test:test@db/test",
         database_readiness_enabled=False,
         startup_timeout_seconds=0.01,
+        shutdown_timeout_seconds=0.02,
     )
     app = BusinessOSApplication(settings, router=Router(), container=Container())
     timeline: list[str] = []
@@ -758,3 +1261,93 @@ async def test_asgi_lifespan_drives_startup_and_shutdown_to_completion() -> None
         {"type": "lifespan.shutdown.complete"},
     ]
     assert app.state is ApplicationState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_startup_timeout_allows_cancelled_hook_to_finish_resource_rollback() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+psycopg://test:test@db/test",
+        database_readiness_enabled=False,
+        startup_timeout_seconds=0.01,
+        shutdown_timeout_seconds=0.2,
+    )
+    app = BusinessOSApplication(settings, router=Router(), container=Container())
+    resource_open = False
+    rollback_completed = asyncio.Event()
+
+    async def start() -> None:
+        nonlocal resource_open
+        resource_open = True
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.02)
+            resource_open = False
+            rollback_completed.set()
+
+    app.add_lifecycle("allocating", start, lambda: asyncio.sleep(0))
+
+    with pytest.raises(TimeoutError):
+        await app.startup()
+
+    assert rollback_completed.is_set()
+    assert not resource_open
+    assert app.state is ApplicationState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_completed_startup_component_is_rolled_back_when_cancellation_wins_delivery() -> None:
+    app = BusinessOSApplication(_settings(), router=Router(), container=Container())
+    timeline: list[str] = []
+    startup_task: asyncio.Task[None] | None = None
+
+    async def start() -> None:
+        timeline.append("resource:open")
+        assert startup_task is not None
+        asyncio.get_running_loop().call_soon(startup_task.cancel)
+
+    async def stop() -> None:
+        timeline.append("resource:close")
+
+    app.add_lifecycle("race", start, stop)
+    startup_task = asyncio.create_task(app.startup())
+
+    with pytest.raises(asyncio.CancelledError):
+        await startup_task
+    await app.shutdown()
+
+    assert timeline == ["resource:open", "resource:close"]
+    assert app.state is ApplicationState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_composed_provider_is_closed_when_startup_cancellation_wins_delivery() -> None:
+    timeline: list[str] = []
+    startup_task: asyncio.Task[None] | None = None
+
+    class Provider:
+        async def start(self) -> None:
+            timeline.append("provider:open")
+
+        async def readiness(self) -> None:
+            assert startup_task is not None
+            asyncio.get_running_loop().call_soon(startup_task.cancel)
+
+        async def close(self) -> None:
+            timeline.append("provider:close")
+
+    app = create_application(
+        _settings(),
+        infrastructure_providers={"race-provider": Provider()},
+    )
+    startup_task = asyncio.create_task(app.startup())
+
+    with pytest.raises(asyncio.CancelledError):
+        await startup_task
+    await app.shutdown()
+
+    assert timeline == ["provider:open", "provider:close"]
+    assert app.state is ApplicationState.FAILED
+    assert app.runtime is not None
+    assert app.runtime.providers._started == []

@@ -1,6 +1,9 @@
 """Proof that an external package can use only the published BusinessOS SDK."""
 
 import json
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from importlib.resources import files
 from typing import ClassVar
 from uuid import UUID, uuid4
@@ -15,6 +18,8 @@ from businessos.sdk import (
     OBJECT_STORAGE,
     BusinessOSError,
     Command,
+    DependencyKey,
+    DependencyScope,
     DomainEvent,
     EventHandlingContext,
     FeatureFlag,
@@ -30,6 +35,16 @@ from businessos.sdk import (
     Response,
     TenantContext,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ProofDependency:
+    """Module-owned typed service registered only through the public SDK."""
+
+    label: str
+
+
+PROOF_DEPENDENCY = DependencyKey[ProofDependency]("example.phase1-proof.service")
 
 metadata = MetaData()
 PROOF_RECORDS = Table(
@@ -68,8 +83,15 @@ class ProofModule:
         self.manifest = ModuleManifest.model_validate(manifest_data)
         self.started = False
         self.events_consumed = 0
+        self.dependencies_started = 0
+        self.dependencies_stopped = 0
 
     async def register(self, registration: ModuleRegistration) -> None:
+        registration.dependency(
+            PROOF_DEPENDENCY,
+            self._proof_dependency,
+            scope=DependencyScope.REQUEST,
+        )
         registration.permission(
             PermissionDeclaration(
                 key="example.phase1-proof.read",
@@ -134,6 +156,14 @@ class ProofModule:
     async def stop(self) -> None:
         self.started = False
 
+    @asynccontextmanager
+    async def _proof_dependency(self, _: object) -> AsyncGenerator[ProofDependency]:
+        self.dependencies_started += 1
+        try:
+            yield ProofDependency(label="phase1-public-sdk")
+        finally:
+            self.dependencies_stopped += 1
+
     async def _store(self, command: StoreProof, context: HandlingContext) -> object:
         tenant = self._tenant(context.request)
         record_id = uuid4()
@@ -197,11 +227,17 @@ class ProofModule:
         self, request: Request, dependencies: RequestDependencyScope
     ) -> Response:
         command = StoreProof.model_validate(await request.json())
+        proof_dependency = await dependencies.resolve(PROOF_DEPENDENCY)
+        if proof_dependency.label != "phase1-public-sdk":
+            raise RuntimeError("Proof dependency registration is invalid")
         dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
         result = await dispatcher.command(command, request.context, dependencies)
         return Response.json(result, status_code=202)
 
     async def _read_route(self, request: Request, dependencies: RequestDependencyScope) -> Response:
+        proof_dependency = await dependencies.resolve(PROOF_DEPENDENCY)
+        if proof_dependency.label != "phase1-public-sdk":
+            raise RuntimeError("Proof dependency registration is invalid")
         dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
         result = await dispatcher.query(ReadProof(), request.context, dependencies)
         return Response.json(result)

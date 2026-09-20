@@ -90,7 +90,7 @@ class SQLAlchemyUnitOfWork:
     ) -> None:
         if self.session is None:
             return
-        cleanup_errors, cancellation_count = await self._finish_session(
+        cleanup_errors, cancellation = await self._finish_session(
             rollback=exc_type is not None or not self._committed
         )
         if cleanup_errors:
@@ -99,8 +99,8 @@ class SQLAlchemyUnitOfWork:
                 errors.append(exc_value)
             errors.extend(cleanup_errors)
             raise BaseExceptionGroup("Unit of Work cleanup failed", errors) from None
-        if cancellation_count and exc_type is None:
-            raise asyncio.CancelledError
+        if cancellation is not None and exc_type is None:
+            raise cancellation
 
     async def commit(self) -> None:
         session = self._require_session()
@@ -146,10 +146,12 @@ class SQLAlchemyUnitOfWork:
             raise ConfigurationError("Unit of Work is not active")
         return self.session
 
-    async def _finish_session(self, *, rollback: bool) -> tuple[list[BaseException], int]:
+    async def _finish_session(
+        self, *, rollback: bool
+    ) -> tuple[list[BaseException], asyncio.CancelledError | None]:
         session = self.session
         if session is None:
-            return [], 0
+            return [], None
 
         async def cleanup() -> list[BaseException]:
             errors: list[BaseException] = []
@@ -165,21 +167,19 @@ class SQLAlchemyUnitOfWork:
             return errors
 
         cleanup_task = asyncio.create_task(cleanup(), name="businessos-uow-cleanup")
-        cancellation_count = 0
+        cancellation: asyncio.CancelledError | None = None
         current = asyncio.current_task()
-        if current is not None:
-            while current.cancelling():
-                current.uncancel()
         while not cleanup_task.done():
             try:
                 await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
-                cancellation_count += 1
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
                 if current is not None:
                     while current.cancelling():
                         current.uncancel()
         self.session = None
-        return cleanup_task.result(), cancellation_count
+        return cleanup_task.result(), cancellation
 
 
 class SQLAlchemyTransactionalPersistence:

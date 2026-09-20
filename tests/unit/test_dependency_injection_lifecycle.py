@@ -1396,3 +1396,133 @@ async def test_clean_failed_singleton_attempts_release_provider_locals() -> None
     gc.collect()
     assert all(reference() is None for reference in references)
     await container.close()
+
+
+@pytest.mark.asyncio
+async def test_singleton_finalizer_runs_before_owned_transient_cleanup() -> None:
+    connection_key = DependencyKey[dict[str, bool]]("finalizer-connection")
+    service_key = DependencyKey[object]("finalizer-service")
+    events: list[str] = []
+    connection = {"closed": False}
+
+    @asynccontextmanager
+    async def connection_provider(
+        _: DependencyResolver,
+    ) -> AsyncGenerator[dict[str, bool]]:
+        events.append("connection-open")
+        try:
+            yield connection
+        finally:
+            connection["closed"] = True
+            events.append("connection-close")
+
+    @asynccontextmanager
+    async def service_provider(resolver: DependencyResolver) -> AsyncGenerator[object]:
+        dependency = await resolver.resolve(connection_key)
+        events.append("service-start")
+        try:
+            yield object()
+        finally:
+            assert not dependency["closed"]
+            events.append("service-flush")
+
+    container = Container()
+    container.register(connection_key, connection_provider)
+    container.register(service_key, service_provider, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        await scope.resolve(service_key)
+    await container.close()
+
+    assert events == [
+        "connection-open",
+        "service-start",
+        "service-flush",
+        "connection-close",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry", [False, True])
+async def test_singleton_can_handle_failed_transient_without_retaining_invalid_attempt(
+    retry: bool,
+) -> None:
+    child_key = DependencyKey[str]("handled-transient-attempt")
+    parent_key = DependencyKey[str]("handled-transient-parent")
+    attempts = 0
+
+    @asynccontextmanager
+    async def child_provider(_: DependencyResolver) -> AsyncGenerator[str]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary outage")
+        yield "healthy"
+
+    async def parent_provider(resolver: DependencyResolver) -> str:
+        try:
+            return await resolver.resolve(child_key)
+        except OSError:
+            if retry:
+                return await resolver.resolve(child_key)
+            return "fallback"
+
+    container = Container()
+    container.register(child_key, child_provider)
+    container.register(parent_key, parent_provider, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        expected = "healthy" if retry else "fallback"
+        assert await scope.resolve(parent_key) == expected
+        assert await scope.resolve(parent_key) == expected
+    await container.close()
+
+    assert attempts == (2 if retry else 1)
+
+
+@pytest.mark.asyncio
+async def test_nested_singleton_cleanup_failures_are_reported_once() -> None:
+    first_key = DependencyKey[object]("cleanup-leaf-first")
+    second_key = DependencyKey[object]("cleanup-leaf-second")
+    parent_key = DependencyKey[object]("cleanup-leaf-parent")
+    first_error = ValueError("cleanup first")
+    second_error = ValueError("cleanup second")
+    parent_error = ValueError("cleanup parent")
+
+    def child_provider(
+        error: ValueError,
+    ) -> Callable[[DependencyResolver], AbstractAsyncContextManager[object]]:
+        @asynccontextmanager
+        async def child(_: DependencyResolver) -> AsyncGenerator[object]:
+            try:
+                yield object()
+            finally:
+                raise error
+
+        return child
+
+    @asynccontextmanager
+    async def parent_provider(resolver: DependencyResolver) -> AsyncGenerator[object]:
+        await resolver.resolve(first_key)
+        await resolver.resolve(second_key)
+        try:
+            yield object()
+        finally:
+            raise parent_error
+
+    container = Container()
+    container.register(first_key, child_provider(first_error))
+    container.register(second_key, child_provider(second_error))
+    container.register(parent_key, parent_provider, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        await scope.resolve(parent_key)
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await container.close()
+
+    def leaves(error: BaseException) -> list[BaseException]:
+        if isinstance(error, BaseExceptionGroup):
+            return [leaf for nested in error.exceptions for leaf in leaves(nested)]
+        return [error]
+
+    cleanup_errors = leaves(raised.value)
+    assert cleanup_errors.count(parent_error) == 1
+    assert cleanup_errors.count(second_error) == 1
+    assert cleanup_errors.count(first_error) == 1

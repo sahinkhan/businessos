@@ -290,6 +290,91 @@ async def test_disconnect_logs_handler_unwind_failure_with_request_context() -> 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("repeated_cancellation", [False, True])
+async def test_completed_handler_logs_disconnect_watcher_cleanup_failure(
+    repeated_cancellation: bool,
+) -> None:
+    app = create_application(_settings())
+    handler_started = asyncio.Event()
+    complete_handler = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    inbound: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+    async def success(_: Request, __: object) -> Response:
+        handler_started.set()
+        await complete_handler.wait()
+        return Response.text("ok")
+
+    async def receive() -> dict[str, object]:
+        try:
+            return await inbound.get()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise RuntimeError("private-watcher-cleanup-detail") from None
+
+    async def send(_: dict[str, object]) -> None:
+        return None
+
+    app.router.add_route("GET", "/watcher-cleanup", success)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    await app.startup()
+    await inbound.put({"type": "http.request", "body": b"", "more_body": False})
+    request_task = asyncio.create_task(
+        app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/watcher-cleanup",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"watcher-correlation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+    )
+    try:
+        await handler_started.wait()
+        complete_handler.set()
+        await cleanup_started.wait()
+        if repeated_cancellation:
+            for _ in range(8):
+                request_task.cancel()
+                await asyncio.sleep(0)
+        release_cleanup.set()
+        if repeated_cancellation:
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+        else:
+            await request_task
+    finally:
+        release_cleanup.set()
+        await app.shutdown()
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous
+
+    record = json.loads(stream.getvalue())
+    assert record["message"] == "Request disconnect watcher cleanup failed"
+    assert record["error_type"] == "RuntimeError"
+    assert record["correlation_id"] == "watcher-correlation"
+    assert "private-watcher-cleanup-detail" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeated_cancellation", [False, True])
 async def test_outer_cancellation_drains_and_logs_handler_cleanup_failure(
     repeated_cancellation: bool,
 ) -> None:

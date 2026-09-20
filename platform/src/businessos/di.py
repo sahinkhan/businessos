@@ -118,6 +118,9 @@ class _SingletonResourceOwner:
     dependencies: list[_DependencyReference] = field(
         default_factory=lambda: list[_DependencyReference]()
     )
+    cleanup_owners: list["_SingletonResourceOwner"] = field(
+        default_factory=lambda: list[_SingletonResourceOwner]()
+    )
     task: Task[None] | None = None
     published: bool = False
     shutdown_requested: bool = False
@@ -414,12 +417,12 @@ class Container:
     async def _finalize_singleton_owner(self, owner: _SingletonResourceOwner) -> None:
         errors: list[BaseException] = []
         seen: set[int] = set()
-        for dependency in reversed(owner.dependencies):
-            retained_owner = dependency.owner
-            if not isinstance(retained_owner, _SingletonResourceOwner):
-                continue
-            if not retained_owner.owned_transient:
-                continue
+        try:
+            await owner.stack.aclose()
+        except BaseException as error:
+            owner.resource_cleanup_error = error
+            self._record_singleton_cleanup_error(errors, seen, error)
+        for retained_owner in reversed(owner.cleanup_owners):
             retained_owner.shutdown_requested = True
             task = retained_owner.task
             if not retained_owner.published and task is not None and not retained_owner.finalizing:
@@ -427,11 +430,6 @@ class Container:
             else:
                 retained_owner.request_close()
             await self._drain_singleton_owner(retained_owner, errors, seen)
-        try:
-            await owner.stack.aclose()
-        except BaseException as error:
-            owner.resource_cleanup_error = error
-            self._record_singleton_cleanup_error(errors, seen, error)
         if errors:
             if len(errors) == 1:
                 raise errors[0]
@@ -496,14 +494,29 @@ class Container:
             parent.dependencies.append(retained)
 
     @staticmethod
+    def _retain_cleanup_owner(dependency: _SingletonResourceOwner) -> None:
+        parent = _resource_owner.get()
+        if not isinstance(parent, _SingletonResourceOwner) or parent is dependency:
+            return
+        if all(existing is not dependency for existing in parent.cleanup_owners):
+            parent.cleanup_owners.append(dependency)
+
+    @staticmethod
     def _record_singleton_cleanup_error(
         errors: list[BaseException],
         seen: set[int],
         error: BaseException | None,
     ) -> None:
-        if error is not None and id(error) not in seen:
-            seen.add(id(error))
-            errors.append(error)
+        if error is None or id(error) in seen:
+            return
+        pending = [error]
+        while pending:
+            current = pending.pop()
+            seen.add(id(current))
+            if isinstance(current, BaseExceptionGroup):
+                group = cast(BaseExceptionGroup[BaseException], current)
+                pending.extend(group.exceptions)
+        errors.append(error)
 
     async def _drain_singleton_owner(
         self,
@@ -623,9 +636,10 @@ class Container:
         if registration.scope is DependencyScope.SINGLETON:
             return cast(T, await self._resolve_singleton(key, registration))
         result, resource_owner = self._start_singleton_transient(key, registration, owner)
-        self._retain_dependency(resource_owner)
+        self._retain_cleanup_owner(resource_owner)
         value = await asyncio.shield(result)
         self._validate_owner_graph(resource_owner, set(), require_published=True)
+        self._retain_dependency(resource_owner)
         return cast(T, value)
 
     def _start_singleton_transient(

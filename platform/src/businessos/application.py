@@ -495,7 +495,23 @@ class BusinessOSApplication:
                     )
             raise
         if handler in done:
-            _, cancelled = await self._cancel_and_drain_tasks(disconnected)
+            watcher_outcomes, cancelled = await self._cancel_and_drain_tasks(disconnected)
+            watcher_failures = tuple(
+                outcome
+                for outcome in watcher_outcomes
+                if isinstance(outcome, BaseException)
+                and not isinstance(outcome, asyncio.CancelledError)
+            )
+            if watcher_failures:
+                with bind_request_context(request.context):
+                    self._logger.error(
+                        "Request disconnect watcher cleanup failed",
+                        extra={
+                            "error_type": ",".join(
+                                type(failure).__name__ for failure in watcher_failures
+                            )
+                        },
+                    )
             try:
                 response = handler.result()
             except BaseException as error:

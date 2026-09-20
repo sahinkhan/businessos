@@ -587,3 +587,48 @@ authorize merging PR #11.
 - Historical tags changed: **NO**.
 - PR #9 / Phase 4.5 changed: **NO**.
 - Phase 5 started: **NO**.
+
+## Eleventh remediation: singleton cleanup ownership and disconnect watcher outcomes
+
+The fresh full independent audit of `7dd5ebb3add1de9b548c64b2e91ac4351eebc758`
+found three P2 defects and one P3 defect in terminal lifecycle paths. A singleton parent closed
+its transient children before its own finalizer ran, a failed transient attempt remained in the
+parent's validity graph after the provider handled it, disconnect-watcher cleanup failures were
+ignored when the request handler completed first, and nested cleanup failures could repeat the
+same exception leaf in the terminal aggregate.
+
+Singleton owners now track cleanup ownership separately from accepted dependency validity. Every
+started transient remains owned and drained, including failed attempts, while only successfully
+validated dependencies enter the graph used for publication and cached-delivery checks. Parent
+resource finalizers run before owned transient children close, preserving usable dependencies for
+flush and shutdown work. Cleanup aggregation records the identities of nested exception-group
+members so the same concrete failure is reported exactly once without suppressing distinct errors.
+
+When an HTTP handler completes first, the runtime now examines the drained disconnect watcher.
+Non-cancellation cleanup failures are logged with trusted request context and their exception type;
+private exception text is excluded. Successful response delivery and outer cancellation semantics
+remain unchanged.
+
+Permanent regressions cover parent-finalizer dependency use, handled transient retry and fallback,
+unique nested cleanup leaves, and watcher cleanup failure after a completed handler.
+
+## Eleventh-remediation local validation
+
+| Gate | Result |
+| --- | --- |
+| Fresh independent additive DI probe | PASS - 7/7 |
+| Fresh independent HTTP cleanup probe | PASS - 3/3 |
+| Focused lifecycle and application regressions | PASS - 84 |
+| Unit suite | PASS - 242 |
+| Test collection | PASS - 309 collected |
+| Ruff formatting and lint | PASS - 164 files |
+| Python 3.13 mypy | PASS - 163 source files |
+| CI-equivalent Pyright source check | PASS - 0 errors, 0 warnings |
+
+The first full-unit attempt completed 233 assertions but hit eight setup errors because the global
+Windows pytest temporary directory was inaccessible. The complete suite passed with an isolated,
+verified worktree-local pytest base directory; the directory was removed after the run.
+
+Exact-head CI and a fresh independent full Phase 1 audit remain required. These results do not
+certify Phase 1 or authorize merging PR #11. PR #9 remains untouched and on hold; Phase 5 remains
+unstarted.

@@ -25,10 +25,13 @@ from businessos.sdk import (
 
 from .contracts import (
     DeploymentMode,
+    TenantEntitlementRecord,
     TenantLifecycleHooks,
     TenantManagementContract,
+    TenantQuotaRecord,
     TenantRecord,
     TenantStatus,
+    validate_effective_period,
 )
 from .models import TENANT_ENTITLEMENTS, TENANT_QUOTAS, TENANT_STATUS_HISTORY, TENANTS
 
@@ -66,6 +69,14 @@ class SetTenantQuota(Command):
 
 
 class GetTenant(Query):
+    tenant_id: UUID
+
+
+class GetTenantEntitlements(Query):
+    tenant_id: UUID
+
+
+class GetTenantQuotas(Query):
     tenant_id: UUID
 
 
@@ -125,6 +136,10 @@ class TenantModule:
         )
         registration.command(SetTenantQuota, self._set_quota, permission="foundation.tenant.manage")
         registration.query(GetTenant, self._get, permission="foundation.tenant.read")
+        registration.query(
+            GetTenantEntitlements, self._get_entitlements, permission="foundation.tenant.read"
+        )
+        registration.query(GetTenantQuotas, self._get_quotas, permission="foundation.tenant.read")
 
     async def start(self) -> None:
         return None
@@ -218,6 +233,8 @@ class TenantModule:
         self, command: SetTenantEntitlement, context: HandlingContext
     ) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
+        validate_effective_period(command.effective_from, command.effective_until)
+        await self._require_existing(tenant.tenant_id, context)
         statement = (
             pg_insert(TENANT_ENTITLEMENTS)
             .values(
@@ -244,6 +261,7 @@ class TenantModule:
 
     async def _set_quota(self, command: SetTenantQuota, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
+        await self._require_existing(tenant.tenant_id, context)
         statement = (
             pg_insert(TENANT_QUOTAS)
             .values(
@@ -270,6 +288,35 @@ class TenantModule:
         if row is None:
             raise BusinessOSError("not_found", "Tenant not found", status_code=404)
         return TenantRecord.model_validate(dict(row))
+
+    async def _get_entitlements(
+        self, query: GetTenantEntitlements, context: HandlingContext
+    ) -> object:
+        _require_tenant(context.request, query.tenant_id)
+        await self._require_existing(query.tenant_id, context)
+        result = await context.unit_of_work.persistence.execute(
+            select(TENANT_ENTITLEMENTS)
+            .where(TENANT_ENTITLEMENTS.c.tenant_id == query.tenant_id)
+            .order_by(TENANT_ENTITLEMENTS.c.capability)
+        )
+        return tuple(TenantEntitlementRecord.model_validate(dict(row)) for row in result.mappings())
+
+    async def _get_quotas(self, query: GetTenantQuotas, context: HandlingContext) -> object:
+        _require_tenant(context.request, query.tenant_id)
+        await self._require_existing(query.tenant_id, context)
+        result = await context.unit_of_work.persistence.execute(
+            select(TENANT_QUOTAS)
+            .where(TENANT_QUOTAS.c.tenant_id == query.tenant_id)
+            .order_by(TENANT_QUOTAS.c.quota)
+        )
+        return tuple(TenantQuotaRecord.model_validate(dict(row)) for row in result.mappings())
+
+    async def _require_existing(self, tenant_id: UUID, context: HandlingContext) -> None:
+        result = await context.unit_of_work.persistence.execute(
+            select(TENANTS.c.tenant_id).where(TENANTS.c.tenant_id == tenant_id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise BusinessOSError("not_found", "Tenant not found", status_code=404)
 
 
 def _require_tenant(context: RequestContext, expected: UUID) -> TenantContext:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import jwt
 import psycopg
 import pytest
 from businessos_identity import (
+    ConfigureOIDCProvider,
     CreateUser,
     GetMembership,
     GrantMembership,
@@ -17,6 +18,9 @@ from businessos_identity import (
     OIDCConfiguration,
     OIDCContextResolver,
     OIDCTokenVerifier,
+    RegisterDevice,
+    RegisterServiceAccount,
+    SetMFAPolicy,
 )
 from businessos_organization import (
     AssignPrincipal,
@@ -43,10 +47,14 @@ from businessos_organization.models import ENTERPRISE_GROUPS
 from businessos_tenant import (
     DatabaseTenantAccessValidator,
     GetTenant,
+    GetTenantEntitlements,
+    GetTenantQuotas,
     ProvisionTenant,
     SetTenantEntitlement,
     SetTenantQuota,
+    TenantEntitlementRecord,
     TenantModule,
+    TenantQuotaRecord,
     TenantRecord,
     TenantStatus,
     TransitionTenant,
@@ -190,6 +198,35 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         SetTenantQuota(tenant_id=tenant_id, quota="users", limit_value=5000, unit="count"),
         context,
     )
+    boundary = datetime.now(UTC)
+    with pytest.raises(BusinessOSError) as invalid_entitlement_period:
+        await _dispatch(
+            app,
+            SetTenantEntitlement(
+                tenant_id=tenant_id,
+                capability="businessos.invalid",
+                enabled=True,
+                effective_from=boundary,
+                effective_until=boundary,
+            ),
+            context,
+        )
+    assert invalid_entitlement_period.value.code == "invalid_effective_dates"
+    await _dispatch(
+        app,
+        SetTenantEntitlement(
+            tenant_id=tenant_id,
+            capability="businessos.sales",
+            enabled=True,
+            reference="plan-enterprise",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        SetTenantQuota(tenant_id=tenant_id, quota="users", limit_value=6000, unit="count"),
+        context,
+    )
 
     await _dispatch(
         app,
@@ -221,17 +258,224 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         ),
         context,
     )
+    break_glass_id = uuid4()
+    await _dispatch(
+        app,
+        CreateUser(
+            user_id=break_glass_id,
+            tenant_id=tenant_id,
+            email="emergency@example.test",
+            display_name="Emergency",
+            break_glass=True,
+            credential_secret_reference="secret://break-glass",
+        ),
+        context,
+    )
+    with pytest.raises(BusinessOSError) as break_glass_mapping:
+        await _dispatch(
+            app,
+            MapExternalIdentity(
+                tenant_id=tenant_id,
+                user_id=break_glass_id,
+                issuer="https://identity.example.test",
+                subject="emergency-subject",
+            ),
+            context,
+        )
+    assert break_glass_mapping.value.code == "invalid_break_glass"
+    await _dispatch(
+        app,
+        GrantMembership(
+            tenant_id=tenant_id,
+            principal_id=break_glass_id,
+            principal_type="user",
+        ),
+        context,
+    )
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_identity.external_identities "
+            "(id, tenant_id, user_id, issuer, subject) VALUES (%s, %s, %s, %s, %s)",
+            (
+                uuid4(),
+                tenant_id,
+                break_glass_id,
+                "https://identity.example.test",
+                "legacy-emergency-subject",
+            ),
+        )
+        connection.commit()
+    device_id = uuid4()
+    await _dispatch(
+        app,
+        RegisterDevice(
+            device_id=device_id,
+            tenant_id=tenant_id,
+            principal_id=admin_id,
+            principal_type="user",
+            name="Admin Device",
+            device_type="workstation",
+            credential_secret_reference="secret://device/admin",
+        ),
+        context,
+    )
+    with pytest.raises(BusinessOSError) as unknown_device_principal:
+        await _dispatch(
+            app,
+            RegisterDevice(
+                tenant_id=tenant_id,
+                principal_id=uuid4(),
+                principal_type="user",
+                name="Unknown Device",
+                device_type="workstation",
+                credential_secret_reference="secret://device/unknown",
+            ),
+            context,
+        )
+    assert unknown_device_principal.value.code == "not_found"
+    other_tenant_id, other_user_id = uuid4(), uuid4()
+    other_context = _context(other_tenant_id, other_user_id)
+    await _dispatch(
+        app,
+        ProvisionTenant(
+            tenant_id=other_tenant_id,
+            slug="other-tenant",
+            name="Other Tenant",
+            deployment_mode="shared_schema",
+            region="global",
+        ),
+        other_context,
+    )
+    await _dispatch(
+        app,
+        CreateUser(
+            user_id=other_user_id,
+            tenant_id=other_tenant_id,
+            email="other@example.test",
+            display_name="Other User",
+        ),
+        other_context,
+    )
+    with pytest.raises(BusinessOSError) as cross_tenant_device:
+        await _dispatch(
+            app,
+            RegisterDevice(
+                tenant_id=tenant_id,
+                principal_id=other_user_id,
+                principal_type="user",
+                name="Cross Tenant Device",
+                device_type="workstation",
+                credential_secret_reference="secret://device/cross",
+            ),
+            context,
+        )
+    assert cross_tenant_device.value.code == "not_found"
+    service_account_id = uuid4()
+    await _dispatch(
+        app,
+        RegisterServiceAccount(
+            service_account_id=service_account_id,
+            tenant_id=tenant_id,
+            name="Integration Agent",
+            credential_secret_reference="secret://service/integration",
+        ),
+        context,
+    )
+    for principal_id, principal_type in (
+        (service_account_id, "service_account"),
+        (device_id, "device"),
+    ):
+        await _dispatch(
+            app,
+            GrantMembership(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                principal_type=principal_type,
+            ),
+            context,
+        )
+    future_group_id, expired_group_id, inactive_group_id = uuid4(), uuid4(), uuid4()
+    today = datetime.now(UTC).date()
+    await _dispatch(
+        app,
+        CreateEnterpriseGroup(
+            id=future_group_id,
+            tenant_id=tenant_id,
+            code="FUTURE",
+            name="Future",
+            effective_from=today + timedelta(days=1),
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        CreateEnterpriseGroup(
+            id=expired_group_id,
+            tenant_id=tenant_id,
+            code="EXPIRED",
+            name="Expired",
+            effective_from=today - timedelta(days=2),
+            effective_until=today,
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        CreateEnterpriseGroup(
+            id=inactive_group_id,
+            tenant_id=tenant_id,
+            code="INACTIVE",
+            name="Inactive",
+        ),
+        context,
+    )
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "UPDATE platform_org.enterprise_groups SET active = false "
+            "WHERE tenant_id = %s AND id = %s",
+            (tenant_id, inactive_group_id),
+        )
+        connection.commit()
+    for invalid_scope_id in (future_group_id, expired_group_id, inactive_group_id):
+        with pytest.raises(BusinessOSError) as invalid_effective_scope:
+            await _dispatch(
+                app,
+                AssignPrincipal(
+                    tenant_id=tenant_id,
+                    principal_id=admin_id,
+                    scope_type=OrganizationScopeType.ENTERPRISE_GROUP,
+                    scope_id=invalid_scope_id,
+                ),
+                context,
+            )
+        assert invalid_effective_scope.value.code == "inactive_organization_scope"
 
-    group_id, legal_us_id, legal_uk_id = uuid4(), uuid4(), uuid4()
-    company_us_id, company_uk_id = uuid4(), uuid4()
-    region_id, site_type_id, site_id = uuid4(), uuid4(), uuid4()
-    business_unit_id, department_id = uuid4(), uuid4()
+    group_id, other_group_id = uuid4(), uuid4()
+    legal_us_id, legal_uk_id, other_legal_id = uuid4(), uuid4(), uuid4()
+    company_us_id, company_uk_id, other_company_id = uuid4(), uuid4(), uuid4()
+    region_id, site_type_id, site_id, other_site_id = uuid4(), uuid4(), uuid4(), uuid4()
+    business_unit_id, department_id, other_department_id, other_team_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
     cost_center_id, warehouse_id, location_id = uuid4(), uuid4(), uuid4()
 
     await _dispatch(
         app,
         CreateEnterpriseGroup(
             id=group_id, tenant_id=tenant_id, code="GLOBAL", name="Global Holdings"
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        CreateEnterpriseGroup(
+            id=other_group_id,
+            tenant_id=tenant_id,
+            code="OTHER",
+            name="Other Holdings",
         ),
         context,
     )
@@ -251,6 +495,18 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
             ),
             context,
         )
+    await _dispatch(
+        app,
+        CreateLegalEntity(
+            id=other_legal_id,
+            tenant_id=tenant_id,
+            code="OTHER-LEGAL",
+            name="Other Legal",
+            enterprise_group_id=other_group_id,
+            country_code="CA",
+        ),
+        context,
+    )
     for company_id, legal_id, code, currency, timezone in (
         (company_us_id, legal_us_id, "US-CO", "USD", "America/New_York"),
         (company_uk_id, legal_uk_id, "UK-CO", "GBP", "Europe/London"),
@@ -270,6 +526,19 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         )
     await _dispatch(
         app,
+        CreateCompany(
+            id=other_company_id,
+            tenant_id=tenant_id,
+            code="OTHER-CO",
+            name="Other Company",
+            legal_entity_id=other_legal_id,
+            base_currency="CAD",
+            timezone="America/Toronto",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
         CreateOrgUnit(
             id=business_unit_id,
             tenant_id=tenant_id,
@@ -277,6 +546,32 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
             name="Operations",
             company_id=company_us_id,
             unit_type=OrganizationUnitType.BUSINESS_UNIT,
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        CreateOrgUnit(
+            id=other_department_id,
+            tenant_id=tenant_id,
+            code="FINANCE",
+            name="Finance",
+            company_id=company_us_id,
+            parent_id=business_unit_id,
+            unit_type=OrganizationUnitType.DEPARTMENT,
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        CreateOrgUnit(
+            id=other_team_id,
+            tenant_id=tenant_id,
+            code="FINANCE-AP",
+            name="Accounts Payable",
+            company_id=company_us_id,
+            parent_id=other_department_id,
+            unit_type=OrganizationUnitType.TEAM,
         ),
         context,
     )
@@ -331,6 +626,19 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     )
     await _dispatch(
         app,
+        CreateOperatingSite(
+            id=other_site_id,
+            tenant_id=tenant_id,
+            code="OTHER-SITE",
+            name="Other Site",
+            company_id=other_company_id,
+            site_type_id=site_type_id,
+            timezone="America/Toronto",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
         CreateFinancialDimension(
             id=cost_center_id,
             tenant_id=tenant_id,
@@ -375,7 +683,50 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         ),
         context,
     )
+    await _dispatch(
+        app,
+        AssignPrincipal(
+            tenant_id=tenant_id,
+            principal_id=admin_id,
+            scope_type=OrganizationScopeType.ENTERPRISE_GROUP,
+            scope_id=group_id,
+            title="Group Director",
+        ),
+        context,
+    )
+    for principal_id, principal_type in (
+        (service_account_id, "service_account"),
+        (device_id, "device"),
+    ):
+        await _dispatch(
+            app,
+            AssignPrincipal(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                principal_type=principal_type,
+                scope_type=OrganizationScopeType.COMPANY,
+                scope_id=company_us_id,
+            ),
+            context,
+        )
     delegation_id = uuid4()
+    group_delegation_id = uuid4()
+    with pytest.raises(BusinessOSError) as zero_length_delegation:
+        await _dispatch(
+            app,
+            DelegateScope(
+                tenant_id=tenant_id,
+                recipient_principal_id=admin_id,
+                scope_type=OrganizationScopeType.OPERATING_SITE,
+                scope_id=site_id,
+                allowed_actions=("organization.read",),
+                valid_from=boundary,
+                valid_until=boundary,
+                reason="invalid zero length",
+            ),
+            context,
+        )
+    assert zero_length_delegation.value.code == "invalid_effective_dates"
     await _dispatch(
         app,
         DelegateScope(
@@ -391,8 +742,38 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         ),
         context,
     )
+    await _dispatch(
+        app,
+        DelegateScope(
+            id=group_delegation_id,
+            tenant_id=tenant_id,
+            recipient_principal_id=admin_id,
+            scope_type=OrganizationScopeType.ENTERPRISE_GROUP,
+            scope_id=group_id,
+            allowed_actions=("organization.read",),
+            valid_from=datetime.now(UTC),
+            valid_until=datetime.now(UTC) + timedelta(hours=1),
+            reason="group coverage",
+        ),
+        context,
+    )
 
     tenant = await _query(app, GetTenant(tenant_id=tenant_id), context)
+    entitlements = cast(
+        tuple[TenantEntitlementRecord, ...],
+        await _query(app, GetTenantEntitlements(tenant_id=tenant_id), context),
+    )
+    quotas = cast(
+        tuple[TenantQuotaRecord, ...],
+        await _query(app, GetTenantQuotas(tenant_id=tenant_id), context),
+    )
+    with pytest.raises(BusinessOSError) as isolated_entitlement_read:
+        await _query(
+            app,
+            GetTenantEntitlements(tenant_id=tenant_id),
+            other_context,
+        )
+    assert isolated_entitlement_read.value.code == "forbidden"
     membership = await _query(
         app, GetMembership(tenant_id=tenant_id, principal_id=admin_id), context
     )
@@ -410,19 +791,64 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
             operating_site_id=site_id,
             warehouse_id=warehouse_id,
             cost_center_id=cost_center_id,
+        ),
+        context,
+    )
+    delegated = await _query(
+        app,
+        SelectActiveScope(
+            tenant_id=tenant_id,
+            operating_site_id=site_id,
+            warehouse_id=warehouse_id,
             delegation_id=delegation_id,
         ),
         context,
     )
+    for principal_id, principal_type in (
+        (service_account_id, "service_account"),
+        (device_id, "device"),
+    ):
+        principal_selection = await _query(
+            app,
+            SelectActiveScope(
+                tenant_id=tenant_id,
+                principal_type=principal_type,
+                company_id=company_us_id,
+            ),
+            _context(tenant_id, principal_id),
+        )
+        assert isinstance(principal_selection, TenantContext)
+        assert principal_selection.active_company_id == company_us_id
     assert isinstance(tenant, TenantRecord) and tenant.status is TenantStatus.ACTIVE
+    assert entitlements[0].capability == "businessos.sales"
+    assert entitlements[0].enabled is True
+    assert quotas[0].quota == "users"
+    assert entitlements[0].reference == "plan-enterprise"
+    assert quotas[0].limit_value == 6000
     assert isinstance(membership, MembershipRecord) and membership.principal_id == admin_id
     assert isinstance(snapshot, OrganizationSnapshot)
-    assert len(snapshot.legal_entities) == 2
-    assert len(snapshot.companies) == 2
+    assert len(snapshot.legal_entities) == 3
+    assert len(snapshot.companies) == 3
+    assert (
+        next(item for item in snapshot.org_units if item.id == department_id).parent_id
+        == business_unit_id
+    )
+    assert snapshot.operating_sites[0].site_type_id == site_type_id
+    assert snapshot.warehouse_locations[0].warehouse_id == warehouse_id
+    assert snapshot.assignments[0].principal_type == "user"
     assert isinstance(selected, TenantContext)
     assert selected.active_company_id == company_us_id
     assert selected.operating_site_id == site_id
-    assert selected.delegation_id == delegation_id
+    assert selected.delegation_id is None
+    assert isinstance(delegated, TenantContext)
+    assert delegated.delegation_id == delegation_id
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        audit_count = connection.execute(
+            "SELECT count(*) FROM eventing.outbox_messages "
+            "WHERE tenant_id = %s AND event_type = 'organization.active_scope.selected.v1'",
+            (tenant_id,),
+        ).fetchone()
+    assert audit_count is not None and audit_count[0] >= 2
     with pytest.raises(BusinessOSError) as inconsistent_scope:
         await _query(
             app,
@@ -434,6 +860,57 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
             context,
         )
     assert inconsistent_scope.value.code == "invalid_organization_hierarchy"
+    with pytest.raises(BusinessOSError) as unrelated_child:
+        await _query(
+            app,
+            SelectActiveScope(
+                tenant_id=tenant_id,
+                enterprise_group_id=group_id,
+                company_id=other_company_id,
+            ),
+            context,
+        )
+    assert unrelated_child.value.code == "invalid_organization_hierarchy"
+    with pytest.raises(BusinessOSError) as parent_assignment_escape:
+        await _query(
+            app,
+            SelectActiveScope(tenant_id=tenant_id, company_id=other_company_id),
+            context,
+        )
+    assert parent_assignment_escape.value.code == "forbidden"
+    with pytest.raises(BusinessOSError) as legal_site_escape:
+        await _query(
+            app,
+            SelectActiveScope(
+                tenant_id=tenant_id,
+                legal_entity_id=legal_us_id,
+                operating_site_id=other_site_id,
+            ),
+            context,
+        )
+    assert legal_site_escape.value.code == "invalid_organization_hierarchy"
+    with pytest.raises(BusinessOSError) as delegation_escape:
+        await _query(
+            app,
+            SelectActiveScope(
+                tenant_id=tenant_id,
+                company_id=other_company_id,
+                delegation_id=group_delegation_id,
+            ),
+            context,
+        )
+    assert delegation_escape.value.code == "forbidden"
+    with pytest.raises(BusinessOSError) as unrelated_org_unit:
+        await _query(
+            app,
+            SelectActiveScope(
+                tenant_id=tenant_id,
+                department_id=department_id,
+                team_id=other_team_id,
+            ),
+            context,
+        )
+    assert unrelated_org_unit.value.code == "invalid_organization_hierarchy"
 
     unassigned_context = _context(tenant_id, uuid4())
     with pytest.raises(BusinessOSError) as unassigned_scope:
@@ -445,6 +922,17 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     assert unassigned_scope.value.code == "forbidden"
 
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    await _dispatch(
+        app,
+        ConfigureOIDCProvider(
+            tenant_id=tenant_id,
+            issuer="https://identity.example.test",
+            audience="businessos",
+            jwks_uri="https://identity.example.test/jwks",
+            algorithms=("RS256",),
+        ),
+        context,
+    )
     verifier = OIDCTokenVerifier(
         OIDCConfiguration(
             issuer="https://identity.example.test",
@@ -489,6 +977,158 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     assert trusted.tenant.tenant_id == tenant_id
     assert trusted.tenant.principal_id == admin_id
     assert trusted.tenant.authentication_strength == "mfa"
+    wrong_tenant_token = jwt.encode(
+        {
+            "iss": "https://identity.example.test",
+            "sub": "admin-subject",
+            "aud": "businessos",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+            "businessos_tenant_id": str(other_tenant_id),
+            "amr": ["pwd", "mfa"],
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "integration"},
+    )
+    with pytest.raises(BusinessOSError) as wrong_tenant_provider:
+        await resolver.resolve(
+            RequestIdentity(
+                method="GET",
+                path="/",
+                headers={"authorization": f"Bearer {wrong_tenant_token}"},
+                correlation_id="oidc-wrong-tenant-provider",
+                trace_id=uuid4().hex,
+            )
+        )
+    assert wrong_tenant_provider.value.code == "invalid_token"
+    break_glass_token = jwt.encode(
+        {
+            "iss": "https://identity.example.test",
+            "sub": "legacy-emergency-subject",
+            "aud": "businessos",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+            "businessos_tenant_id": str(tenant_id),
+            "amr": ["pwd", "mfa"],
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "integration"},
+    )
+    with pytest.raises(BusinessOSError) as federated_break_glass:
+        await resolver.resolve(
+            RequestIdentity(
+                method="GET",
+                path="/",
+                headers={"authorization": f"Bearer {break_glass_token}"},
+                correlation_id="oidc-break-glass",
+                trace_id=uuid4().hex,
+            )
+        )
+    assert federated_break_glass.value.code == "invalid_membership"
+    await _dispatch(
+        app,
+        SetMFAPolicy(
+            tenant_id=tenant_id,
+            minimum_strength="mfa",
+            required_methods=("mfa",),
+        ),
+        context,
+    )
+    password_token = jwt.encode(
+        {
+            "iss": "https://identity.example.test",
+            "sub": "admin-subject",
+            "aud": "businessos",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+            "businessos_tenant_id": str(tenant_id),
+            "amr": ["pwd"],
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "integration"},
+    )
+    with pytest.raises(BusinessOSError) as insufficient_mfa:
+        await resolver.resolve(
+            RequestIdentity(
+                method="GET",
+                path="/",
+                headers={"authorization": f"Bearer {password_token}"},
+                correlation_id="oidc-password-only",
+                trace_id=uuid4().hex,
+            )
+        )
+    assert insufficient_mfa.value.code == "invalid_token"
+    await _dispatch(
+        app,
+        ConfigureOIDCProvider(
+            tenant_id=tenant_id,
+            issuer="https://identity.example.test",
+            audience="businessos",
+            jwks_uri="https://identity.example.test/jwks",
+            algorithms=("RS256",),
+            active=False,
+        ),
+        context,
+    )
+    with pytest.raises(BusinessOSError) as inactive_provider:
+        await resolver.resolve(
+            RequestIdentity(
+                method="GET",
+                path="/",
+                headers={"authorization": f"Bearer {token}"},
+                correlation_id="oidc-inactive-provider",
+                trace_id=uuid4().hex,
+            )
+        )
+    assert inactive_provider.value.code == "invalid_token"
+    await _dispatch(
+        app,
+        ConfigureOIDCProvider(
+            tenant_id=tenant_id,
+            issuer="https://identity.example.test",
+            audience="businessos",
+            jwks_uri="https://identity.example.test/jwks",
+            algorithms=("ES256",),
+            active=True,
+        ),
+        context,
+    )
+    with pytest.raises(BusinessOSError) as stale_configuration:
+        await resolver.resolve(
+            RequestIdentity(
+                method="GET",
+                path="/",
+                headers={"authorization": f"Bearer {token}"},
+                correlation_id="oidc-stale-configuration",
+                trace_id=uuid4().hex,
+            )
+        )
+    assert stale_configuration.value.code == "invalid_token"
+    await _dispatch(
+        app,
+        ConfigureOIDCProvider(
+            tenant_id=tenant_id,
+            issuer="https://identity.example.test",
+            audience="businessos",
+            jwks_uri="https://identity.example.test/jwks",
+            algorithms=("RS256",),
+            active=True,
+        ),
+        context,
+    )
+    restored = await resolver.resolve(
+        RequestIdentity(
+            method="GET",
+            path="/",
+            headers={"authorization": f"Bearer {token}"},
+            correlation_id="oidc-current-configuration",
+            trace_id=uuid4().hex,
+        )
+    )
+    assert restored.tenant is not None
     await _dispatch(
         app,
         TransitionTenant(tenant_id=tenant_id, target=TenantStatus.SUSPENDED),
@@ -650,7 +1290,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
     app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
     assert app.runtime is not None
     plan = app.runtime.migrations.plan()
-    assert plan.heads == ("organization_0001",)
+    assert plan.heads == ("organization_0002",)
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     tenant_id = uuid4()
     _seed_tenant(postgres_database.migration_url, tenant_id, "constraint-tenant")
@@ -669,7 +1309,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
                 "SELECT module_id FROM platform_module.installed_module_migrations"
             )
         }
-    assert heads == {"organization_0001"}
+    assert heads == {"organization_0002"}
     assert inventory == {
         "foundation.tenant",
         "foundation.identity",

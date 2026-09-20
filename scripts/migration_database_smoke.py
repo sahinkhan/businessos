@@ -1,4 +1,5 @@
 """Run real installed-artifact migrations against a disposable PostgreSQL database."""
+
 from __future__ import annotations
 
 import argparse

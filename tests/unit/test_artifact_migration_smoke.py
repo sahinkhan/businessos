@@ -63,14 +63,22 @@ def _plan_json(plan: MigrationPlan) -> str:
 def test_artifact_graph_preserves_all_certified_branches() -> None:
     plan = smoke._expected_plan()
     assert {source.owner for source in plan.sources} == smoke.REQUIRED_OWNERS
-    assert plan.heads == ("audit_0002", "gov_0002", "policy_0002", "proof_0003")
+    assert plan.heads == (
+        "audit_0002",
+        "gov_0002",
+        "organization_0002",
+        "policy_0002",
+        "proof_0003",
+    )
     parents = {revision.revision: revision.down_revisions for revision in plan.revisions}
     assert parents["proof_0001"] == ("0001_phase1_kernel",)
     assert parents["proof_0002"] == ("proof_0001",)
     assert parents["proof_0003"] == ("proof_0002",)
     assert parents["tenant_0001"] == ("0005_durable_event_subscribers",)
     assert parents["identity_0001"] == ("tenant_0001",)
+    assert parents["identity_0002"] == ("identity_0001",)
     assert parents["organization_0001"] == ("identity_0001",)
+    assert parents["organization_0002"] == ("organization_0001", "identity_0002")
     assert parents["geography_0001"] == ("organization_0001",)
     assert parents["reference_0001"] == ("geography_0001",)
     assert parents["uom_0001"] == ("reference_0001",)

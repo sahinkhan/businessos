@@ -6,6 +6,7 @@ from importlib.resources import files
 from typing import ClassVar, Literal
 from uuid import UUID, uuid4
 
+from businessos_tenant import validate_effective_period
 from pydantic import Field
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -23,7 +24,7 @@ from businessos.sdk import (
     TenantContext,
 )
 
-from .contracts import IdentityContract, MembershipRecord, MembershipStatus
+from .contracts import AuthenticationStrength, IdentityContract, MembershipRecord, MembershipStatus
 from .models import (
     DEVICES,
     EXTERNAL_IDENTITIES,
@@ -78,6 +79,7 @@ class RegisterDevice(Command):
     device_id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
     principal_id: UUID
+    principal_type: Literal["user", "service_account"] = "user"
     name: str = Field(min_length=1, max_length=200)
     device_type: str = Field(min_length=1, max_length=100)
     credential_secret_reference: str = Field(min_length=1, max_length=1000)
@@ -91,11 +93,12 @@ class ConfigureOIDCProvider(Command):
     algorithms: tuple[
         Literal["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"], ...
     ] = ("RS256",)
+    active: bool = True
 
 
 class SetMFAPolicy(Command):
     tenant_id: UUID
-    minimum_strength: str = Field(min_length=1, max_length=100)
+    minimum_strength: AuthenticationStrength
     required_methods: tuple[str, ...] = ()
     configuration: dict[str, object] = Field(default_factory=dict)
 
@@ -193,12 +196,19 @@ class IdentityModule:
     async def _map_external(self, command: MapExternalIdentity, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
         exists = await context.unit_of_work.persistence.execute(
-            select(USERS.c.id).where(
+            select(USERS.c.id, USERS.c.is_break_glass).where(
                 USERS.c.tenant_id == tenant.tenant_id, USERS.c.id == command.user_id
             )
         )
-        if exists.scalar_one_or_none() is None:
+        user = exists.one_or_none()
+        if user is None:
             raise BusinessOSError("not_found", "User not found", status_code=404)
+        if user.is_break_glass:
+            raise BusinessOSError(
+                "invalid_break_glass",
+                "Break-glass identities cannot use federation",
+                status_code=422,
+            )
         await context.unit_of_work.persistence.execute(
             insert(EXTERNAL_IDENTITIES).values(
                 id=uuid4(),
@@ -212,10 +222,7 @@ class IdentityModule:
 
     async def _grant_membership(self, command: GrantMembership, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
-        if command.valid_from and command.valid_until and command.valid_until < command.valid_from:
-            raise BusinessOSError(
-                "invalid_effective_dates", "Membership dates are invalid", status_code=422
-            )
+        validate_effective_period(command.valid_from, command.valid_until)
         principal_table = {
             "user": USERS,
             "service_account": SERVICE_ACCOUNTS,
@@ -309,11 +316,25 @@ class IdentityModule:
 
     async def _device(self, command: RegisterDevice, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
+        principal_table = {
+            "user": USERS,
+            "service_account": SERVICE_ACCOUNTS,
+        }[command.principal_type]
+        principal = await context.unit_of_work.persistence.execute(
+            select(principal_table.c.id).where(
+                principal_table.c.tenant_id == tenant.tenant_id,
+                principal_table.c.id == command.principal_id,
+                principal_table.c.active.is_(True),
+            )
+        )
+        if principal.scalar_one_or_none() is None:
+            raise BusinessOSError("not_found", "Active device principal not found", status_code=404)
         await context.unit_of_work.persistence.execute(
             insert(DEVICES).values(
                 id=command.device_id,
                 tenant_id=tenant.tenant_id,
                 principal_id=command.principal_id,
+                principal_type=command.principal_type,
                 name=command.name,
                 device_type=command.device_type,
                 credential_secret_reference=command.credential_secret_reference,
@@ -334,13 +355,14 @@ class IdentityModule:
                 audience=command.audience,
                 jwks_uri=command.jwks_uri,
                 algorithms=list(command.algorithms),
+                active=command.active,
             )
             .on_conflict_do_update(
                 constraint="oidc_provider_identity",
                 set_={
                     "jwks_uri": command.jwks_uri,
                     "algorithms": list(command.algorithms),
-                    "active": True,
+                    "active": command.active,
                 },
             )
         )
@@ -349,6 +371,15 @@ class IdentityModule:
 
     async def _mfa_policy(self, command: SetMFAPolicy, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
+        if command.minimum_strength in {
+            AuthenticationStrength.UNSPECIFIED,
+            AuthenticationStrength.BREAK_GLASS,
+        }:
+            raise BusinessOSError(
+                "invalid_mfa_policy",
+                "Unsupported federated authentication strength",
+                status_code=422,
+            )
         statement = (
             pg_insert(MFA_POLICIES)
             .values(
@@ -368,7 +399,7 @@ class IdentityModule:
             )
         )
         await context.unit_of_work.persistence.execute(statement)
-        return {"minimum_strength": command.minimum_strength}
+        return {"minimum_strength": command.minimum_strength.value}
 
     async def _get_membership(self, query: GetMembership, context: HandlingContext) -> object:
         _require_tenant(context.request, query.tenant_id)

@@ -2,14 +2,14 @@
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from businessos.sdk import TenantContext, UnitOfWorkFactory
+from businessos.sdk import BusinessOSError, TenantContext, UnitOfWorkFactory
 
 from .models import TENANTS
 
@@ -43,6 +43,87 @@ class TenantRecord(BaseModel):
     configuration_defaults: dict[str, object] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+
+
+class TenantEntitlementRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    tenant_id: UUID
+    capability: str
+    enabled: bool
+    reference: str | None = None
+    effective_from: datetime | None = None
+    effective_until: datetime | None = None
+
+    def is_effective(self, at: datetime) -> bool:
+        return self.enabled and effective_at(self.effective_from, self.effective_until, at)
+
+
+class TenantQuotaRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    tenant_id: UUID
+    quota: str
+    limit_value: int
+    unit: str
+
+
+TemporalValue = date | datetime
+
+
+def validate_effective_period(
+    start: TemporalValue | None,
+    end: TemporalValue | None,
+) -> None:
+    """Validate a strict half-open effective period before persistence."""
+
+    datetimes = [value for value in (start, end) if isinstance(value, datetime)]
+    dates = [
+        value for value in (start, end) if value is not None and not isinstance(value, datetime)
+    ]
+    if datetimes and dates:
+        raise _invalid_effective_period()
+    if any(value.tzinfo is None or value.utcoffset() is None for value in datetimes):
+        raise _invalid_effective_period()
+    if start is None or end is None:
+        return
+    if isinstance(start, datetime) and isinstance(end, datetime):
+        invalid = end <= start
+    elif not isinstance(start, datetime) and not isinstance(end, datetime):
+        invalid = end <= start
+    else:
+        invalid = True
+    if invalid:
+        raise _invalid_effective_period()
+
+
+def effective_at(
+    start: TemporalValue | None,
+    end: TemporalValue | None,
+    instant: TemporalValue,
+) -> bool:
+    """Return whether *instant* belongs to the validated half-open period."""
+
+    validate_effective_period(start, end)
+    validate_effective_period(start, None)
+    if isinstance(instant, datetime):
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise _invalid_effective_period()
+        if start is not None and not isinstance(start, datetime):
+            raise _invalid_effective_period()
+        if end is not None and not isinstance(end, datetime):
+            raise _invalid_effective_period()
+    elif isinstance(start, datetime) or isinstance(end, datetime):
+        raise _invalid_effective_period()
+    return (start is None or start <= instant) and (end is None or instant < end)
+
+
+def _invalid_effective_period() -> BusinessOSError:
+    return BusinessOSError(
+        "invalid_effective_dates",
+        "Effective period must use compatible, timezone-aware values with end after start",
+        status_code=422,
+    )
 
 
 class TenantLifecycleHook(Protocol):
@@ -115,7 +196,9 @@ class TenantLifecycleHooks:
 
 @dataclass(frozen=True, slots=True)
 class TenantManagementContract:
-    version: str = "1.0"
+    version: str = "1.1"
     provisioning_command: str = "businessos_tenant.ProvisionTenant"
     status_command: str = "businessos_tenant.TransitionTenant"
     read_query: str = "businessos_tenant.GetTenant"
+    entitlements_query: str = "businessos_tenant.GetTenantEntitlements"
+    quotas_query: str = "businessos_tenant.GetTenantQuotas"

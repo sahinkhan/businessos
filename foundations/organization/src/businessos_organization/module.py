@@ -1,13 +1,14 @@
 """Organization module registration and tenant-consistent hierarchy handlers."""
 
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from importlib.resources import files
-from typing import ClassVar
+from typing import ClassVar, Literal, cast
 from uuid import UUID, uuid4
 
 from businessos_identity import GetMembership, MembershipRecord
+from businessos_tenant import effective_at, validate_effective_period
 from pydantic import Field
 from sqlalchemy import insert, select
 from sqlalchemy.engine import RowMapping
@@ -28,12 +29,24 @@ from businessos.sdk import (
 )
 
 from .contracts import (
+    CompanyRecord,
+    DelegatedScopeRecord,
+    EffectiveAssignment,
+    EnterpriseGroupRecord,
+    FinancialDimensionRecord,
     FinancialDimensionType,
+    LegalEntityRecord,
+    OperatingSiteRecord,
     OrganizationContract,
-    OrganizationNode,
+    OrganizationRelationshipRecord,
     OrganizationScopeType,
     OrganizationSnapshot,
     OrganizationUnitType,
+    OrgUnitRecord,
+    RegionRecord,
+    SiteTypeRecord,
+    WarehouseLocationRecord,
+    WarehouseRecord,
 )
 from .models import (
     ASSIGNMENTS,
@@ -134,6 +147,7 @@ class AssignPrincipal(Command):
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
     principal_id: UUID
+    principal_type: Literal["user", "service_account", "device"] = "user"
     scope_type: OrganizationScopeType
     scope_id: UUID
     title: str | None = Field(default=None, max_length=200)
@@ -145,6 +159,7 @@ class DelegateScope(Command):
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
     recipient_principal_id: UUID
+    recipient_principal_type: Literal["user", "service_account", "device"] = "user"
     scope_type: OrganizationScopeType
     scope_id: UUID
     allowed_actions: tuple[str, ...]
@@ -159,6 +174,7 @@ class ReadOrganization(Query):
 
 class SelectActiveScope(Query):
     tenant_id: UUID
+    principal_type: Literal["user", "service_account", "device"] = "user"
     enterprise_group_id: UUID | None = None
     legal_entity_id: UUID | None = None
     company_id: UUID | None = None
@@ -188,6 +204,14 @@ class CompanyCreated(DomainEvent):
 class OperatingSiteCreated(DomainEvent):
     event_type: ClassVar[str] = "organization.site.created.v1"
     operating_site_id: UUID
+
+
+class ActiveScopeSelected(DomainEvent):
+    event_type: ClassVar[str] = "organization.active_scope.selected.v1"
+    principal_id: UUID
+    principal_type: str
+    previous_scope: dict[str, str | None]
+    selected_scope: dict[str, str | None]
 
 
 _SCOPE_TABLES = {
@@ -286,7 +310,7 @@ class OrganizationModule:
         self, command: CreateEnterpriseGroup, context: HandlingContext
     ) -> object:
         tenant = _tenant(context.request, command.tenant_id)
-        _valid_dates(command.effective_from, command.effective_until)
+        validate_effective_period(command.effective_from, command.effective_until)
         await _insert_named(context, ENTERPRISE_GROUPS, command, tenant)
         return {"enterprise_group_id": command.id}
 
@@ -462,7 +486,7 @@ class OrganizationModule:
 
     async def _relationship(self, command: CreateRelationship, context: HandlingContext) -> object:
         tenant = _tenant(context.request, command.tenant_id)
-        _valid_dates(command.effective_from, command.effective_until)
+        validate_effective_period(command.effective_from, command.effective_until)
         await _require_owned(context, _SCOPE_TABLES[command.source_type], command.source_id, tenant)
         await _require_owned(context, _SCOPE_TABLES[command.target_type], command.target_id, tenant)
         await context.unit_of_work.persistence.execute(
@@ -472,13 +496,18 @@ class OrganizationModule:
 
     async def _assignment(self, command: AssignPrincipal, context: HandlingContext) -> object:
         tenant = _tenant(context.request, command.tenant_id)
-        _valid_datetimes(command.valid_from, command.valid_until)
-        membership = await self._membership(command.principal_id, context)
+        validate_effective_period(command.valid_from, command.valid_until)
+        membership = await self._membership(command.principal_id, command.principal_type, context)
         if not membership.is_effective():
             raise BusinessOSError(
                 "inactive_membership", "Active membership is required", status_code=409
             )
-        await _require_owned(context, _SCOPE_TABLES[command.scope_type], command.scope_id, tenant)
+        await _require_effective_scope(
+            context, command.scope_type, command.scope_id, tenant, datetime.now(UTC)
+        )
+        await self._require_effective_membership(
+            command.principal_id, command.principal_type, context
+        )
         await context.unit_of_work.persistence.execute(
             insert(ASSIGNMENTS).values(**command.model_dump())
         )
@@ -486,17 +515,24 @@ class OrganizationModule:
 
     async def _delegation(self, command: DelegateScope, context: HandlingContext) -> object:
         tenant = _tenant(context.request, command.tenant_id)
-        _valid_datetimes(command.valid_from, command.valid_until)
+        validate_effective_period(command.valid_from, command.valid_until)
         if not command.allowed_actions:
             raise BusinessOSError(
                 "invalid_delegation", "Delegation actions are required", status_code=422
             )
-        membership = await self._membership(command.recipient_principal_id, context)
+        membership = await self._membership(
+            command.recipient_principal_id, command.recipient_principal_type, context
+        )
         if not membership.is_effective():
             raise BusinessOSError(
                 "inactive_membership", "Active membership is required", status_code=409
             )
-        await _require_owned(context, _SCOPE_TABLES[command.scope_type], command.scope_id, tenant)
+        await _require_effective_scope(
+            context, command.scope_type, command.scope_id, tenant, datetime.now(UTC)
+        )
+        await self._require_effective_membership(
+            command.recipient_principal_id, command.recipient_principal_type, context
+        )
         await context.unit_of_work.persistence.execute(
             insert(DELEGATED_SCOPES).values(
                 **command.model_dump(), grantor_principal_id=tenant.principal_id
@@ -504,12 +540,21 @@ class OrganizationModule:
         )
         return {"delegation_id": command.id}
 
-    async def _membership(self, principal_id: UUID, context: HandlingContext) -> MembershipRecord:
+    async def _membership(
+        self,
+        principal_id: UUID,
+        principal_type: Literal["user", "service_account", "device"],
+        context: HandlingContext,
+    ) -> MembershipRecord:
         tenant = context.request.tenant
         assert tenant is not None
         dispatcher = await context.dependencies.resolve(MESSAGE_DISPATCHER)
         result = await dispatcher.query(
-            GetMembership(tenant_id=tenant.tenant_id, principal_id=principal_id),
+            GetMembership(
+                tenant_id=tenant.tenant_id,
+                principal_id=principal_id,
+                principal_type=principal_type,
+            ),
             context.request,
             context.dependencies,
         )
@@ -517,59 +562,117 @@ class OrganizationModule:
             raise RuntimeError("Identity membership contract returned an invalid result")
         return result
 
+    async def _require_effective_membership(
+        self,
+        principal_id: UUID,
+        principal_type: Literal["user", "service_account", "device"],
+        context: HandlingContext,
+    ) -> MembershipRecord:
+        membership = await self._membership(principal_id, principal_type, context)
+        if not membership.is_effective():
+            raise BusinessOSError(
+                "inactive_membership", "Active membership is required", status_code=409
+            )
+        return membership
+
+    async def _require_actor_membership(
+        self,
+        principal_id: UUID,
+        expected_type: Literal["user", "service_account", "device"],
+        context: HandlingContext,
+    ) -> MembershipRecord:
+        effective: list[MembershipRecord] = []
+        for principal_type in ("user", "service_account", "device"):
+            try:
+                membership = await self._membership(
+                    principal_id,
+                    principal_type,
+                    context,
+                )
+            except BusinessOSError as error:
+                if error.code == "not_found":
+                    continue
+                raise
+            if membership.is_effective():
+                effective.append(membership)
+        if len(effective) != 1 or effective[0].principal_type != expected_type:
+            raise BusinessOSError("forbidden", "Active membership is required", status_code=403)
+        return effective[0]
+
     async def _read(self, query: ReadOrganization, context: HandlingContext) -> object:
         tenant = _tenant(context.request, query.tenant_id)
-        results: list[tuple[RowMapping, ...]] = []
-        for table in (
-            ENTERPRISE_GROUPS,
-            LEGAL_ENTITIES,
-            COMPANIES,
-            ORG_UNITS,
-            REGIONS,
-            OPERATING_SITES,
-            WAREHOUSES,
-        ):
-            result = await context.unit_of_work.persistence.execute(
-                select(table).where(table.c.tenant_id == tenant.tenant_id).order_by(table.c.code)
-            )
-            results.append(tuple(result.mappings()))
-        kinds = (
-            "enterprise_group",
-            "legal_entity",
-            "company",
-            "org_unit",
-            "region",
-            "operating_site",
-            "warehouse",
-        )
-        groups = tuple(
-            tuple(
-                OrganizationNode(
-                    id=row["id"],
-                    tenant_id=row["tenant_id"],
-                    kind=kind,
-                    code=row["code"],
-                    name=row["name"],
-                    effective_from=row.get("effective_from"),
-                    effective_until=row.get("effective_until"),
-                )
-                for row in rows
-            )
-            for kind, rows in zip(kinds, results, strict=True)
-        )
+
+        async def rows(table: Table, *, order_by_code: bool = True) -> tuple[RowMapping, ...]:
+            statement = select(table).where(table.c.tenant_id == tenant.tenant_id)
+            if order_by_code:
+                statement = statement.order_by(table.c.code)
+            result = await context.unit_of_work.persistence.execute(statement)
+            return tuple(result.mappings())
+
+        groups = await rows(ENTERPRISE_GROUPS)
+        legal_entities = await rows(LEGAL_ENTITIES)
+        companies = await rows(COMPANIES)
+        org_units = await rows(ORG_UNITS)
+        regions = await rows(REGIONS)
+        site_types = await rows(SITE_TYPES)
+        sites = await rows(OPERATING_SITES)
+        dimensions = await rows(FINANCIAL_DIMENSIONS)
+        warehouses = await rows(WAREHOUSES)
+        locations = await rows(WAREHOUSE_LOCATIONS)
+        relationships = await rows(RELATIONSHIPS, order_by_code=False)
+        assignments = await rows(ASSIGNMENTS, order_by_code=False)
+        delegations = await rows(DELEGATED_SCOPES, order_by_code=False)
+
+        def payload(row: RowMapping, kind: str | None = None) -> dict[str, object]:
+            value = dict(row)
+            if kind is not None:
+                value["kind"] = kind
+            return value
+
         return OrganizationSnapshot(
             tenant_id=tenant.tenant_id,
-            enterprise_groups=groups[0],
-            legal_entities=groups[1],
-            companies=groups[2],
-            org_units=groups[3],
-            regions=groups[4],
-            operating_sites=groups[5],
-            warehouses=groups[6],
+            enterprise_groups=tuple(
+                EnterpriseGroupRecord.model_validate(payload(row, "enterprise_group"))
+                for row in groups
+            ),
+            legal_entities=tuple(
+                LegalEntityRecord.model_validate(payload(row, "legal_entity"))
+                for row in legal_entities
+            ),
+            companies=tuple(
+                CompanyRecord.model_validate(payload(row, "company")) for row in companies
+            ),
+            org_units=tuple(
+                OrgUnitRecord.model_validate(payload(row, "org_unit")) for row in org_units
+            ),
+            regions=tuple(RegionRecord.model_validate(payload(row, "region")) for row in regions),
+            site_types=tuple(SiteTypeRecord.model_validate(dict(row)) for row in site_types),
+            operating_sites=tuple(
+                OperatingSiteRecord.model_validate(payload(row, "operating_site")) for row in sites
+            ),
+            financial_dimensions=tuple(
+                FinancialDimensionRecord.model_validate(payload(row, "financial_dimension"))
+                for row in dimensions
+            ),
+            warehouses=tuple(
+                WarehouseRecord.model_validate(payload(row, "warehouse")) for row in warehouses
+            ),
+            warehouse_locations=tuple(
+                WarehouseLocationRecord.model_validate(payload(row, "warehouse_location"))
+                for row in locations
+            ),
+            relationships=tuple(
+                OrganizationRelationshipRecord.model_validate(dict(row)) for row in relationships
+            ),
+            assignments=tuple(EffectiveAssignment.model_validate(dict(row)) for row in assignments),
+            delegations=tuple(
+                DelegatedScopeRecord.model_validate(dict(row)) for row in delegations
+            ),
         )
 
     async def _select_scope(self, query: SelectActiveScope, context: HandlingContext) -> object:
         tenant = _tenant(context.request, query.tenant_id)
+        await self._require_actor_membership(tenant.principal_id, query.principal_type, context)
         checks = (
             ("enterprise_group", query.enterprise_group_id, ENTERPRISE_GROUPS),
             ("legal_entity", query.legal_entity_id, LEGAL_ENTITIES),
@@ -586,50 +689,71 @@ class OrganizationModule:
             ("project", query.project_id, FINANCIAL_DIMENSIONS),
         )
         resolved: dict[str, RowMapping] = {}
-        selected_scopes: set[tuple[str, UUID]] = set()
         for kind, identifier, table in checks:
             if identifier is not None:
-                row = await _require_owned(context, table, identifier, tenant)
-                resolved[kind] = row
-                scope_kind = (
-                    OrganizationScopeType.ORG_UNIT.value
-                    if kind in {"business_unit", "division", "department", "team"}
-                    else OrganizationScopeType.FINANCIAL_DIMENSION.value
-                    if kind in {"cost_center", "profit_center", "project"}
-                    else kind
+                row = await _require_effective_row(
+                    context, table, identifier, tenant, datetime.now(UTC), lock=True
                 )
-                selected_scopes.add((scope_kind, identifier))
-        _validate_selected_hierarchy(resolved)
+                resolved[kind] = row
+        selection = await _canonical_scope_selection(context, tenant, resolved)
         now = datetime.now(UTC)
         authorized_by_delegation = False
         if query.delegation_id is not None:
             delegation = await _require_owned(
-                context, DELEGATED_SCOPES, query.delegation_id, tenant
+                context, DELEGATED_SCOPES, query.delegation_id, tenant, lock=True
             )
             if (
                 delegation["recipient_principal_id"] != tenant.principal_id
+                or delegation["recipient_principal_type"] != query.principal_type
                 or delegation["valid_from"] > now
-                or delegation["valid_until"] < now
-                or (delegation["scope_type"], delegation["scope_id"]) not in selected_scopes
+                or delegation["valid_until"] <= now
+                or not selection.authorized_by((delegation["scope_type"], delegation["scope_id"]))
             ):
                 raise BusinessOSError(
                     "forbidden", "Delegation does not authorize the selected scope", status_code=403
                 )
+            await _require_effective_scope(
+                context,
+                OrganizationScopeType(delegation["scope_type"]),
+                delegation["scope_id"],
+                tenant,
+                now,
+            )
             authorized_by_delegation = True
-        if selected_scopes and not authorized_by_delegation:
+        if selection.leaves and not authorized_by_delegation:
             assignments = await context.unit_of_work.persistence.execute(
-                select(ASSIGNMENTS.c.scope_type, ASSIGNMENTS.c.scope_id).where(
+                select(ASSIGNMENTS.c.scope_type, ASSIGNMENTS.c.scope_id)
+                .where(
                     ASSIGNMENTS.c.tenant_id == tenant.tenant_id,
                     ASSIGNMENTS.c.principal_id == tenant.principal_id,
+                    ASSIGNMENTS.c.principal_type == query.principal_type,
                     (ASSIGNMENTS.c.valid_from.is_(None) | (ASSIGNMENTS.c.valid_from <= now)),
-                    (ASSIGNMENTS.c.valid_until.is_(None) | (ASSIGNMENTS.c.valid_until >= now)),
+                    (ASSIGNMENTS.c.valid_until.is_(None) | (ASSIGNMENTS.c.valid_until > now)),
                 )
+                .with_for_update(read=True)
             )
-            if selected_scopes.isdisjoint(set(assignments.tuples())):
+            valid_assignments: set[tuple[str, UUID]] = set()
+            for scope_type, scope_id in assignments.tuples():
+                try:
+                    await _require_effective_scope(
+                        context,
+                        OrganizationScopeType(scope_type),
+                        scope_id,
+                        tenant,
+                        now,
+                    )
+                except (BusinessOSError, ValueError):
+                    continue
+                valid_assignments.add((scope_type, scope_id))
+            if not all(
+                any(grant in selection.lineages[leaf] for grant in valid_assignments)
+                for leaf in selection.leaves
+            ):
                 raise BusinessOSError(
                     "forbidden", "Principal is not assigned to the selected scope", status_code=403
                 )
-        return replace(
+        await self._require_actor_membership(tenant.principal_id, query.principal_type, context)
+        selected = replace(
             tenant,
             enterprise_group_id=query.enterprise_group_id,
             legal_entity_id=query.legal_entity_id,
@@ -646,45 +770,238 @@ class OrganizationModule:
             project_id=query.project_id,
             delegation_id=query.delegation_id,
         )
+        context.emit(
+            ActiveScopeSelected(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                principal_id=tenant.principal_id,
+                principal_type=query.principal_type,
+                previous_scope=_scope_projection(tenant),
+                selected_scope=_scope_projection(selected),
+            )
+        )
+        await context.unit_of_work.commit()
+        return selected
 
 
-def _validate_selected_hierarchy(rows: dict[str, RowMapping]) -> None:
-    group = rows.get("enterprise_group")
-    legal = rows.get("legal_entity")
-    company = rows.get("company")
-    if group is not None and legal is not None and legal["enterprise_group_id"] != group["id"]:
-        raise _hierarchy_error()
-    if legal is not None and company is not None and company["legal_entity_id"] != legal["id"]:
-        raise _hierarchy_error()
-    for kind in ("business_unit", "division", "department", "team"):
-        row = rows.get(kind)
-        if row is not None:
+@dataclass(frozen=True, slots=True)
+class _ScopeSelection:
+    lineages: dict[tuple[str, UUID], frozenset[tuple[str, UUID]]]
+    leaves: frozenset[tuple[str, UUID]]
+
+    def authorized_by(self, grant: tuple[str, UUID]) -> bool:
+        return bool(self.leaves) and all(grant in self.lineages[leaf] for leaf in self.leaves)
+
+
+async def _canonical_scope_selection(
+    context: HandlingContext,
+    tenant: TenantContext,
+    rows: dict[str, RowMapping],
+) -> _ScopeSelection:
+    lineages: dict[tuple[str, UUID], frozenset[tuple[str, UUID]]] = {}
+    for kind, row in rows.items():
+        pair = (_canonical_kind(kind), cast(UUID, row["id"]))
+        lineages[pair] = await _scope_lineage(context, tenant, kind, row)
+        if kind in {"business_unit", "division", "department", "team"}:
             if row["unit_type"] != kind:
                 raise _hierarchy_error()
-            if company is not None and row["company_id"] != company["id"]:
-                raise _hierarchy_error()
-    region = rows.get("region")
-    if region is not None and company is not None and region["company_id"] != company["id"]:
-        raise _hierarchy_error()
-    site = rows.get("operating_site")
-    if site is not None:
-        if company is not None and site["company_id"] != company["id"]:
-            raise _hierarchy_error()
-        if region is not None and site["region_id"] != region["id"]:
-            raise _hierarchy_error()
-    warehouse = rows.get("warehouse")
-    if warehouse is not None:
-        if company is not None and warehouse["company_id"] != company["id"]:
-            raise _hierarchy_error()
-        if site is not None and warehouse["operating_site_id"] != site["id"]:
-            raise _hierarchy_error()
-    for kind in ("cost_center", "profit_center", "project"):
-        row = rows.get(kind)
-        if row is not None:
+        if kind in {"cost_center", "profit_center", "project"}:
             if row["dimension_type"] != kind:
                 raise _hierarchy_error()
-            if company is not None and row["company_id"] != company["id"]:
+
+    for scope_type in (
+        OrganizationScopeType.ENTERPRISE_GROUP.value,
+        OrganizationScopeType.LEGAL_ENTITY.value,
+        OrganizationScopeType.COMPANY.value,
+    ):
+        identifiers = {
+            identifier
+            for lineage in lineages.values()
+            for kind, identifier in lineage
+            if kind == scope_type
+        }
+        if len(identifiers) > 1:
+            raise _hierarchy_error()
+
+    for pair in lineages:
+        if pair[0] == OrganizationScopeType.FINANCIAL_DIMENSION.value:
+            continue
+        for other, other_lineage in lineages.items():
+            if pair == other:
+                continue
+            if pair[0] == other[0]:
+                continue
+            if any(kind == pair[0] for kind, _identifier in other_lineage):
+                if pair not in other_lineage:
+                    raise _hierarchy_error()
+
+    _require_single_chain(lineages, OrganizationScopeType.ORG_UNIT.value)
+    _require_single_chain(lineages, OrganizationScopeType.REGION.value)
+    selected = set(lineages)
+    leaves = frozenset(
+        pair
+        for pair in selected
+        if not any(pair != other and pair in lineages[other] for other in selected)
+    )
+    return _ScopeSelection(lineages, leaves)
+
+
+def _require_single_chain(
+    lineages: dict[tuple[str, UUID], frozenset[tuple[str, UUID]]],
+    scope_type: str,
+) -> None:
+    selected = [pair for pair in lineages if pair[0] == scope_type]
+    for index, left in enumerate(selected):
+        for right in selected[index + 1 :]:
+            if left not in lineages[right] and right not in lineages[left]:
                 raise _hierarchy_error()
+
+
+async def _scope_lineage(
+    context: HandlingContext,
+    tenant: TenantContext,
+    selected_kind: str,
+    selected: RowMapping,
+) -> frozenset[tuple[str, UUID]]:
+    now = datetime.now(UTC)
+    lineage: set[tuple[str, UUID]] = {(_canonical_kind(selected_kind), cast(UUID, selected["id"]))}
+
+    async def company_lineage(company_id: UUID) -> None:
+        company = await _require_effective_row(
+            context, COMPANIES, company_id, tenant, now, lock=True
+        )
+        legal = await _require_effective_row(
+            context, LEGAL_ENTITIES, company["legal_entity_id"], tenant, now, lock=True
+        )
+        group = await _require_effective_row(
+            context,
+            ENTERPRISE_GROUPS,
+            legal["enterprise_group_id"],
+            tenant,
+            now,
+            lock=True,
+        )
+        lineage.update(
+            {
+                (OrganizationScopeType.COMPANY.value, cast(UUID, company["id"])),
+                (OrganizationScopeType.LEGAL_ENTITY.value, cast(UUID, legal["id"])),
+                (OrganizationScopeType.ENTERPRISE_GROUP.value, cast(UUID, group["id"])),
+            }
+        )
+
+    if selected_kind == "enterprise_group":
+        return frozenset(lineage)
+    if selected_kind == "legal_entity":
+        group = await _require_effective_row(
+            context,
+            ENTERPRISE_GROUPS,
+            selected["enterprise_group_id"],
+            tenant,
+            now,
+            lock=True,
+        )
+        lineage.add((OrganizationScopeType.ENTERPRISE_GROUP.value, cast(UUID, group["id"])))
+        return frozenset(lineage)
+    if selected_kind == "company":
+        await company_lineage(cast(UUID, selected["id"]))
+        return frozenset(lineage)
+
+    company_id = cast(UUID, selected["company_id"])
+    await company_lineage(company_id)
+    if selected_kind in {"business_unit", "division", "department", "team"}:
+        await _append_parent_chain(
+            context, tenant, ORG_UNITS, selected, OrganizationScopeType.ORG_UNIT.value, lineage
+        )
+    elif selected_kind == "region":
+        await _append_parent_chain(
+            context, tenant, REGIONS, selected, OrganizationScopeType.REGION.value, lineage
+        )
+    elif selected_kind == "operating_site":
+        site_type = await _require_owned(
+            context, SITE_TYPES, selected["site_type_id"], tenant, lock=True
+        )
+        if not site_type["active"]:
+            raise _hierarchy_error()
+        if selected["region_id"] is not None:
+            region = await _require_effective_row(
+                context, REGIONS, selected["region_id"], tenant, now, lock=True
+            )
+            if region["company_id"] != company_id:
+                raise _hierarchy_error()
+            await _append_parent_chain(
+                context,
+                tenant,
+                REGIONS,
+                region,
+                OrganizationScopeType.REGION.value,
+                lineage,
+            )
+    elif selected_kind == "warehouse" and selected["operating_site_id"] is not None:
+        site = await _require_effective_row(
+            context, OPERATING_SITES, selected["operating_site_id"], tenant, now, lock=True
+        )
+        if site["company_id"] != company_id:
+            raise _hierarchy_error()
+        lineage.update(await _scope_lineage(context, tenant, "operating_site", site))
+    return frozenset(lineage)
+
+
+async def _append_parent_chain(
+    context: HandlingContext,
+    tenant: TenantContext,
+    table: Table,
+    first: RowMapping,
+    scope_type: str,
+    lineage: set[tuple[str, UUID]],
+) -> None:
+    current = first
+    visited: set[UUID] = set()
+    company_id = current["company_id"]
+    while True:
+        identifier = cast(UUID, current["id"])
+        if identifier in visited:
+            raise _hierarchy_error()
+        visited.add(identifier)
+        lineage.add((scope_type, identifier))
+        parent_id = current["parent_id"]
+        if parent_id is None:
+            return
+        current = await _require_effective_row(
+            context, table, parent_id, tenant, datetime.now(UTC), lock=True
+        )
+        if current["company_id"] != company_id:
+            raise _hierarchy_error()
+
+
+def _canonical_kind(kind: str) -> str:
+    if kind in {"business_unit", "division", "department", "team"}:
+        return OrganizationScopeType.ORG_UNIT.value
+    if kind in {"cost_center", "profit_center", "project"}:
+        return OrganizationScopeType.FINANCIAL_DIMENSION.value
+    return kind
+
+
+def _scope_projection(tenant: TenantContext) -> dict[str, str | None]:
+    fields = (
+        "enterprise_group_id",
+        "legal_entity_id",
+        "active_company_id",
+        "business_unit_id",
+        "division_id",
+        "department_id",
+        "team_id",
+        "region_id",
+        "operating_site_id",
+        "warehouse_id",
+        "cost_center_id",
+        "profit_center_id",
+        "project_id",
+        "delegation_id",
+    )
+    return {
+        field: str(value) if (value := getattr(tenant, field)) is not None else None
+        for field in fields
+    }
 
 
 async def _insert_named(
@@ -694,7 +1011,7 @@ async def _insert_named(
     tenant: TenantContext,
     **extra: object,
 ) -> None:
-    _valid_dates(command.effective_from, command.effective_until)
+    validate_effective_period(command.effective_from, command.effective_until)
     await context.unit_of_work.persistence.execute(
         insert(table).values(
             id=command.id,
@@ -709,17 +1026,61 @@ async def _insert_named(
 
 
 async def _require_owned(
-    context: HandlingContext, table: Table, identifier: UUID, tenant: TenantContext
+    context: HandlingContext,
+    table: Table,
+    identifier: UUID,
+    tenant: TenantContext,
+    *,
+    lock: bool = False,
 ) -> RowMapping:
-    result = await context.unit_of_work.persistence.execute(
-        select(table).where(table.c.id == identifier, table.c.tenant_id == tenant.tenant_id)
-    )
+    statement = select(table).where(table.c.id == identifier, table.c.tenant_id == tenant.tenant_id)
+    if lock:
+        statement = statement.with_for_update(read=True)
+    result = await context.unit_of_work.persistence.execute(statement)
     row = result.mappings().one_or_none()
     if row is None:
         raise BusinessOSError(
             "invalid_organization_scope", "Organization scope is invalid", status_code=422
         )
     return row
+
+
+async def _require_effective_row(
+    context: HandlingContext,
+    table: Table,
+    identifier: UUID,
+    tenant: TenantContext,
+    instant: datetime,
+    *,
+    lock: bool = False,
+) -> RowMapping:
+    row = await _require_owned(context, table, identifier, tenant, lock=lock)
+    if not row["active"] or not effective_at(
+        row["effective_from"], row["effective_until"], instant.date()
+    ):
+        raise BusinessOSError(
+            "inactive_organization_scope",
+            "Organization scope is not currently effective",
+            status_code=422,
+        )
+    return row
+
+
+async def _require_effective_scope(
+    context: HandlingContext,
+    scope_type: OrganizationScopeType,
+    identifier: UUID,
+    tenant: TenantContext,
+    instant: datetime,
+) -> RowMapping:
+    return await _require_effective_row(
+        context,
+        _SCOPE_TABLES[scope_type],
+        identifier,
+        tenant,
+        instant,
+        lock=True,
+    )
 
 
 def _tenant(context: RequestContext, expected: UUID) -> TenantContext:
@@ -729,20 +1090,6 @@ def _tenant(context: RequestContext, expected: UUID) -> TenantContext:
     if tenant.tenant_id != expected:
         raise BusinessOSError("forbidden", "Tenant scope mismatch", status_code=403)
     return tenant
-
-
-def _valid_dates(start: date | None, end: date | None) -> None:
-    if start is not None and end is not None and end < start:
-        raise BusinessOSError(
-            "invalid_effective_dates", "Effective dates are invalid", status_code=422
-        )
-
-
-def _valid_datetimes(start: datetime | None, end: datetime | None) -> None:
-    if start is not None and end is not None and end < start:
-        raise BusinessOSError(
-            "invalid_effective_dates", "Effective dates are invalid", status_code=422
-        )
 
 
 def _hierarchy_error() -> BusinessOSError:

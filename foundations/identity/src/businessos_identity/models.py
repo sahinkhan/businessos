@@ -86,6 +86,7 @@ DEVICES = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("principal_id", UUID(as_uuid=True), nullable=False),
+    Column("principal_type", String(30), nullable=False, server_default="user"),
     Column("name", String(200), nullable=False),
     Column("device_type", String(100), nullable=False),
     Column("credential_secret_reference", Text(), nullable=False),

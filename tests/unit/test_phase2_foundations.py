@@ -12,8 +12,14 @@ from businessos_identity import (
     OIDCTokenVerifier,
 )
 from businessos_organization import CreateLegalEntity
-from businessos_tenant import DeploymentMode, ProvisionTenant, TenantLifecycleHooks
+from businessos_tenant import (
+    DeploymentMode,
+    ProvisionTenant,
+    TenantLifecycleHooks,
+    validate_effective_period,
+)
 from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.exceptions import PyJWKClientError
 from pydantic import ValidationError
 
 from businessos.errors import BusinessOSError
@@ -25,6 +31,11 @@ class StaticKeyResolver:
 
     async def resolve(self, token: str) -> object:
         return self.key
+
+
+class UnknownKeyResolver:
+    async def resolve(self, token: str) -> object:
+        raise PyJWKClientError("No matching kid in provider key set")
 
 
 @pytest.mark.asyncio
@@ -69,6 +80,34 @@ def test_oidc_configuration_rejects_unsafe_transport_and_algorithms() -> None:
             audience="businessos",
             jwks_uri="https://identity.example.test/jwks",
         )
+
+
+@pytest.mark.asyncio
+async def test_unknown_oidc_kid_is_normalized_to_safe_invalid_token() -> None:
+    verifier = OIDCTokenVerifier(
+        OIDCConfiguration(
+            issuer="https://identity.example.test",
+            audience="businessos",
+            jwks_uri="https://identity.example.test/jwks",
+        ),
+        UnknownKeyResolver(),
+    )
+    with pytest.raises(BusinessOSError) as failure:
+        await verifier.verify("header.payload.signature")
+    assert failure.value.code == "invalid_token"
+    assert failure.value.status_code == 401
+    assert "kid" not in str(failure.value).casefold()
+
+
+def test_phase2_temporal_validation_is_strict_and_timezone_safe() -> None:
+    aware = datetime.now(UTC)
+    with pytest.raises(BusinessOSError, match="end after start"):
+        validate_effective_period(aware, aware)
+    with pytest.raises(BusinessOSError):
+        validate_effective_period(aware, aware - timedelta(seconds=1))
+    with pytest.raises(BusinessOSError):
+        validate_effective_period(aware, datetime.now())
+    validate_effective_period(aware, aware + timedelta(seconds=1))
     with pytest.raises(ValueError, match="asymmetric"):
         OIDCConfiguration(
             issuer="https://identity.example.test",

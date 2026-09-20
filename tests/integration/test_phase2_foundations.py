@@ -1318,3 +1318,78 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
     app.runtime.migrations.downgrade(postgres_database.migration_url)
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     app.runtime.migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_identity_migration_rejects_existing_cross_tenant_device_principal(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
+    assert app.runtime is not None
+    migrations = app.runtime.migrations
+    migrations.upgrade(postgres_database.migration_url, "identity_0001")
+
+    principal_tenant_id = uuid4()
+    device_tenant_id = uuid4()
+    principal_id = uuid4()
+    device_id = uuid4()
+    _seed_tenant(postgres_database.migration_url, principal_tenant_id, "principal-tenant")
+    _seed_tenant(postgres_database.migration_url, device_tenant_id, "device-tenant")
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_identity.users "
+            "(id, tenant_id, email, display_name) VALUES (%s, %s, %s, %s)",
+            (principal_id, principal_tenant_id, "principal@example.test", "Principal"),
+        )
+        connection.execute(
+            "INSERT INTO platform_identity.devices "
+            "(id, tenant_id, principal_id, name, device_type, credential_secret_reference) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (
+                device_id,
+                device_tenant_id,
+                principal_id,
+                "Cross-tenant device",
+                "workstation",
+                "secret://device/cross-tenant",
+            ),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="same tenant") as invalid_upgrade:
+        migrations.upgrade(postgres_database.migration_url)
+    assert isinstance(invalid_upgrade.value.orig, psycopg.errors.ForeignKeyViolation)
+
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
+        principal_type_column = connection.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema = 'platform_identity' "
+            "AND table_name = 'devices' AND column_name = 'principal_type'"
+        ).fetchone()
+        persisted_device = connection.execute(
+            "SELECT tenant_id, principal_id FROM platform_identity.devices WHERE id = %s",
+            (device_id,),
+        ).fetchone()
+        connection.execute(
+            "UPDATE platform_identity.devices SET tenant_id = %s WHERE id = %s",
+            (principal_tenant_id, device_id),
+        )
+        connection.commit()
+
+    assert heads == {"identity_0001"}
+    assert principal_type_column is None
+    assert persisted_device == (device_tenant_id, principal_id)
+
+    migrations.upgrade(postgres_database.migration_url)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
+        migrated_device = connection.execute(
+            "SELECT tenant_id, principal_id, principal_type "
+            "FROM platform_identity.devices WHERE id = %s",
+            (device_id,),
+        ).fetchone()
+    assert heads == {"organization_0002"}
+    assert migrated_device == (principal_tenant_id, principal_id, "user")
+    migrations.downgrade(postgres_database.migration_url)

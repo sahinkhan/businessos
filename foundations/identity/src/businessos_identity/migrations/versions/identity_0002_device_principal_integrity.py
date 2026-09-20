@@ -16,6 +16,28 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.execute(
+        """
+        DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1
+            FROM platform_identity.devices AS device
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM platform_identity.users AS principal
+              WHERE principal.tenant_id = device.tenant_id
+                AND principal.id = device.principal_id
+                AND principal.active
+            )
+          ) THEN
+            RAISE EXCEPTION
+              'existing devices must reference active users in the same tenant'
+              USING ERRCODE = '23503';
+          END IF;
+        END $$
+        """
+    )
     op.add_column(
         "devices",
         sa.Column("principal_type", sa.String(length=30), server_default="user", nullable=False),

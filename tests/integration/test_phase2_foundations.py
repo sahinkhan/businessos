@@ -60,6 +60,7 @@ from businessos_tenant import (
     SetTenantEntitlement,
     SetTenantQuota,
     TenantEntitlementRecord,
+    TenantLifecycleWorkRequested,
     TenantModule,
     TenantQuotaRecord,
     TenantRecord,
@@ -156,14 +157,14 @@ async def test_tenant_transitions_orchestrate_lifecycle_hooks(
     calls: list[str] = []
 
     class Hook:
-        async def export(self, tenant_id: UUID) -> None:
-            calls.append(f"export:{tenant_id}")
+        async def export(self, tenant_id: UUID, operation_id: UUID) -> None:
+            calls.append(f"export:{tenant_id}:{operation_id}")
 
-        async def delete(self, tenant_id: UUID) -> None:
-            calls.append(f"delete:{tenant_id}")
+        async def delete(self, tenant_id: UUID, operation_id: UUID) -> None:
+            calls.append(f"delete:{tenant_id}:{operation_id}")
 
-        async def restore(self, tenant_id: UUID) -> None:
-            calls.append(f"restore:{tenant_id}")
+        async def restore(self, tenant_id: UUID, operation_id: UUID) -> None:
+            calls.append(f"restore:{tenant_id}:{operation_id}")
 
     tenant_module = TenantModule()
     tenant_module.lifecycle_hooks.register("test.lifecycle", Hook())
@@ -204,11 +205,21 @@ async def test_tenant_transitions_orchestrate_lifecycle_hooks(
         TransitionTenant(tenant_id=tenant_id, target=TenantStatus.DELETED),
         context,
     )
-    assert calls == [
-        f"restore:{tenant_id}",
-        f"export:{tenant_id}",
-        f"delete:{tenant_id}",
-    ]
+    assert calls == []
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        payloads = connection.execute(
+            "SELECT payload FROM eventing.outbox_messages "
+            "WHERE tenant_id = %s AND event_type = 'tenant.lifecycle.work-requested.v1' "
+            "ORDER BY occurred_at, id",
+            (tenant_id,),
+        ).fetchall()
+    events = tuple(TenantLifecycleWorkRequested.model_validate(row[0]) for row in payloads)
+    assert [event.operation for event in events] == ["restore", "export", "delete"]
+    async with app.container.request_scope() as dependencies:
+        for event in events:
+            assert await app.runtime.event_consumer.consume(event, context, dependencies) == 1
+            assert await app.runtime.event_consumer.consume(event, context, dependencies) == 0
+    assert calls == [f"{event.operation}:{tenant_id}:{event.event_id}" for event in events]
     await app.shutdown()
     app.runtime.migrations.downgrade(postgres_database.migration_url)
 
@@ -851,7 +862,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         app, GetMembership(tenant_id=tenant_id, principal_id=admin_id), context
     )
     snapshot = await _query(app, ReadOrganization(tenant_id=tenant_id), context)
-    selected = await _query(
+    selected = await _dispatch(
         app,
         SelectActiveScope(
             tenant_id=tenant_id,
@@ -867,7 +878,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         ),
         context,
     )
-    delegated = await _query(
+    delegated = await _dispatch(
         app,
         SelectActiveScope(
             tenant_id=tenant_id,
@@ -878,7 +889,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         context,
     )
     with pytest.raises(BusinessOSError) as delegation_action_escape:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(
                 tenant_id=tenant_id,
@@ -890,7 +901,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         )
     assert delegation_action_escape.value.code == "forbidden"
     with pytest.raises(BusinessOSError) as narrow_delegation_broader_context:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(
                 tenant_id=tenant_id,
@@ -905,7 +916,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         (service_account_id, "service_account"),
         (device_id, "device"),
     ):
-        principal_selection = await _query(
+        principal_selection = await _dispatch(
             app,
             SelectActiveScope(
                 tenant_id=tenant_id,
@@ -949,9 +960,6 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         StartAuthenticationSession(
             session_id=session_id,
             tenant_id=tenant_id,
-            principal_id=admin_id,
-            principal_type="user",
-            authentication_strength="mfa",
             expires_at=expires_at,
         ),
         context,
@@ -997,12 +1005,9 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
             StartAuthenticationSession(
                 session_id=nonhuman_session_id,
                 tenant_id=tenant_id,
-                principal_id=principal_id,
-                principal_type=principal_type,
-                authentication_strength="credential-provider",
                 expires_at=datetime.now(UTC) + timedelta(minutes=10),
             ),
-            context,
+            _context(tenant_id, principal_id),
         )
         nonhuman_session = await _query(
             app,
@@ -1010,10 +1015,12 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
                 tenant_id=tenant_id,
                 session_id=nonhuman_session_id,
             ),
-            context,
+            _context(tenant_id, principal_id),
         )
         assert isinstance(nonhuman_session, AuthenticationSessionRecord)
         assert nonhuman_session.principal_type == principal_type
+        assert nonhuman_session.principal_id == principal_id
+        assert nonhuman_session.authentication_strength == "mfa"
     with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
         audit_count = connection.execute(
             "SELECT count(*) FROM eventing.outbox_messages "
@@ -1022,7 +1029,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         ).fetchone()
     assert audit_count is not None and audit_count[0] >= 2
     with pytest.raises(BusinessOSError) as inconsistent_scope:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(
                 tenant_id=tenant_id,
@@ -1033,7 +1040,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         )
     assert inconsistent_scope.value.code == "invalid_organization_hierarchy"
     with pytest.raises(BusinessOSError) as unrelated_child:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(
                 tenant_id=tenant_id,
@@ -1044,14 +1051,14 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         )
     assert unrelated_child.value.code == "invalid_organization_hierarchy"
     with pytest.raises(BusinessOSError) as parent_assignment_escape:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(tenant_id=tenant_id, company_id=other_company_id),
             context,
         )
     assert parent_assignment_escape.value.code == "forbidden"
     with pytest.raises(BusinessOSError) as legal_site_escape:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(
                 tenant_id=tenant_id,
@@ -1062,7 +1069,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         )
     assert legal_site_escape.value.code == "invalid_organization_hierarchy"
     with pytest.raises(BusinessOSError) as delegation_escape:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(
                 tenant_id=tenant_id,
@@ -1073,7 +1080,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         )
     assert delegation_escape.value.code == "forbidden"
     with pytest.raises(BusinessOSError) as unrelated_org_unit:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(
                 tenant_id=tenant_id,
@@ -1086,7 +1093,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
 
     unassigned_context = _context(tenant_id, uuid4())
     with pytest.raises(BusinessOSError) as unassigned_scope:
-        await _query(
+        await _dispatch(
             app,
             SelectActiveScope(tenant_id=tenant_id, company_id=company_us_id),
             unassigned_context,
@@ -1564,6 +1571,59 @@ def test_identity_migration_rejects_existing_cross_tenant_device_principal(
         ).fetchone()
     assert heads == {"organization_0002"}
     assert migrated_device == (principal_tenant_id, principal_id, "user")
+    migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_identity_migration_rejects_unsupported_existing_mfa_strength(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
+    assert app.runtime is not None
+    migrations = app.runtime.migrations
+    migrations.upgrade(postgres_database.migration_url, "identity_0001")
+    tenant_id = uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_id, "unsupported-mfa")
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_identity.mfa_policies "
+            "(id, tenant_id, minimum_strength, required_methods) "
+            "VALUES (%s, %s, 'custom_strength', ARRAY[]::varchar[])",
+            (uuid4(), tenant_id),
+        )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="unsupported strength") as invalid_upgrade:
+        migrations.upgrade(postgres_database.migration_url)
+    assert isinstance(invalid_upgrade.value.orig, psycopg.errors.CheckViolation)
+
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
+        constraint = connection.execute(
+            "SELECT 1 FROM information_schema.table_constraints "
+            "WHERE constraint_schema = 'platform_identity' "
+            "AND table_name = 'mfa_policies' "
+            "AND constraint_name = 'mfa_policy_minimum_strength'"
+        ).fetchone()
+        connection.execute(
+            "UPDATE platform_identity.mfa_policies SET minimum_strength = 'mfa' "
+            "WHERE tenant_id = %s",
+            (tenant_id,),
+        )
+        connection.commit()
+    assert heads == {"identity_0001"}
+    assert constraint is None
+
+    migrations.upgrade(postgres_database.migration_url)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(
+                "UPDATE platform_identity.mfa_policies SET minimum_strength = 'custom_strength' "
+                "WHERE tenant_id = %s",
+                (tenant_id,),
+            )
+        connection.rollback()
     migrations.downgrade(postgres_database.migration_url)
 
 

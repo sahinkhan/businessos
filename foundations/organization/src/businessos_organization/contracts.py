@@ -182,7 +182,7 @@ class OrganizationSnapshot(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class OrganizationContract:
-    version: str = "1.1"
+    version: str = "1.2"
     read_query: str = "businessos_organization.ReadOrganization"
-    active_scope_query: str = "businessos_organization.SelectActiveScope"
+    active_scope_command: str = "businessos_organization.SelectActiveScope"
     assignment_command: str = "businessos_organization.AssignPrincipal"

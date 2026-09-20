@@ -13,6 +13,7 @@ from businessos_identity import (
     OIDCConfiguration,
     OIDCTokenVerifier,
     SetMFAPolicy,
+    StartAuthenticationSession,
 )
 from businessos_organization import (
     CreateLegalEntity,
@@ -132,13 +133,13 @@ async def test_tenant_lifecycle_hooks_are_ordered() -> None:
         def __init__(self, name: str) -> None:
             self.name = name
 
-        async def export(self, tenant_id: object) -> None:
+        async def export(self, tenant_id: object, operation_id: object) -> None:
             calls.append(f"export:{self.name}")
 
-        async def delete(self, tenant_id: object) -> None:
+        async def delete(self, tenant_id: object, operation_id: object) -> None:
             calls.append(f"delete:{self.name}")
 
-        async def restore(self, tenant_id: object) -> None:
+        async def restore(self, tenant_id: object, operation_id: object) -> None:
             calls.append(f"restore:{self.name}")
 
     hooks = TenantLifecycleHooks()
@@ -148,9 +149,10 @@ async def test_tenant_lifecycle_hooks_are_ordered() -> None:
         hooks.register("a.module", Hook("duplicate"))
 
     tenant_id = uuid4()
-    await hooks.export(tenant_id)
-    await hooks.delete(tenant_id)
-    await hooks.restore(tenant_id)
+    operation_id = uuid4()
+    await hooks.export(tenant_id, operation_id)
+    await hooks.delete(tenant_id, operation_id)
+    await hooks.restore(tenant_id, operation_id)
     assert calls == ["export:a", "export:z", "delete:z", "delete:a", "restore:a", "restore:z"]
 
 
@@ -196,11 +198,21 @@ def test_phase2_v1_public_contracts_preserve_legacy_construction_and_boundary_se
     )
     assert membership.is_effective(boundary)
 
-    policy = SetMFAPolicy(
-        tenant_id=tenant_id,
-        minimum_strength="custom_strength",
-    )
-    assert policy.minimum_strength == "custom_strength"
+    with pytest.raises(ValidationError):
+        SetMFAPolicy(
+            tenant_id=tenant_id,
+            minimum_strength="custom_strength",
+        )
+    with pytest.raises(ValidationError):
+        StartAuthenticationSession.model_validate(
+            {
+                "tenant_id": tenant_id,
+                "principal_id": principal_id,
+                "principal_type": "user",
+                "authentication_strength": "mfa",
+                "expires_at": datetime.now(UTC) + timedelta(hours=1),
+            }
+        )
 
     company = OrganizationNode(
         id=uuid4(),

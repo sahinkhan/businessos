@@ -7,7 +7,7 @@ from typing import ClassVar, Literal
 from uuid import UUID, uuid4
 
 from businessos_tenant import validate_effective_period
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -26,6 +26,7 @@ from businessos.sdk import (
 
 from .contracts import (
     AuthenticationSessionRecord,
+    AuthenticationStrength,
     IdentityContract,
     MembershipRecord,
     MembershipStatus,
@@ -104,7 +105,7 @@ class ConfigureOIDCProvider(Command):
 
 class SetMFAPolicy(Command):
     tenant_id: UUID
-    minimum_strength: str = Field(min_length=1, max_length=100)
+    minimum_strength: AuthenticationStrength
     required_methods: tuple[str, ...] = ()
     configuration: dict[str, object] = Field(default_factory=dict)
 
@@ -116,11 +117,10 @@ class GetMembership(Query):
 
 
 class StartAuthenticationSession(Command):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     session_id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
-    principal_id: UUID
-    principal_type: Literal["user", "service_account", "device"]
-    authentication_strength: str = Field(min_length=1, max_length=100)
     expires_at: datetime
 
 
@@ -208,7 +208,7 @@ class IdentityModule:
         registration.command(
             StartAuthenticationSession,
             self._start_session,
-            permission="foundation.identity.manage",
+            permission="foundation.identity.read",
         )
         registration.command(
             RevokeAuthenticationSession,
@@ -487,28 +487,33 @@ class IdentityModule:
                 "invalid_session_expiry", "Session expiry must be a future instant", status_code=422
             )
         membership = await context.unit_of_work.persistence.execute(
-            select(MEMBERSHIPS.c.id).where(
+            select(MEMBERSHIPS.c.id, MEMBERSHIPS.c.principal_type).where(
                 MEMBERSHIPS.c.tenant_id == tenant.tenant_id,
-                MEMBERSHIPS.c.principal_id == command.principal_id,
-                MEMBERSHIPS.c.principal_type == command.principal_type,
+                MEMBERSHIPS.c.principal_id == tenant.principal_id,
                 MEMBERSHIPS.c.status == MembershipStatus.ACTIVE,
                 (MEMBERSHIPS.c.valid_from.is_(None) | (MEMBERSHIPS.c.valid_from <= now)),
                 (MEMBERSHIPS.c.valid_until.is_(None) | (MEMBERSHIPS.c.valid_until > now)),
             )
         )
-        if membership.scalar_one_or_none() is None:
+        memberships = tuple(membership)
+        if len(memberships) != 1:
             raise BusinessOSError(
                 "invalid_membership", "Active tenant membership is required", status_code=403
             )
+        principal_type = memberships[0].principal_type
         principal_table = {
             "user": USERS,
             "service_account": SERVICE_ACCOUNTS,
             "device": DEVICES,
-        }[command.principal_type]
+        }.get(principal_type)
+        if principal_table is None:
+            raise BusinessOSError(
+                "invalid_principal", "Active principal is required", status_code=403
+            )
         principal = await context.unit_of_work.persistence.execute(
             select(principal_table.c.id).where(
                 principal_table.c.tenant_id == tenant.tenant_id,
-                principal_table.c.id == command.principal_id,
+                principal_table.c.id == tenant.principal_id,
                 principal_table.c.active.is_(True),
             )
         )
@@ -520,9 +525,9 @@ class IdentityModule:
             insert(AUTHENTICATION_SESSIONS).values(
                 id=command.session_id,
                 tenant_id=tenant.tenant_id,
-                principal_id=command.principal_id,
-                principal_type=command.principal_type,
-                authentication_strength=command.authentication_strength,
+                principal_id=tenant.principal_id,
+                principal_type=principal_type,
+                authentication_strength=tenant.authentication_strength,
                 expires_at=command.expires_at,
             )
         )
@@ -531,8 +536,8 @@ class IdentityModule:
                 tenant_id=tenant.tenant_id,
                 correlation_id=context.request.correlation_id,
                 session_id=command.session_id,
-                principal_id=command.principal_id,
-                principal_type=command.principal_type,
+                principal_id=tenant.principal_id,
+                principal_type=principal_type,
             )
         )
         return {"session_id": command.session_id}

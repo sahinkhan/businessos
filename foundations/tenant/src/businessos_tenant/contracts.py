@@ -132,11 +132,13 @@ def _invalid_effective_period() -> BusinessOSError:
 
 
 class TenantLifecycleHook(Protocol):
-    async def export(self, tenant_id: UUID) -> None: ...
+    """Idempotent external lifecycle work keyed by a durable operation id."""
 
-    async def delete(self, tenant_id: UUID) -> None: ...
+    async def export(self, tenant_id: UUID, operation_id: UUID) -> None: ...
 
-    async def restore(self, tenant_id: UUID) -> None: ...
+    async def delete(self, tenant_id: UUID, operation_id: UUID) -> None: ...
+
+    async def restore(self, tenant_id: UUID, operation_id: UUID) -> None: ...
 
 
 class TenantAccessValidator(Protocol):
@@ -202,17 +204,17 @@ class TenantLifecycleHooks:
             raise ValueError(f"Tenant lifecycle hook already registered: {owner}")
         self._hooks[owner] = hook
 
-    async def export(self, tenant_id: UUID) -> None:
+    async def export(self, tenant_id: UUID, operation_id: UUID) -> None:
         for owner in sorted(self._hooks):
-            await self._hooks[owner].export(tenant_id)
+            await self._hooks[owner].export(tenant_id, operation_id)
 
-    async def delete(self, tenant_id: UUID) -> None:
+    async def delete(self, tenant_id: UUID, operation_id: UUID) -> None:
         for owner in reversed(sorted(self._hooks)):
-            await self._hooks[owner].delete(tenant_id)
+            await self._hooks[owner].delete(tenant_id, operation_id)
 
-    async def restore(self, tenant_id: UUID) -> None:
+    async def restore(self, tenant_id: UUID, operation_id: UUID) -> None:
         for owner in sorted(self._hooks):
-            await self._hooks[owner].restore(tenant_id)
+            await self._hooks[owner].restore(tenant_id, operation_id)
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 from importlib.resources import files
-from typing import ClassVar
+from typing import ClassVar, Literal
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -14,6 +14,7 @@ from businessos.sdk import (
     BusinessOSError,
     Command,
     DomainEvent,
+    EventHandlingContext,
     HandlingContext,
     ModuleManifest,
     ModuleRegistration,
@@ -93,6 +94,13 @@ class TenantSuspended(DomainEvent):
     event_type: ClassVar[str] = "tenant.suspended.v1"
 
 
+class TenantLifecycleWorkRequested(DomainEvent):
+    """Durable, retryable lifecycle work; event_id is the idempotency key."""
+
+    event_type: ClassVar[str] = "tenant.lifecycle.work-requested.v1"
+    operation: Literal["export", "delete", "restore"]
+
+
 _TRANSITIONS: dict[TenantStatus, frozenset[TenantStatus]] = {
     TenantStatus.REQUESTED: frozenset({TenantStatus.PROVISIONING}),
     TenantStatus.PROVISIONING: frozenset({TenantStatus.ACTIVE, TenantStatus.TERMINATING}),
@@ -140,6 +148,11 @@ class TenantModule:
             GetTenantEntitlements, self._get_entitlements, permission="foundation.tenant.read"
         )
         registration.query(GetTenantQuotas, self._get_quotas, permission="foundation.tenant.read")
+        registration.event(
+            TenantLifecycleWorkRequested,
+            "lifecycle-hooks",
+            self._run_lifecycle_hooks,
+        )
 
     async def start(self) -> None:
         return None
@@ -198,14 +211,15 @@ class TenantModule:
                 "Tenant lifecycle transition is not allowed",
                 status_code=409,
             )
+        operation: Literal["export", "delete", "restore"] | None = None
         if command.target is TenantStatus.TERMINATING:
-            await self.lifecycle_hooks.export(tenant.tenant_id)
+            operation = "export"
         elif command.target is TenantStatus.DELETED:
-            await self.lifecycle_hooks.delete(tenant.tenant_id)
+            operation = "delete"
         elif (
             current_status is TenantStatus.RETENTION_HOLD and command.target is TenantStatus.ACTIVE
         ):
-            await self.lifecycle_hooks.restore(tenant.tenant_id)
+            operation = "restore"
         await context.unit_of_work.persistence.execute(
             update(TENANTS)
             .where(TENANTS.c.tenant_id == tenant.tenant_id)
@@ -235,7 +249,24 @@ class TenantModule:
                     correlation_id=context.request.correlation_id,
                 )
             )
+        if operation is not None:
+            context.emit(
+                TenantLifecycleWorkRequested(
+                    tenant_id=tenant.tenant_id,
+                    correlation_id=context.request.correlation_id,
+                    operation=operation,
+                )
+            )
         return {"tenant_id": tenant.tenant_id, "status": command.target}
+
+    async def _run_lifecycle_hooks(
+        self,
+        event: TenantLifecycleWorkRequested,
+        context: EventHandlingContext,
+    ) -> None:
+        del context
+        operation = getattr(self.lifecycle_hooks, event.operation)
+        await operation(event.tenant_id, event.event_id)
 
     async def _set_entitlement(
         self, command: SetTenantEntitlement, context: HandlingContext

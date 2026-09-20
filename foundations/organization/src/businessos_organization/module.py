@@ -173,7 +173,7 @@ class ReadOrganization(Query):
     tenant_id: UUID
 
 
-class SelectActiveScope(Query):
+class SelectActiveScope(Command):
     tenant_id: UUID
     principal_type: Literal["user", "service_account", "device"] = "user"
     action: str = Field(default="organization.read", pattern=r"^[a-z][a-z0-9_.:-]+$")
@@ -298,7 +298,7 @@ class OrganizationModule:
             DelegateScope, self._delegation, permission="foundation.organization.manage"
         )
         registration.query(ReadOrganization, self._read, permission="foundation.organization.read")
-        registration.query(
+        registration.command(
             SelectActiveScope, self._select_scope, permission="foundation.organization.read"
         )
 
@@ -783,7 +783,6 @@ class OrganizationModule:
                 selected_scope=_scope_projection(selected),
             )
         )
-        await context.unit_of_work.commit()
         return selected
 
 

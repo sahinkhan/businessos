@@ -67,8 +67,26 @@ def upgrade() -> None:
               'existing authentication sessions must reference users in the same tenant'
               USING ERRCODE = '23503';
           END IF;
+
+          IF EXISTS (
+            SELECT 1 FROM platform_identity.mfa_policies
+            WHERE minimum_strength NOT IN (
+              'unspecified', 'password', 'oidc', 'mfa',
+              'phishing_resistant', 'break_glass'
+            )
+          ) THEN
+            RAISE EXCEPTION 'existing MFA policies contain an unsupported strength'
+              USING ERRCODE = '23514';
+          END IF;
         END $$
         """
+    )
+    op.create_check_constraint(
+        "mfa_policy_minimum_strength",
+        "mfa_policies",
+        "minimum_strength IN ("
+        "'unspecified','password','oidc','mfa','phishing_resistant','break_glass')",
+        schema="platform_identity",
     )
     op.add_column(
         "devices",
@@ -221,6 +239,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_constraint(
+        "mfa_policy_minimum_strength",
+        "mfa_policies",
+        schema="platform_identity",
+        type_="check",
+    )
     for table in ("users", "service_accounts", "devices"):
         op.execute(
             f"DROP TRIGGER IF EXISTS {table}_protect_principal_references "

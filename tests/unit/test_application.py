@@ -1294,3 +1294,60 @@ async def test_startup_timeout_allows_cancelled_hook_to_finish_resource_rollback
     assert rollback_completed.is_set()
     assert not resource_open
     assert app.state is ApplicationState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_completed_startup_component_is_rolled_back_when_cancellation_wins_delivery() -> None:
+    app = BusinessOSApplication(_settings(), router=Router(), container=Container())
+    timeline: list[str] = []
+    startup_task: asyncio.Task[None] | None = None
+
+    async def start() -> None:
+        timeline.append("resource:open")
+        assert startup_task is not None
+        asyncio.get_running_loop().call_soon(startup_task.cancel)
+
+    async def stop() -> None:
+        timeline.append("resource:close")
+
+    app.add_lifecycle("race", start, stop)
+    startup_task = asyncio.create_task(app.startup())
+
+    with pytest.raises(asyncio.CancelledError):
+        await startup_task
+    await app.shutdown()
+
+    assert timeline == ["resource:open", "resource:close"]
+    assert app.state is ApplicationState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_composed_provider_is_closed_when_startup_cancellation_wins_delivery() -> None:
+    timeline: list[str] = []
+    startup_task: asyncio.Task[None] | None = None
+
+    class Provider:
+        async def start(self) -> None:
+            timeline.append("provider:open")
+
+        async def readiness(self) -> None:
+            assert startup_task is not None
+            asyncio.get_running_loop().call_soon(startup_task.cancel)
+
+        async def close(self) -> None:
+            timeline.append("provider:close")
+
+    app = create_application(
+        _settings(),
+        infrastructure_providers={"race-provider": Provider()},
+    )
+    startup_task = asyncio.create_task(app.startup())
+
+    with pytest.raises(asyncio.CancelledError):
+        await startup_task
+    await app.shutdown()
+
+    assert timeline == ["provider:open", "provider:close"]
+    assert app.state is ApplicationState.FAILED
+    assert app.runtime is not None
+    assert app.runtime.providers._started == []

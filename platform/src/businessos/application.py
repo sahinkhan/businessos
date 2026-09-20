@@ -134,11 +134,18 @@ class BusinessOSApplication:
             deadline = asyncio.get_running_loop().time() + self.settings.startup_timeout_seconds
             try:
                 for component in self._components:
-                    await self._run_startup_hook(component.startup, deadline=deadline)
+                    interruption = await self._run_startup_hook(
+                        component.startup,
+                        deadline=deadline,
+                    )
                     completed.append(component)
                     self._started_components.append(component)
+                    if interruption is not None:
+                        raise interruption
                 for hook in self._startup_hooks:
-                    await self._run_startup_hook(hook, deadline=deadline)
+                    interruption = await self._run_startup_hook(hook, deadline=deadline)
+                    if interruption is not None:
+                        raise interruption
             except BaseException as startup_error:
                 rollback_task = asyncio.create_task(
                     self._startup_rollback(completed),
@@ -249,7 +256,12 @@ class BusinessOSApplication:
                 errors.append(cancellation_error)
         return errors
 
-    async def _run_startup_hook(self, hook: LifecycleHook, *, deadline: float) -> None:
+    async def _run_startup_hook(
+        self,
+        hook: LifecycleHook,
+        *,
+        deadline: float,
+    ) -> BaseException | None:
         async def run_hook() -> None:
             await hook()
 
@@ -270,10 +282,12 @@ class BusinessOSApplication:
                     "Application startup interruption and hook cleanup failed",
                     [startup_error, cancellation_error],
                 ) from None
+            if cancellation_task.result():
+                return startup_error
             raise
         if task in done:
             task.result()
-            return
+            return None
         timeout_error = TimeoutError("Application lifecycle startup timed out")
         cancellation_task = asyncio.create_task(
             self._cancel_owned_task(task),
@@ -285,9 +299,11 @@ class BusinessOSApplication:
                 "Application startup timeout and hook cleanup failed",
                 [timeout_error, cancellation_error],
             ) from None
+        if cancellation_task.result():
+            return timeout_error
         raise timeout_error
 
-    async def _cancel_owned_task(self, task: asyncio.Task[None]) -> None:
+    async def _cancel_owned_task(self, task: asyncio.Task[None]) -> bool:
         if not task.done():
             task.cancel()
             done, _ = await asyncio.wait(
@@ -303,7 +319,8 @@ class BusinessOSApplication:
         try:
             task.result()
         except asyncio.CancelledError:
-            return
+            return False
+        return True
 
     @staticmethod
     def _consume_task_result(task: asyncio.Task[None]) -> None:
@@ -312,7 +329,7 @@ class BusinessOSApplication:
 
     @staticmethod
     async def _await_cleanup(
-        cleanup_task: asyncio.Task[None],
+        cleanup_task: asyncio.Task[Any],
     ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
         cancellation: asyncio.CancelledError | None = None
         current = asyncio.current_task()

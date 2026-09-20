@@ -1678,3 +1678,115 @@ async def test_recovered_transient_retains_nested_cleanup_failure() -> None:
         return [error]
 
     assert leaves(raised.value).count(cleanup_error) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["container", "generation"])
+async def test_singleton_teardown_propagates_pending_cancellation(operation: str) -> None:
+    key = DependencyKey[object](f"pending-cancellation-{operation}")
+    released = asyncio.Event()
+    gate = ContributionGate()
+    generation = gate.reserve(f"pending-cancellation-{operation}")
+    gate.publish(generation)
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        try:
+            yield object()
+        finally:
+            await asyncio.sleep(0)
+            released.set()
+
+    container = Container()
+    container.register(
+        key,
+        resource,
+        scope=DependencyScope.SINGLETON,
+        generation=generation,
+        gate=gate,
+    )
+    async with container.request_scope() as scope:
+        await scope.resolve(key)
+    if operation == "generation":
+        await gate.close_and_drain(generation, timeout_seconds=1)
+
+    async def teardown() -> tuple[object, ...] | None:
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel("issued before teardown")
+        try:
+            if operation == "container":
+                await container.close()
+            else:
+                await container.remove_owner_generation(generation)
+        except asyncio.CancelledError as error:
+            return error.args
+        return None
+
+    assert await asyncio.create_task(teardown()) == ("issued before teardown",)
+    assert released.is_set()
+    await container.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_all", [False, True])
+async def test_concurrent_generation_teardown_uses_stable_singleton_snapshot(
+    close_all: bool,
+) -> None:
+    container = Container()
+    gate = ContributionGate()
+    first_generation = gate.reserve("generation-a")
+    second_generation = gate.reserve("generation-b")
+    gate.publish(first_generation)
+    gate.publish(second_generation)
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+    finalized: list[str] = []
+
+    @asynccontextmanager
+    async def resource(name: str) -> AsyncGenerator[str]:
+        try:
+            yield name
+        finally:
+            if name == "a2":
+                blocked.set()
+                await release.wait()
+            finalized.append(name)
+
+    async with container.request_scope() as scope:
+        for name, generation in (
+            ("a1", first_generation),
+            ("b1", second_generation),
+            ("a2", first_generation),
+            ("b2", second_generation),
+        ):
+            key = DependencyKey[str](name)
+
+            def provide(
+                _: DependencyResolver,
+                current: str = name,
+            ) -> AbstractAsyncContextManager[str]:
+                return resource(current)
+
+            container.register(
+                key,
+                provide,
+                scope=DependencyScope.SINGLETON,
+                generation=generation,
+                gate=gate,
+            )
+            assert await scope.resolve(key) == name
+
+    await gate.close_and_drain(first_generation, timeout_seconds=1)
+    await gate.close_and_drain(second_generation, timeout_seconds=1)
+    first_teardown = asyncio.create_task(
+        container.close() if close_all else container.remove_owner_generation(first_generation)
+    )
+    await blocked.wait()
+    await container.remove_owner_generation(second_generation)
+    release.set()
+    await first_teardown
+
+    assert set(finalized) == {"a1", "a2", "b1", "b2"}
+    assert len(finalized) == 4
+    await container.close()

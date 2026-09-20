@@ -218,34 +218,33 @@ class EventWorker:
             if not self._started and self._subscription is None and self._publisher_task is None:
                 await self._operations_database.close()
                 return
-            cleanup_error, cancellation_count = await self._run_owned_cleanup()
+            cleanup_error, cancellation = await self._run_owned_cleanup()
             self._started = False
             if cleanup_error is not None:
                 raise cleanup_error
-            if cancellation_count:
-                raise asyncio.CancelledError
+            if cancellation is not None:
+                raise cancellation
 
-    async def _run_owned_cleanup(self) -> tuple[BaseException | None, int]:
+    async def _run_owned_cleanup(
+        self,
+    ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
         cleanup_task = asyncio.create_task(self._cleanup(), name="businessos-event-worker-cleanup")
-        cancellation_count = 0
+        cancellation: asyncio.CancelledError | None = None
         current = asyncio.current_task()
-        if current is not None:
-            while current.cancelling():
-                cancellation_count += 1
-                current.uncancel()
         while not cleanup_task.done():
             try:
                 await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
-                cancellation_count += 1
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
                 if current is not None:
                     while current.cancelling():
                         current.uncancel()
         try:
             cleanup_task.result()
         except BaseException as exc:
-            return exc, cancellation_count
-        return None, cancellation_count
+            return exc, cancellation
+        return None, cancellation
 
     async def _cleanup(self) -> None:
         errors: list[BaseException] = []

@@ -189,8 +189,6 @@ class Container:
 
     async def close(self) -> None:
         self._closed = True
-        caller = asyncio.current_task()
-        cancellations_on_entry = caller.cancelling() if caller is not None else 0
         cancellation: asyncio.CancelledError | None = None
         if self._cleanup_task is None:
             self._cleanup_task = asyncio.create_task(
@@ -204,14 +202,10 @@ class Container:
             except asyncio.CancelledError as error:
                 if cancellation is None:
                     cancellation = error
-        if caller is not None and caller.cancelling() > cancellations_on_entry:
-            if cancellation is None:
-                raise RuntimeError("Cancellation state changed without an interruption")
+        if cancellation is not None:
             raise cancellation
 
     async def remove_owner_generation(self, generation: ContributionGeneration) -> None:
-        caller = asyncio.current_task()
-        cancellations_on_entry = caller.cancelling() if caller is not None else 0
         cancellation: asyncio.CancelledError | None = None
         keys = tuple(
             key
@@ -229,9 +223,7 @@ class Container:
             except asyncio.CancelledError as error:
                 if cancellation is None:
                     cancellation = error
-        if caller is not None and caller.cancelling() > cancellations_on_entry:
-            if cancellation is None:
-                raise RuntimeError("Cancellation state changed without an interruption")
+        if cancellation is not None:
             raise cancellation
 
     async def resolve_for_scope(
@@ -565,7 +557,8 @@ class Container:
             await self._drain_singleton_owner(owner, errors, seen)
         for owner in completed_initializers:
             await self._drain_singleton_owner(owner, errors, seen)
-        for key in reversed(self._singleton_order):
+        published_keys = tuple(reversed(self._singleton_order))
+        for key in published_keys:
             published_owner = self._singleton_owners.get(key)
             if published_owner is None:
                 continue
@@ -599,9 +592,8 @@ class Container:
         for owner in completed_initializers:
             await self._drain_singleton_owner(owner, errors, seen)
             self._singleton_terminal_owners.remove(owner)
-        for key in reversed(self._singleton_order):
-            if key not in key_set:
-                continue
+        published_keys = tuple(key for key in reversed(self._singleton_order) if key in key_set)
+        for key in published_keys:
             published_owner = self._singleton_owners.get(key)
             if published_owner is not None:
                 published_owner.request_close()

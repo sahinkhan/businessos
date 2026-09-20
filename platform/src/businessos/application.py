@@ -170,15 +170,15 @@ class BusinessOSApplication:
                 self._shutdown_sequence(),
                 name="businessos-shutdown",
             )
-            cleanup_error, cancellation_count = await self._await_cleanup(cleanup_task)
+            cleanup_error, cancellation = await self._await_cleanup(cleanup_task)
             self._cleanup_complete = True
             self.state = (
                 ApplicationState.STOPPED if cleanup_error is None else ApplicationState.FAILED
             )
             if cleanup_error is not None:
                 raise cleanup_error
-            if cancellation_count:
-                raise asyncio.CancelledError
+            if cancellation is not None:
+                raise cancellation
 
     async def _startup_rollback(
         self,
@@ -287,13 +287,16 @@ class BusinessOSApplication:
             ) from None
         raise timeout_error
 
-    @staticmethod
-    async def _cancel_owned_task(task: asyncio.Task[None]) -> None:
-        for _ in range(8):
-            if task.done():
-                break
+    async def _cancel_owned_task(self, task: asyncio.Task[None]) -> None:
+        if not task.done():
             task.cancel()
-            await asyncio.sleep(0)
+            done, _ = await asyncio.wait(
+                (task,),
+                timeout=self.settings.shutdown_timeout_seconds,
+            )
+            if task not in done:
+                task.cancel()
+                await asyncio.sleep(0)
         if not task.done():
             task.add_done_callback(BusinessOSApplication._consume_task_result)
             raise RuntimeError("Application lifecycle hook resisted cancellation")
@@ -310,24 +313,25 @@ class BusinessOSApplication:
     @staticmethod
     async def _await_cleanup(
         cleanup_task: asyncio.Task[None],
-    ) -> tuple[BaseException | None, int]:
-        cancellation_count = 0
+    ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
+        cancellation: asyncio.CancelledError | None = None
         current = asyncio.current_task()
         while not cleanup_task.done():
             try:
                 await asyncio.shield(cleanup_task)
-            except asyncio.CancelledError:
-                cancellation_count += 1
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
                 if current is not None:
                     while current.cancelling():
                         current.uncancel()
             except BaseException as exc:
-                return exc, cancellation_count
+                return exc, cancellation
         try:
             cleanup_task.result()
         except BaseException as exc:
-            return exc, cancellation_count
-        return None, cancellation_count
+            return exc, cancellation
+        return None, cancellation
 
     async def __call__(
         self, scope: object, receive: ASGIReceiveCallable, send: ASGISendCallable
@@ -495,7 +499,7 @@ class BusinessOSApplication:
                     )
             raise
         if handler in done:
-            watcher_outcomes, cancelled = await self._cancel_and_drain_tasks(disconnected)
+            watcher_outcomes, cancellation = await self._cancel_and_drain_tasks(disconnected)
             watcher_failures = tuple(
                 outcome
                 for outcome in watcher_outcomes
@@ -515,18 +519,18 @@ class BusinessOSApplication:
             try:
                 response = handler.result()
             except BaseException as error:
-                if cancelled and not isinstance(error, asyncio.CancelledError):
+                if cancellation is not None and not isinstance(error, asyncio.CancelledError):
                     with bind_request_context(request.context):
                         self._logger.error(
                             "Request cleanup failed during cancellation",
                             extra={"error_type": type(error).__name__},
                         )
-                    raise asyncio.CancelledError from None
+                    raise cancellation from None
                 raise
-            if cancelled:
-                raise asyncio.CancelledError
+            if cancellation is not None:
+                raise cancellation
             return response
-        outcomes, cancelled = await self._cancel_and_drain_tasks(handler)
+        outcomes, cancellation = await self._cancel_and_drain_tasks(handler)
         try:
             watcher_outcome: object | BaseException = disconnected.result()
         except BaseException as error:
@@ -542,27 +546,28 @@ class BusinessOSApplication:
         outcome = outcomes[0]
         if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
             raise ClientDisconnectedError from outcome
-        if cancelled:
-            raise asyncio.CancelledError
+        if cancellation is not None:
+            raise cancellation
         raise ClientDisconnectedError
 
     @staticmethod
     async def _cancel_and_drain_tasks(
         *tasks: asyncio.Task[Any],
-    ) -> tuple[tuple[Any | BaseException, ...], bool]:
+    ) -> tuple[tuple[Any | BaseException, ...], asyncio.CancelledError | None]:
         """Cancel owned work once, then shield its terminal cleanup from caller cancellation."""
 
         for task in tasks:
             if not task.done():
                 task.cancel()
         drain = asyncio.gather(*tasks, return_exceptions=True)
-        cancelled = False
+        cancellation: asyncio.CancelledError | None = None
         while True:
             try:
                 outcomes = await asyncio.shield(drain)
-                return tuple(outcomes), cancelled
-            except asyncio.CancelledError:
-                cancelled = True
+                return tuple(outcomes), cancellation
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
 
     @staticmethod
     async def _wait_for_disconnect(receive: ASGIReceiveCallable) -> None:

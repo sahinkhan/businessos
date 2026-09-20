@@ -949,6 +949,7 @@ async def test_startup_timeout_repeatedly_cancels_resistant_hook_and_rolls_back(
         database_url="postgresql+psycopg://test:test@db/test",
         database_readiness_enabled=False,
         startup_timeout_seconds=0.01,
+        shutdown_timeout_seconds=0.02,
     )
     app = BusinessOSApplication(settings, router=Router(), container=Container())
     timeline: list[str] = []
@@ -1260,3 +1261,36 @@ async def test_asgi_lifespan_drives_startup_and_shutdown_to_completion() -> None
         {"type": "lifespan.shutdown.complete"},
     ]
     assert app.state is ApplicationState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_startup_timeout_allows_cancelled_hook_to_finish_resource_rollback() -> None:
+    settings = Settings(
+        environment="test",
+        database_url="postgresql+psycopg://test:test@db/test",
+        database_readiness_enabled=False,
+        startup_timeout_seconds=0.01,
+        shutdown_timeout_seconds=0.2,
+    )
+    app = BusinessOSApplication(settings, router=Router(), container=Container())
+    resource_open = False
+    rollback_completed = asyncio.Event()
+
+    async def start() -> None:
+        nonlocal resource_open
+        resource_open = True
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.02)
+            resource_open = False
+            rollback_completed.set()
+
+    app.add_lifecycle("allocating", start, lambda: asyncio.sleep(0))
+
+    with pytest.raises(TimeoutError):
+        await app.startup()
+
+    assert rollback_completed.is_set()
+    assert not resource_open
+    assert app.state is ApplicationState.FAILED

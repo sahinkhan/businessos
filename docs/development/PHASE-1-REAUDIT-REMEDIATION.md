@@ -481,6 +481,54 @@ Exact-head CI and a fresh independent full Phase 1 audit remain required. These 
 certify Phase 1 or authorize merging PR #11. PR #9 remains untouched and on hold; Phase 5 remains
 unstarted.
 
+## Twelfth remediation: terminal watcher, cancellation, and retry ownership
+
+The full independent audit of `709d349f27a0ef107748415b9f045874b857adff` found three
+remaining P2 lifecycle defects. A disconnect watcher that failed before its handler could leave an
+unretrieved task exception, DI teardown rebuilt cancellation as a bare exception that escaped AnyIO
+cancel scopes, and cleanly failed transient attempts remained strongly retained by a recovered
+singleton until container shutdown.
+
+The watcher-first request path now retrieves the completed watcher outcome and records any real
+failure with trusted correlation, trace, and tenant context before completing disconnect handling.
+The handler is still drained, simultaneous handler cleanup failure remains observable, no response
+is sent after disconnect, and exception text is excluded from logs.
+
+Container shutdown, generation removal, and request-scope exit now retain the first actual
+`CancelledError` received while shielding cleanup and re-raise that same exception after cleanup
+reaches a terminal state. This preserves AnyIO cancel-scope ownership and deadline conversion while
+keeping repeated-cancellation cleanup completion behavior.
+
+Singleton-owned transient attempts still enter cleanup ownership before acquisition. Once an
+attempt is unpublished, terminal, and cleanly unwound, it detaches from the parent cleanup list.
+Pending attempts and owners with initializer or resource cleanup failures remain retained for
+drain and aggregation. Recovered retry and fallback providers therefore release ordinary failed
+attempt tracebacks and provider locals without weakening dependency validity or error evidence.
+
+Permanent regressions cover watcher-first failure with and without simultaneous handler failure,
+all three public DI teardown operations under an AnyIO cancel scope, deadline conversion, and
+bounded provider-local retention after repeated recovered transient failures.
+
+## Twelfth-remediation local validation
+
+| Gate | Result |
+| --- | --- |
+| Fresh independent watcher-first probe | PASS - 2/2 |
+| Fresh independent AnyIO cancellation/deadline probe | PASS - 6/6 |
+| Fresh independent retry-retention probe | PASS - 0 retained at 64/128/256 attempts |
+| Retained D1/D2/D4 additive probe | PASS - 7/7 |
+| Retained D3 HTTP cleanup probe | PASS - 3/3 |
+| Focused lifecycle and application regressions | PASS - 92 |
+| Unit suite | PASS - 250 |
+| Test collection | PASS - 317 collected |
+| Ruff formatting and lint | PASS - 164 files |
+| Python 3.13 mypy | PASS - 163 source files |
+| CI-equivalent Pyright source check | PASS - 0 errors, 0 warnings |
+
+Exact-head CI and another fresh independent full Phase 1 audit remain required. These results do
+not certify Phase 1 or authorize merging PR #11. PR #9 remains untouched and on hold; Phase 5
+remains unstarted.
+
 This remediation corrects Phase 1 runtime behavior without rewriting certified history or claiming
 Phase 1 certification. Independent review remains the acceptance gate, and PR #11 remains open and
 unmerged.

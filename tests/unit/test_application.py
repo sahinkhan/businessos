@@ -289,6 +289,101 @@ async def test_disconnect_logs_handler_unwind_failure_with_request_context() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("handler_failure", [False, True])
+async def test_watcher_first_failure_is_retrieved_and_logged(
+    handler_failure: bool,
+) -> None:
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    class FixedResolver:
+        async def resolve(self, identity: RequestIdentity) -> RequestContext:
+            return RequestContext(
+                correlation_id=identity.correlation_id,
+                trace_id=identity.trace_id,
+                tenant=tenant,
+            )
+
+    app = create_application(_settings(), context_resolver=FixedResolver())
+    handler_started = asyncio.Event()
+    outbound: list[dict[str, object]] = []
+    unhandled: list[dict[str, object]] = []
+    receive_calls = 0
+
+    async def endpoint(_: Request, __: object) -> Response:
+        handler_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            if handler_failure:
+                raise ValueError("private-handler-unwind")
+        raise AssertionError("Watcher-first test handler unexpectedly resumed")
+
+    async def receive() -> dict[str, object]:
+        nonlocal receive_calls
+        receive_calls += 1
+        if receive_calls == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await handler_started.wait()
+        try:
+            return {"type": "http.disconnect"}
+        finally:
+            raise RuntimeError("private-watcher-unwind")
+
+    async def send(message: dict[str, object]) -> None:
+        outbound.append(message)
+
+    app.router.add_route("GET", "/watcher-first", endpoint)
+    stream = io.StringIO()
+    log_handler = logging.StreamHandler(stream)
+    log_handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("businessos.application")
+    previous_logger = (logger.handlers, logger.propagate, logger.disabled, logger.level)
+    loop = asyncio.get_running_loop()
+    previous_exception_handler = loop.get_exception_handler()
+    logger.handlers = [log_handler]
+    logger.propagate = False
+    logger.disabled = False
+    logger.setLevel(logging.ERROR)
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    await app.startup()
+    try:
+        await app(
+            cast(
+                Any,
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0"},
+                    "method": "GET",
+                    "scheme": "http",
+                    "path": "/watcher-first",
+                    "root_path": "",
+                    "query_string": b"",
+                    "headers": [(b"x-correlation-id", b"watcher-first-correlation")],
+                },
+            ),
+            cast(Any, receive),
+            cast(Any, send),
+        )
+        await asyncio.sleep(0)
+    finally:
+        await app.shutdown()
+        loop.set_exception_handler(previous_exception_handler)
+        logger.handlers, logger.propagate, logger.disabled, logger.level = previous_logger
+
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    error_types = {record["error_type"] for record in records}
+    assert "RuntimeError" in error_types
+    if handler_failure:
+        assert "ValueError" in error_types
+    assert all(record["correlation_id"] == "watcher-first-correlation" for record in records)
+    assert all(record["tenant_id"] == str(tenant.tenant_id) for record in records)
+    assert outbound == []
+    assert unhandled == []
+    assert "private-watcher-unwind" not in stream.getvalue()
+    assert "private-handler-unwind" not in stream.getvalue()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("repeated_cancellation", [False, True])
 async def test_completed_handler_logs_disconnect_watcher_cleanup_failure(
     repeated_cancellation: bool,

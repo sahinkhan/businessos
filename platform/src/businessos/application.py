@@ -527,6 +527,18 @@ class BusinessOSApplication:
                 raise asyncio.CancelledError
             return response
         outcomes, cancelled = await self._cancel_and_drain_tasks(handler)
+        try:
+            watcher_outcome: object | BaseException = disconnected.result()
+        except BaseException as error:
+            watcher_outcome = error
+        if isinstance(watcher_outcome, BaseException) and not isinstance(
+            watcher_outcome, asyncio.CancelledError
+        ):
+            with bind_request_context(request.context):
+                self._logger.error(
+                    "Request cleanup failed after client disconnect",
+                    extra={"error_type": type(watcher_outcome).__name__},
+                )
         outcome = outcomes[0]
         if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
             raise ClientDisconnectedError from outcome

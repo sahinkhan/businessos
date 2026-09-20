@@ -1526,3 +1526,155 @@ async def test_nested_singleton_cleanup_failures_are_reported_once() -> None:
     assert cleanup_errors.count(parent_error) == 1
     assert cleanup_errors.count(second_error) == 1
     assert cleanup_errors.count(first_error) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["container", "request", "generation"])
+async def test_di_cleanup_preserves_anyio_cancel_scope_identity(operation: str) -> None:
+    key = DependencyKey[object](f"anyio-cancellation-{operation}")
+    released = asyncio.Event()
+    gate = ContributionGate()
+    generation = gate.reserve(f"anyio-cancellation-{operation}")
+    gate.publish(generation)
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        try:
+            yield object()
+        finally:
+            await asyncio.sleep(0.005)
+            released.set()
+
+    container = Container()
+    scope_kind = DependencyScope.REQUEST if operation == "request" else DependencyScope.SINGLETON
+    container.register(
+        key,
+        resource,
+        scope=scope_kind,
+        generation=generation,
+        gate=gate,
+    )
+    scope = await container.request_scope().__aenter__()
+    await scope.resolve(key)
+    if operation != "request":
+        await scope.__aexit__(None, None, None)
+    if operation == "generation":
+        await gate.close_and_drain(generation, timeout_seconds=1)
+
+    with anyio.CancelScope() as cancel_scope:
+        cancel_scope.cancel()
+        if operation == "container":
+            await container.close()
+        elif operation == "request":
+            await scope.__aexit__(None, None, None)
+        else:
+            await container.remove_owner_generation(generation)
+
+    assert cancel_scope.cancelled_caught
+    assert released.is_set()
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_container_close_preserves_anyio_deadline_semantics() -> None:
+    key = DependencyKey[object]("anyio-close-deadline")
+    released = asyncio.Event()
+
+    @asynccontextmanager
+    async def resource(_: DependencyResolver) -> AsyncGenerator[object]:
+        try:
+            yield object()
+        finally:
+            await asyncio.sleep(0.02)
+            released.set()
+
+    container = Container()
+    container.register(key, resource, scope=DependencyScope.SINGLETON)
+    async with container.request_scope() as scope:
+        await scope.resolve(key)
+
+    with pytest.raises(TimeoutError):
+        with anyio.fail_after(0.002):
+            await container.close()
+    assert released.is_set()
+
+
+@pytest.mark.asyncio
+async def test_recovered_singleton_transient_failures_release_provider_locals() -> None:
+    class Payload:
+        def __init__(self) -> None:
+            self.data = bytearray(64 * 1024)
+
+    parent_key = DependencyKey[str]("retry-retention-parent")
+    child_key = DependencyKey[object]("retry-retention-child")
+    references: list[weakref.ReferenceType[Payload]] = []
+    retained_after_retries = -1
+
+    async def failing_provider(_: DependencyResolver) -> object:
+        payload = Payload()
+        references.append(weakref.ref(payload))
+        raise ConnectionError("temporary unavailable dependency")
+
+    async def parent_provider(resolver: DependencyResolver) -> str:
+        nonlocal retained_after_retries
+        for _ in range(80):
+            try:
+                await resolver.resolve(child_key)
+            except ConnectionError:
+                pass
+            await asyncio.sleep(0)
+        for _ in range(6):
+            await asyncio.sleep(0)
+        gc.collect()
+        retained_after_retries = sum(reference() is not None for reference in references)
+        return "fallback"
+
+    container = Container()
+    container.register(parent_key, parent_provider, scope=DependencyScope.SINGLETON)
+    container.register(child_key, failing_provider)
+    async with container.request_scope() as scope:
+        assert await scope.resolve(parent_key) == "fallback"
+    assert retained_after_retries == 0
+    await container.close()
+
+
+@pytest.mark.asyncio
+async def test_recovered_transient_retains_nested_cleanup_failure() -> None:
+    parent_key = DependencyKey[str]("recovered-cleanup-parent")
+    failing_key = DependencyKey[object]("recovered-cleanup-failing")
+    nested_key = DependencyKey[object]("recovered-cleanup-nested")
+    cleanup_error = RuntimeError("retained nested cleanup failure")
+
+    @asynccontextmanager
+    async def nested_provider(_: DependencyResolver) -> AsyncGenerator[object]:
+        try:
+            yield object()
+        finally:
+            raise cleanup_error
+
+    async def failing_provider(resolver: DependencyResolver) -> object:
+        await resolver.resolve(nested_key)
+        raise ConnectionError("handled acquisition failure")
+
+    async def parent_provider(resolver: DependencyResolver) -> str:
+        try:
+            await resolver.resolve(failing_key)
+        except ConnectionError:
+            return "fallback"
+        raise AssertionError("Failing dependency unexpectedly resolved")
+
+    container = Container()
+    container.register(parent_key, parent_provider, scope=DependencyScope.SINGLETON)
+    container.register(failing_key, failing_provider)
+    container.register(nested_key, nested_provider)
+    async with container.request_scope() as scope:
+        assert await scope.resolve(parent_key) == "fallback"
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await container.close()
+
+    def leaves(error: BaseException) -> list[BaseException]:
+        if isinstance(error, BaseExceptionGroup):
+            return [leaf for nested in error.exceptions for leaf in leaves(nested)]
+        return [error]
+
+    assert leaves(raised.value).count(cleanup_error) == 1

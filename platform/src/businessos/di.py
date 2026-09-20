@@ -121,6 +121,7 @@ class _SingletonResourceOwner:
     cleanup_owners: list["_SingletonResourceOwner"] = field(
         default_factory=lambda: list[_SingletonResourceOwner]()
     )
+    cleanup_parent: "_SingletonResourceOwner | None" = None
     task: Task[None] | None = None
     published: bool = False
     shutdown_requested: bool = False
@@ -190,6 +191,7 @@ class Container:
         self._closed = True
         caller = asyncio.current_task()
         cancellations_on_entry = caller.cancelling() if caller is not None else 0
+        cancellation: asyncio.CancelledError | None = None
         if self._cleanup_task is None:
             self._cleanup_task = asyncio.create_task(
                 self._cleanup_singletons(),
@@ -199,14 +201,18 @@ class Container:
             try:
                 await asyncio.shield(self._cleanup_task)
                 break
-            except asyncio.CancelledError:
-                continue
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
         if caller is not None and caller.cancelling() > cancellations_on_entry:
-            raise asyncio.CancelledError
+            if cancellation is None:
+                raise RuntimeError("Cancellation state changed without an interruption")
+            raise cancellation
 
     async def remove_owner_generation(self, generation: ContributionGeneration) -> None:
         caller = asyncio.current_task()
         cancellations_on_entry = caller.cancelling() if caller is not None else 0
+        cancellation: asyncio.CancelledError | None = None
         keys = tuple(
             key
             for key, registration in self._registrations.items()
@@ -220,10 +226,13 @@ class Container:
             try:
                 await asyncio.shield(cleanup)
                 break
-            except asyncio.CancelledError:
-                continue
+            except asyncio.CancelledError as error:
+                if cancellation is None:
+                    cancellation = error
         if caller is not None and caller.cancelling() > cancellations_on_entry:
-            raise asyncio.CancelledError
+            if cancellation is None:
+                raise RuntimeError("Cancellation state changed without an interruption")
+            raise cancellation
 
     async def resolve_for_scope(
         self,
@@ -500,6 +509,7 @@ class Container:
             return
         if all(existing is not dependency for existing in parent.cleanup_owners):
             parent.cleanup_owners.append(dependency)
+            dependency.cleanup_parent = parent
 
     @staticmethod
     def _record_singleton_cleanup_error(
@@ -730,6 +740,18 @@ class Container:
                 owner.result.set_exception(
                     ConfigurationError("Dependency owner terminated before result")
                 )
+        if (
+            not owner.published
+            and error is None
+            and owner.initialization_cleanup_error is None
+            and owner.resource_cleanup_error is None
+        ):
+            parent = owner.cleanup_parent
+            if parent is not None and not parent.finalizing:
+                parent.cleanup_owners[:] = [
+                    dependency for dependency in parent.cleanup_owners if dependency is not owner
+                ]
+                owner.cleanup_parent = None
 
     async def provide_for_request(
         self,
@@ -886,14 +908,15 @@ class RequestDependencyScope(
                 self._cleanup(exc_type, exc_value, traceback),
                 name="businessos-di-request-scope-cleanup",
             )
-        cancelled = False
+        cancellation: asyncio.CancelledError | None = None
         try:
             while True:
                 try:
                     await asyncio.shield(self._cleanup_task)
                     break
-                except asyncio.CancelledError:
-                    cancelled = True
+                except asyncio.CancelledError as error:
+                    if cancellation is None:
+                        cancellation = error
         finally:
             self._cache.clear()
             self._flights.clear()
@@ -904,8 +927,8 @@ class RequestDependencyScope(
             self._published_owners.clear()
             self._failed_owners.clear()
             self._state = _RequestScopeState.CLOSED
-        if cancelled:
-            raise asyncio.CancelledError
+        if cancellation is not None:
+            raise cancellation
 
     async def resolve(self, key: DependencyKey[T]) -> T:
         self._ensure_resolution_valid(key)

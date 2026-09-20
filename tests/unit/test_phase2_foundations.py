@@ -8,10 +8,17 @@ import pytest
 from businessos_identity import (
     ConfigureOIDCProvider,
     CreateUser,
+    MembershipRecord,
+    MembershipStatus,
     OIDCConfiguration,
     OIDCTokenVerifier,
+    SetMFAPolicy,
 )
-from businessos_organization import CreateLegalEntity
+from businessos_organization import (
+    CreateLegalEntity,
+    OrganizationNode,
+    OrganizationSnapshot,
+)
 from businessos_tenant import (
     DeploymentMode,
     ProvisionTenant,
@@ -173,3 +180,34 @@ def test_phase2_boundary_models_reject_invalid_identity_and_organization_values(
             enterprise_group_id=uuid4(),
             country_code="usa",
         )
+
+
+def test_phase2_v1_public_contracts_preserve_legacy_construction_and_boundary_semantics() -> None:
+    tenant_id = uuid4()
+    principal_id = uuid4()
+    boundary = datetime.now(UTC)
+    membership = MembershipRecord(
+        membership_id=uuid4(),
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+        principal_type="user",
+        status=MembershipStatus.ACTIVE,
+        valid_until=boundary,
+    )
+    assert membership.is_effective(boundary)
+
+    policy = SetMFAPolicy(
+        tenant_id=tenant_id,
+        minimum_strength="custom_strength",
+    )
+    assert policy.minimum_strength == "custom_strength"
+
+    company = OrganizationNode(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        kind="company",
+        code="COMPANY",
+        name="Legacy Company",
+    )
+    snapshot = OrganizationSnapshot(tenant_id=tenant_id, companies=(company,))
+    assert snapshot.companies == (company,)

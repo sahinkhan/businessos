@@ -158,6 +158,7 @@ class AssignPrincipal(Command):
 class DelegateScope(Command):
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
+    grantor_principal_type: Literal["user", "service_account", "device"] = "user"
     recipient_principal_id: UUID
     recipient_principal_type: Literal["user", "service_account", "device"] = "user"
     scope_type: OrganizationScopeType
@@ -498,11 +499,11 @@ class OrganizationModule:
         tenant = _tenant(context.request, command.tenant_id)
         validate_effective_period(command.valid_from, command.valid_until)
         membership = await self._membership(command.principal_id, command.principal_type, context)
-        if not membership.is_effective():
+        if not _membership_is_current(membership):
             raise BusinessOSError(
                 "inactive_membership", "Active membership is required", status_code=409
             )
-        await _require_effective_scope(
+        await _require_effective_scope_lineage(
             context, command.scope_type, command.scope_id, tenant, datetime.now(UTC)
         )
         await self._require_effective_membership(
@@ -520,14 +521,17 @@ class OrganizationModule:
             raise BusinessOSError(
                 "invalid_delegation", "Delegation actions are required", status_code=422
             )
+        await self._require_actor_membership(
+            tenant.principal_id, command.grantor_principal_type, context
+        )
         membership = await self._membership(
             command.recipient_principal_id, command.recipient_principal_type, context
         )
-        if not membership.is_effective():
+        if not _membership_is_current(membership):
             raise BusinessOSError(
                 "inactive_membership", "Active membership is required", status_code=409
             )
-        await _require_effective_scope(
+        await _require_effective_scope_lineage(
             context, command.scope_type, command.scope_id, tenant, datetime.now(UTC)
         )
         await self._require_effective_membership(
@@ -569,7 +573,7 @@ class OrganizationModule:
         context: HandlingContext,
     ) -> MembershipRecord:
         membership = await self._membership(principal_id, principal_type, context)
-        if not membership.is_effective():
+        if not _membership_is_current(membership):
             raise BusinessOSError(
                 "inactive_membership", "Active membership is required", status_code=409
             )
@@ -593,7 +597,7 @@ class OrganizationModule:
                 if error.code == "not_found":
                     continue
                 raise
-            if membership.is_effective():
+            if _membership_is_current(membership):
                 effective.append(membership)
         if len(effective) != 1 or effective[0].principal_type != expected_type:
             raise BusinessOSError("forbidden", "Active membership is required", status_code=403)
@@ -712,7 +716,7 @@ class OrganizationModule:
                 raise BusinessOSError(
                     "forbidden", "Delegation does not authorize the selected scope", status_code=403
                 )
-            await _require_effective_scope(
+            await _require_effective_scope_lineage(
                 context,
                 OrganizationScopeType(delegation["scope_type"]),
                 delegation["scope_id"],
@@ -735,7 +739,7 @@ class OrganizationModule:
             valid_assignments: set[tuple[str, UUID]] = set()
             for scope_type, scope_id in assignments.tuples():
                 try:
-                    await _require_effective_scope(
+                    await _require_effective_scope_lineage(
                         context,
                         OrganizationScopeType(scope_type),
                         scope_id,
@@ -1080,6 +1084,29 @@ async def _require_effective_scope(
         tenant,
         instant,
         lock=True,
+    )
+
+
+async def _require_effective_scope_lineage(
+    context: HandlingContext,
+    scope_type: OrganizationScopeType,
+    identifier: UUID,
+    tenant: TenantContext,
+    instant: datetime,
+) -> RowMapping:
+    row = await _require_effective_scope(context, scope_type, identifier, tenant, instant)
+    kind = scope_type.value
+    if scope_type is OrganizationScopeType.ORG_UNIT:
+        kind = str(row["unit_type"])
+    elif scope_type is OrganizationScopeType.FINANCIAL_DIMENSION:
+        kind = str(row["dimension_type"])
+    await _scope_lineage(context, tenant, kind, row)
+    return row
+
+
+def _membership_is_current(membership: MembershipRecord) -> bool:
+    return membership.status.value == "active" and effective_at(
+        membership.valid_from, membership.valid_until, datetime.now(UTC)
     )
 
 

@@ -9,7 +9,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from businessos.sdk import BusinessOSError, TenantContext, UnitOfWorkFactory
+from businessos.sdk import (
+    BusinessOSError,
+    TenantContext,
+    TransactionalPersistence,
+    UnitOfWorkFactory,
+)
 
 from .models import TENANTS
 
@@ -137,6 +142,14 @@ class TenantLifecycleHook(Protocol):
 class TenantAccessValidator(Protocol):
     async def require_active(self, tenant_id: UUID) -> None: ...
 
+    async def require_active_in(
+        self,
+        tenant_id: UUID,
+        persistence: TransactionalPersistence,
+        *,
+        lock: bool = False,
+    ) -> None: ...
+
 
 class DatabaseTenantAccessValidator:
     """Fail closed unless the tenant exists and is active in its own RLS scope."""
@@ -146,8 +159,6 @@ class DatabaseTenantAccessValidator:
         self._unit_of_work_factory = unit_of_work_factory
 
     async def require_active(self, tenant_id: UUID) -> None:
-        from sqlalchemy import select
-
         provisional = TenantContext(
             installation_id=self._installation_id,
             tenant_id=tenant_id,
@@ -155,13 +166,23 @@ class DatabaseTenantAccessValidator:
             authentication_strength="tenant-status-validation",
         )
         async with self._unit_of_work_factory.for_tenant(provisional) as unit_of_work:
-            result = await unit_of_work.persistence.execute(
-                select(TENANTS.c.status).where(TENANTS.c.tenant_id == tenant_id)
-            )
-            status = result.scalar_one_or_none()
-        if status != TenantStatus.ACTIVE:
-            from businessos.sdk import BusinessOSError
+            await self.require_active_in(tenant_id, unit_of_work.persistence)
 
+    async def require_active_in(
+        self,
+        tenant_id: UUID,
+        persistence: TransactionalPersistence,
+        *,
+        lock: bool = False,
+    ) -> None:
+        from sqlalchemy import select
+
+        statement = select(TENANTS.c.status).where(TENANTS.c.tenant_id == tenant_id)
+        if lock:
+            statement = statement.with_for_update(read=True)
+        result = await persistence.execute(statement)
+        status = result.scalar_one_or_none()
+        if status != TenantStatus.ACTIVE:
             raise BusinessOSError("tenant_unavailable", "Tenant is not active", status_code=403)
 
 

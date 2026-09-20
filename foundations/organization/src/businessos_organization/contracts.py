@@ -150,6 +150,7 @@ class DelegatedScopeRecord(BaseModel):
     id: UUID
     tenant_id: UUID
     grantor_principal_id: UUID
+    grantor_principal_type: Literal["user", "service_account", "device"] = "user"
     recipient_principal_id: UUID
     recipient_principal_type: Literal["user", "service_account", "device"] = "user"
     scope_type: OrganizationScopeType
@@ -164,15 +165,15 @@ class OrganizationSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     tenant_id: UUID
-    enterprise_groups: tuple[EnterpriseGroupRecord, ...] = ()
-    legal_entities: tuple[LegalEntityRecord, ...] = ()
-    companies: tuple[CompanyRecord, ...] = ()
-    org_units: tuple[OrgUnitRecord, ...] = ()
-    regions: tuple[RegionRecord, ...] = ()
+    enterprise_groups: tuple[EnterpriseGroupRecord | OrganizationNode, ...] = ()
+    legal_entities: tuple[LegalEntityRecord | OrganizationNode, ...] = ()
+    companies: tuple[CompanyRecord | OrganizationNode, ...] = ()
+    org_units: tuple[OrgUnitRecord | OrganizationNode, ...] = ()
+    regions: tuple[RegionRecord | OrganizationNode, ...] = ()
     site_types: tuple[SiteTypeRecord, ...] = ()
-    operating_sites: tuple[OperatingSiteRecord, ...] = ()
+    operating_sites: tuple[OperatingSiteRecord | OrganizationNode, ...] = ()
     financial_dimensions: tuple[FinancialDimensionRecord, ...] = ()
-    warehouses: tuple[WarehouseRecord, ...] = ()
+    warehouses: tuple[WarehouseRecord | OrganizationNode, ...] = ()
     warehouse_locations: tuple[WarehouseLocationRecord, ...] = ()
     relationships: tuple[OrganizationRelationshipRecord, ...] = ()
     assignments: tuple[EffectiveAssignment, ...] = ()

@@ -24,7 +24,7 @@ from businessos.sdk import (
     TenantContext,
 )
 
-from .contracts import AuthenticationStrength, IdentityContract, MembershipRecord, MembershipStatus
+from .contracts import IdentityContract, MembershipRecord, MembershipStatus
 from .models import (
     DEVICES,
     EXTERNAL_IDENTITIES,
@@ -98,7 +98,7 @@ class ConfigureOIDCProvider(Command):
 
 class SetMFAPolicy(Command):
     tenant_id: UUID
-    minimum_strength: AuthenticationStrength
+    minimum_strength: str = Field(min_length=1, max_length=100)
     required_methods: tuple[str, ...] = ()
     configuration: dict[str, object] = Field(default_factory=dict)
 
@@ -371,15 +371,6 @@ class IdentityModule:
 
     async def _mfa_policy(self, command: SetMFAPolicy, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
-        if command.minimum_strength in {
-            AuthenticationStrength.UNSPECIFIED,
-            AuthenticationStrength.BREAK_GLASS,
-        }:
-            raise BusinessOSError(
-                "invalid_mfa_policy",
-                "Unsupported federated authentication strength",
-                status_code=422,
-            )
         statement = (
             pg_insert(MFA_POLICIES)
             .values(
@@ -399,7 +390,7 @@ class IdentityModule:
             )
         )
         await context.unit_of_work.persistence.execute(statement)
-        return {"minimum_strength": command.minimum_strength.value}
+        return {"minimum_strength": command.minimum_strength}
 
     async def _get_membership(self, query: GetMembership, context: HandlingContext) -> object:
         _require_tenant(context.request, query.tenant_id)

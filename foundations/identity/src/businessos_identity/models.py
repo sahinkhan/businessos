@@ -102,6 +102,7 @@ AUTHENTICATION_SESSIONS = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("principal_id", UUID(as_uuid=True), nullable=False),
+    Column("principal_type", String(30), nullable=False, server_default="user"),
     Column("authentication_strength", String(100), nullable=False),
     Column("started_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("expires_at", DateTime(timezone=True), nullable=False),

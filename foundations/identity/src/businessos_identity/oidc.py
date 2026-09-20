@@ -19,6 +19,7 @@ from businessos.sdk import (
     RequestContext,
     RequestIdentity,
     TenantContext,
+    TransactionalPersistence,
     UnitOfWorkFactory,
 )
 
@@ -142,19 +143,9 @@ class OIDCContextResolver:
             )
         )
         claims = await verifier.verify(token)
-        current_provider = await self._provider(hint)
-        if current_provider != provider:
-            raise _invalid_token()
-        await self._tenant_access.require_active(claims.businessos_tenant_id)
-        membership = await self._membership(claims)
-        principal_id, _scopes, policy = membership
+        principal_id, _scopes, policy = await self._authority(claims, hint, provider)
         strength = _authentication_strength(claims)
         _enforce_policy(strength, claims.amr, policy)
-        if await self._membership(claims) != membership:
-            raise _invalid_token()
-        await self._tenant_access.require_active(claims.businessos_tenant_id)
-        if await self._provider(hint) != provider:
-            raise _invalid_token()
         return RequestContext(
             correlation_id=identity.correlation_id,
             trace_id=identity.trace_id,
@@ -166,8 +157,11 @@ class OIDCContextResolver:
             ),
         )
 
-    async def _membership(
-        self, claims: VerifiedOIDCClaims
+    async def _authority(
+        self,
+        claims: VerifiedOIDCClaims,
+        hint: "_ProviderHint",
+        verified_provider: "_ResolvedProvider",
     ) -> tuple[
         UUID,
         tuple[dict[str, str], ...],
@@ -181,6 +175,12 @@ class OIDCContextResolver:
         )
         now = datetime.now(UTC)
         async with self._unit_of_work_factory.for_tenant(provisional) as unit_of_work:
+            await self._tenant_access.require_active_in(
+                claims.businessos_tenant_id, unit_of_work.persistence, lock=True
+            )
+            provider = await self._provider_in(unit_of_work.persistence, hint, lock=True)
+            if provider != verified_provider:
+                raise _invalid_token()
             result = await unit_of_work.persistence.execute(
                 select(EXTERNAL_IDENTITIES.c.user_id, MEMBERSHIPS.c.scopes)
                 .join(
@@ -208,12 +208,13 @@ class OIDCContextResolver:
                     (MEMBERSHIPS.c.valid_from.is_(None) | (MEMBERSHIPS.c.valid_from <= now)),
                     (MEMBERSHIPS.c.valid_until.is_(None) | (MEMBERSHIPS.c.valid_until > now)),
                 )
+                .with_for_update(read=True)
             )
             row = result.one_or_none()
             policy_result = await unit_of_work.persistence.execute(
-                select(MFA_POLICIES.c.minimum_strength, MFA_POLICIES.c.required_methods).where(
-                    MFA_POLICIES.c.tenant_id == claims.businessos_tenant_id
-                )
+                select(MFA_POLICIES.c.minimum_strength, MFA_POLICIES.c.required_methods)
+                .where(MFA_POLICIES.c.tenant_id == claims.businessos_tenant_id)
+                .with_for_update(read=True)
             )
             policy_row = policy_result.one_or_none()
         if row is None:
@@ -244,14 +245,24 @@ class OIDCContextResolver:
             authentication_strength="oidc-pending-provider",
         )
         async with self._unit_of_work_factory.for_tenant(provisional) as unit_of_work:
-            result = await unit_of_work.persistence.execute(
-                select(OIDC_PROVIDERS).where(
-                    OIDC_PROVIDERS.c.tenant_id == hint.businessos_tenant_id,
-                    OIDC_PROVIDERS.c.issuer == hint.iss,
-                    OIDC_PROVIDERS.c.active.is_(True),
-                )
-            )
-            rows = tuple(result.mappings())
+            return await self._provider_in(unit_of_work.persistence, hint)
+
+    async def _provider_in(
+        self,
+        persistence: TransactionalPersistence,
+        hint: "_ProviderHint",
+        *,
+        lock: bool = False,
+    ) -> "_ResolvedProvider":
+        statement = select(OIDC_PROVIDERS).where(
+            OIDC_PROVIDERS.c.tenant_id == hint.businessos_tenant_id,
+            OIDC_PROVIDERS.c.issuer == hint.iss,
+            OIDC_PROVIDERS.c.active.is_(True),
+        )
+        if lock:
+            statement = statement.with_for_update(read=True)
+        result = await persistence.execute(statement)
+        rows = tuple(result.mappings())
         matches = [row for row in rows if row["audience"] in hint.audiences]
         if len(matches) != 1:
             raise _invalid_token()

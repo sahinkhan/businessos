@@ -6,7 +6,6 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
-from businessos_tenant import effective_at
 from pydantic import BaseModel, ConfigDict
 
 
@@ -63,8 +62,10 @@ class MembershipRecord(BaseModel):
         from datetime import UTC
 
         instant = at or datetime.now(UTC)
-        return self.status is MembershipStatus.ACTIVE and effective_at(
-            self.valid_from, self.valid_until, instant
+        return (
+            self.status is MembershipStatus.ACTIVE
+            and (self.valid_from is None or self.valid_from <= instant)
+            and (self.valid_until is None or self.valid_until >= instant)
         )
 
 

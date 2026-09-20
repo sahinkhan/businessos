@@ -189,11 +189,13 @@ ASSIGNMENTS = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     UniqueConstraint(
         "tenant_id",
+        "principal_type",
         "principal_id",
         "scope_type",
         "scope_id",
         "valid_from",
         name="assignment_identity",
+        postgresql_nulls_not_distinct=True,
     ),
     schema="platform_org",
 )
@@ -204,6 +206,7 @@ DELEGATED_SCOPES = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", UUID(as_uuid=True), nullable=False),
     Column("grantor_principal_id", UUID(as_uuid=True), nullable=False),
+    Column("grantor_principal_type", String(30), nullable=False, server_default="user"),
     Column("recipient_principal_id", UUID(as_uuid=True), nullable=False),
     Column("recipient_principal_type", String(30), nullable=False, server_default="user"),
     Column("scope_type", String(40), nullable=False),

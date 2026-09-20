@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -20,6 +21,7 @@ from businessos_identity import (
     OIDCTokenVerifier,
     RegisterDevice,
     RegisterServiceAccount,
+    RevokeMembership,
     SetMFAPolicy,
 )
 from businessos_organization import (
@@ -830,12 +832,15 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     assert len(snapshot.legal_entities) == 3
     assert len(snapshot.companies) == 3
     assert (
-        next(item for item in snapshot.org_units if item.id == department_id).parent_id
+        cast(Any, next(item for item in snapshot.org_units if item.id == department_id)).parent_id
         == business_unit_id
     )
-    assert snapshot.operating_sites[0].site_type_id == site_type_id
+    assert cast(Any, snapshot.operating_sites[0]).site_type_id == site_type_id
     assert snapshot.warehouse_locations[0].warehouse_id == warehouse_id
-    assert snapshot.assignments[0].principal_type == "user"
+    assert any(
+        assignment.principal_id == admin_id and assignment.principal_type == "user"
+        for assignment in snapshot.assignments
+    )
     assert isinstance(selected, TenantContext)
     assert selected.active_company_id == company_us_id
     assert selected.operating_site_id == site_id
@@ -1393,3 +1398,664 @@ def test_identity_migration_rejects_existing_cross_tenant_device_principal(
     assert heads == {"organization_0002"}
     assert migrated_device == (principal_tenant_id, principal_id, "user")
     migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.parametrize("record_type", ("membership", "session"))
+def test_identity_migration_rejects_existing_cross_tenant_principal_records(
+    postgres_database: PostgreSQLTestDatabase,
+    record_type: str,
+) -> None:
+    app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
+    assert app.runtime is not None
+    migrations = app.runtime.migrations
+    migrations.upgrade(postgres_database.migration_url, "identity_0001")
+    tenant_a, tenant_b, principal_b = uuid4(), uuid4(), uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_a, f"dirty-{record_type}-a")
+    _seed_tenant(postgres_database.migration_url, tenant_b, f"dirty-{record_type}-b")
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_identity.users (id, tenant_id, email, display_name) "
+            "VALUES (%s, %s, %s, 'Foreign Principal')",
+            (principal_b, tenant_b, f"{record_type}@example.test"),
+        )
+        if record_type == "membership":
+            connection.execute(
+                "INSERT INTO platform_identity.memberships "
+                "(id, tenant_id, principal_id, principal_type) VALUES (%s, %s, %s, 'user')",
+                (uuid4(), tenant_a, principal_b),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO platform_identity.authentication_sessions "
+                "(id, tenant_id, principal_id, authentication_strength, expires_at) "
+                "VALUES (%s, %s, %s, 'mfa', now() + interval '1 hour')",
+                (uuid4(), tenant_a, principal_b),
+            )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="same tenant"):
+        migrations.upgrade(postgres_database.migration_url)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
+        device_principal_type = connection.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = 'platform_identity' "
+            "AND table_name = 'devices' AND column_name = 'principal_type'"
+        ).fetchone()
+    assert heads == {"identity_0001"}
+    assert device_principal_type is None
+    migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.parametrize("record_type", ("assignment", "delegation"))
+def test_organization_migration_rejects_existing_cross_tenant_grants(
+    postgres_database: PostgreSQLTestDatabase,
+    record_type: str,
+) -> None:
+    app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
+    assert app.runtime is not None
+    migrations = app.runtime.migrations
+    migrations.upgrade(postgres_database.migration_url, "organization_0001")
+    tenant_a, tenant_b, principal_b, group_a = uuid4(), uuid4(), uuid4(), uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_a, f"dirty-org-{record_type}-a")
+    _seed_tenant(postgres_database.migration_url, tenant_b, f"dirty-org-{record_type}-b")
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_identity.users (id, tenant_id, email, display_name) "
+            "VALUES (%s, %s, %s, 'Foreign Principal')",
+            (principal_b, tenant_b, f"org-{record_type}@example.test"),
+        )
+        connection.execute(
+            "INSERT INTO platform_org.enterprise_groups (id, tenant_id, code, name) "
+            "VALUES (%s, %s, 'GROUP', 'Group')",
+            (group_a, tenant_a),
+        )
+        if record_type == "assignment":
+            connection.execute(
+                "INSERT INTO platform_org.assignments "
+                "(id, tenant_id, principal_id, scope_type, scope_id) "
+                "VALUES (%s, %s, %s, 'enterprise_group', %s)",
+                (uuid4(), tenant_a, principal_b, group_a),
+            )
+        else:
+            now = datetime.now(UTC)
+            connection.execute(
+                "INSERT INTO platform_org.delegated_scopes "
+                "(id, tenant_id, grantor_principal_id, recipient_principal_id, scope_type, "
+                "scope_id, allowed_actions, valid_from, valid_until, reason) "
+                "VALUES (%s, %s, %s, %s, 'enterprise_group', %s, ARRAY['read'], %s, %s, 'dirty')",
+                (
+                    uuid4(),
+                    tenant_a,
+                    principal_b,
+                    principal_b,
+                    group_a,
+                    now,
+                    now + timedelta(hours=1),
+                ),
+            )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="invalid tenant references"):
+        migrations.upgrade(postgres_database.migration_url)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
+        assignment_principal_type = connection.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = 'platform_org' "
+            "AND table_name = 'assignments' AND column_name = 'principal_type'"
+        ).fetchone()
+    assert heads == {"organization_0001"}
+    assert assignment_principal_type is None
+    migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_organization_migration_deduplicates_null_window_assignments(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
+    assert app.runtime is not None
+    migrations = app.runtime.migrations
+    migrations.upgrade(postgres_database.migration_url, "organization_0001")
+    tenant_id, principal_id, group_id = uuid4(), uuid4(), uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_id, "deduplicate-assignments")
+    first_id, second_id = uuid4(), uuid4()
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_identity.users (id, tenant_id, email, display_name) "
+            "VALUES (%s, %s, 'dedupe@example.test', 'Dedupe')",
+            (principal_id, tenant_id),
+        )
+        connection.execute(
+            "INSERT INTO platform_org.enterprise_groups (id, tenant_id, code, name) "
+            "VALUES (%s, %s, 'GROUP', 'Group')",
+            (group_id, tenant_id),
+        )
+        for assignment_id in (first_id, second_id):
+            connection.execute(
+                "INSERT INTO platform_org.assignments "
+                "(id, tenant_id, principal_id, scope_type, scope_id) "
+                "VALUES (%s, %s, %s, 'enterprise_group', %s)",
+                (assignment_id, tenant_id, principal_id, group_id),
+            )
+        connection.commit()
+
+    migrations.upgrade(postgres_database.migration_url)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        retained = connection.execute(
+            "SELECT id FROM platform_org.assignments WHERE tenant_id = %s",
+            (tenant_id,),
+        ).fetchall()
+        assert retained == [(min(first_id, second_id),)]
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            connection.execute(
+                "INSERT INTO platform_org.assignments "
+                "(id, tenant_id, principal_id, principal_type, scope_type, scope_id) "
+                "VALUES (%s, %s, %s, 'user', 'enterprise_group', %s)",
+                (uuid4(), tenant_id, principal_id, group_id),
+            )
+        connection.rollback()
+    migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_phase2_database_rejects_cross_tenant_grants_and_parent_orphans(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    tenant_a, tenant_b = uuid4(), uuid4()
+    user_a, user_b = uuid4(), uuid4()
+    group_a = uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_a, "integrity-a")
+    _seed_tenant(postgres_database.migration_url, tenant_b, "integrity-b")
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_identity.users (id, tenant_id, email, display_name) "
+            "VALUES (%s, %s, 'a@example.test', 'A'), (%s, %s, 'b@example.test', 'B')",
+            (user_a, tenant_a, user_b, tenant_b),
+        )
+        connection.execute(
+            "INSERT INTO platform_org.enterprise_groups (id, tenant_id, code, name) "
+            "VALUES (%s, %s, 'GROUP-A', 'Group A')",
+            (group_a, tenant_a),
+        )
+        connection.commit()
+
+    def set_tenant(connection: psycopg.Connection[Any]) -> None:
+        connection.execute("SELECT set_config('app.tenant_id', %s, true)", (str(tenant_a),))
+
+    with psycopg.connect(_raw(postgres_database.runtime_url)) as connection:
+        set_tenant(connection)
+        now = datetime.now(UTC)
+        for statement, parameters in (
+            (
+                "INSERT INTO platform_identity.memberships "
+                "(id, tenant_id, principal_id, principal_type) VALUES (%s, %s, %s, 'user')",
+                (uuid4(), tenant_a, user_b),
+            ),
+            (
+                "INSERT INTO platform_identity.authentication_sessions "
+                "(id, tenant_id, principal_id, principal_type, "
+                "authentication_strength, expires_at) "
+                "VALUES (%s, %s, %s, 'user', 'mfa', now() + interval '1 hour')",
+                (uuid4(), tenant_a, user_b),
+            ),
+            (
+                "INSERT INTO platform_org.assignments "
+                "(id, tenant_id, principal_id, principal_type, scope_type, scope_id) "
+                "VALUES (%s, %s, %s, 'user', 'enterprise_group', %s)",
+                (uuid4(), tenant_a, user_b, group_a),
+            ),
+            (
+                "INSERT INTO platform_org.assignments "
+                "(id, tenant_id, principal_id, principal_type, scope_type, scope_id) "
+                "VALUES (%s, %s, %s, 'user', 'enterprise_group', %s)",
+                (uuid4(), tenant_a, user_a, uuid4()),
+            ),
+            (
+                "INSERT INTO platform_org.delegated_scopes "
+                "(id, tenant_id, grantor_principal_id, grantor_principal_type, "
+                "recipient_principal_id, recipient_principal_type, scope_type, scope_id, "
+                "allowed_actions, valid_from, valid_until, reason) VALUES "
+                "(%s, %s, %s, 'user', %s, 'user', 'enterprise_group', %s, "
+                "ARRAY['read'], %s, %s, 'foreign recipient')",
+                (uuid4(), tenant_a, user_a, user_b, group_a, now, now + timedelta(hours=1)),
+            ),
+            (
+                "INSERT INTO platform_org.delegated_scopes "
+                "(id, tenant_id, grantor_principal_id, grantor_principal_type, "
+                "recipient_principal_id, recipient_principal_type, scope_type, scope_id, "
+                "allowed_actions, valid_from, valid_until, reason) VALUES "
+                "(%s, %s, %s, 'user', %s, 'user', 'enterprise_group', %s, "
+                "ARRAY['read'], %s, %s, 'foreign grantor')",
+                (uuid4(), tenant_a, user_b, user_a, group_a, now, now + timedelta(hours=1)),
+            ),
+        ):
+            with pytest.raises(psycopg.errors.ForeignKeyViolation):
+                connection.execute(statement, parameters)
+            connection.rollback()
+            set_tenant(connection)
+
+        connection.execute(
+            "INSERT INTO platform_identity.memberships "
+            "(id, tenant_id, principal_id, principal_type) VALUES (%s, %s, %s, 'user')",
+            (uuid4(), tenant_a, user_a),
+        )
+        connection.execute(
+            "INSERT INTO platform_identity.authentication_sessions "
+            "(id, tenant_id, principal_id, principal_type, authentication_strength, expires_at) "
+            "VALUES (%s, %s, %s, 'user', 'mfa', now() + interval '1 hour')",
+            (uuid4(), tenant_a, user_a),
+        )
+        connection.execute(
+            "INSERT INTO platform_identity.devices "
+            "(id, tenant_id, principal_id, principal_type, name, device_type, "
+            "credential_secret_reference) VALUES (%s, %s, %s, 'user', 'A device', "
+            "'workstation', 'secret://a')",
+            (uuid4(), tenant_a, user_a),
+        )
+        connection.execute(
+            "INSERT INTO platform_org.assignments "
+            "(id, tenant_id, principal_id, principal_type, scope_type, scope_id) "
+            "VALUES (%s, %s, %s, 'user', 'enterprise_group', %s)",
+            (uuid4(), tenant_a, user_a, group_a),
+        )
+        connection.commit()
+
+        set_tenant(connection)
+        with pytest.raises(psycopg.errors.RestrictViolation):
+            connection.execute("DELETE FROM platform_identity.users WHERE id = %s", (user_a,))
+        connection.rollback()
+        set_tenant(connection)
+        with pytest.raises(psycopg.errors.RestrictViolation):
+            connection.execute(
+                "DELETE FROM platform_org.enterprise_groups WHERE id = %s", (group_a,)
+            )
+        connection.rollback()
+
+    app.runtime.migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_organization_grants_validate_lineage_typed_identity_and_uniqueness(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(
+        _settings(postgres_database.runtime_url),
+        modules=_modules(),
+        authorizer=Authorizer(AllowAllPolicy()),
+    )
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    tenant_id, actor_id, principal_id = uuid4(), uuid4(), uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_id, "organization-grants")
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "UPDATE platform_tenant.tenants SET status = 'active' WHERE tenant_id = %s",
+            (tenant_id,),
+        )
+        connection.commit()
+    context = _context(tenant_id, actor_id)
+    for user_id, email in ((actor_id, "actor@example.test"), (principal_id, "p@example.test")):
+        await _dispatch(
+            app,
+            CreateUser(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                email=email,
+                display_name=email,
+            ),
+            context,
+        )
+        await _dispatch(
+            app,
+            GrantMembership(
+                tenant_id=tenant_id,
+                principal_id=user_id,
+                principal_type="user",
+            ),
+            context,
+        )
+    await _dispatch(
+        app,
+        RegisterServiceAccount(
+            service_account_id=principal_id,
+            tenant_id=tenant_id,
+            name="typed-principal",
+            credential_secret_reference="secret://typed-principal",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        GrantMembership(
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            principal_type="service_account",
+        ),
+        context,
+    )
+    group_id, legal_id, company_id = uuid4(), uuid4(), uuid4()
+    await _dispatch(
+        app,
+        CreateEnterpriseGroup(id=group_id, tenant_id=tenant_id, code="GROUP", name="Group"),
+        context,
+    )
+    await _dispatch(
+        app,
+        CreateLegalEntity(
+            id=legal_id,
+            tenant_id=tenant_id,
+            code="LEGAL",
+            name="Legal",
+            enterprise_group_id=group_id,
+            country_code="US",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        CreateCompany(
+            id=company_id,
+            tenant_id=tenant_id,
+            code="COMPANY",
+            name="Company",
+            legal_entity_id=legal_id,
+            base_currency="USD",
+            timezone="UTC",
+        ),
+        context,
+    )
+    valid_from = datetime.now(UTC)
+    for principal_type in ("user", "service_account"):
+        await _dispatch(
+            app,
+            AssignPrincipal(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                principal_type=principal_type,
+                scope_type=OrganizationScopeType.ENTERPRISE_GROUP,
+                scope_id=group_id,
+                valid_from=valid_from,
+            ),
+            context,
+        )
+    await _dispatch(
+        app,
+        AssignPrincipal(
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            principal_type="user",
+            scope_type=OrganizationScopeType.COMPANY,
+            scope_id=company_id,
+        ),
+        context,
+    )
+    with pytest.raises(IntegrityError):
+        await _dispatch(
+            app,
+            AssignPrincipal(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                principal_type="user",
+                scope_type=OrganizationScopeType.COMPANY,
+                scope_id=company_id,
+            ),
+            context,
+        )
+
+    delegation_id = uuid4()
+    await _dispatch(
+        app,
+        DelegateScope(
+            id=delegation_id,
+            tenant_id=tenant_id,
+            recipient_principal_id=principal_id,
+            recipient_principal_type="user",
+            scope_type=OrganizationScopeType.COMPANY,
+            scope_id=company_id,
+            allowed_actions=("read",),
+            valid_from=valid_from,
+            valid_until=valid_from + timedelta(hours=1),
+            reason="coverage",
+        ),
+        context,
+    )
+    snapshot = await _query(app, ReadOrganization(tenant_id=tenant_id), context)
+    assert isinstance(snapshot, OrganizationSnapshot)
+    delegation = next(item for item in snapshot.delegations if item.id == delegation_id)
+    assert delegation.grantor_principal_id == actor_id
+    assert delegation.grantor_principal_type == "user"
+
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "UPDATE platform_org.enterprise_groups SET active = false WHERE id = %s",
+            (group_id,),
+        )
+        connection.commit()
+    with pytest.raises(BusinessOSError) as inactive_assignment:
+        await _dispatch(
+            app,
+            AssignPrincipal(
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                principal_type="service_account",
+                scope_type=OrganizationScopeType.COMPANY,
+                scope_id=company_id,
+                valid_from=valid_from + timedelta(seconds=1),
+            ),
+            context,
+        )
+    assert inactive_assignment.value.code == "inactive_organization_scope"
+    with pytest.raises(BusinessOSError) as inactive_delegation:
+        await _dispatch(
+            app,
+            DelegateScope(
+                tenant_id=tenant_id,
+                recipient_principal_id=principal_id,
+                scope_type=OrganizationScopeType.COMPANY,
+                scope_id=company_id,
+                allowed_actions=("read",),
+                valid_from=valid_from,
+                valid_until=valid_from + timedelta(hours=1),
+                reason="inactive ancestor",
+            ),
+            context,
+        )
+    assert inactive_delegation.value.code == "inactive_organization_scope"
+
+    await _dispatch(
+        app,
+        RegisterServiceAccount(
+            service_account_id=actor_id,
+            tenant_id=tenant_id,
+            name="ambiguous-actor",
+            credential_secret_reference="secret://ambiguous-actor",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        GrantMembership(
+            tenant_id=tenant_id,
+            principal_id=actor_id,
+            principal_type="service_account",
+        ),
+        context,
+    )
+    with pytest.raises(BusinessOSError) as ambiguous_grantor:
+        await _dispatch(
+            app,
+            DelegateScope(
+                tenant_id=tenant_id,
+                grantor_principal_type="user",
+                recipient_principal_id=principal_id,
+                recipient_principal_type="user",
+                scope_type=OrganizationScopeType.ENTERPRISE_GROUP,
+                scope_id=group_id,
+                allowed_actions=("read",),
+                valid_from=valid_from,
+                valid_until=valid_from + timedelta(hours=1),
+                reason="ambiguous grantor",
+            ),
+            context,
+        )
+    assert ambiguous_grantor.value.code == "forbidden"
+
+    await app.shutdown()
+    app.runtime.migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_oidc_authority_uses_one_locked_decision_boundary(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(
+        _settings(postgres_database.runtime_url),
+        modules=_modules(),
+        authorizer=Authorizer(AllowAllPolicy()),
+    )
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    tenant_id, principal_id = uuid4(), uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_id, "oidc-authority")
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "UPDATE platform_tenant.tenants SET status = 'active' WHERE tenant_id = %s",
+            (tenant_id,),
+        )
+        connection.commit()
+    context = _context(tenant_id, principal_id)
+    await _dispatch(
+        app,
+        CreateUser(
+            user_id=principal_id,
+            tenant_id=tenant_id,
+            email="authority@example.test",
+            display_name="Authority",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        GrantMembership(
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            principal_type="user",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        MapExternalIdentity(
+            tenant_id=tenant_id,
+            user_id=principal_id,
+            issuer="https://authority.example.test",
+            subject="authority-subject",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        ConfigureOIDCProvider(
+            tenant_id=tenant_id,
+            issuer="https://authority.example.test",
+            audience="businessos",
+            jwks_uri="https://authority.example.test/jwks",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        RevokeMembership(
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            principal_type="user",
+        ),
+        context,
+    )
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    verifier = OIDCTokenVerifier(
+        OIDCConfiguration(
+            issuer="https://authority.example.test",
+            audience="businessos",
+            jwks_uri="https://authority.example.test/jwks",
+        ),
+        StaticKeyResolver(private_key.public_key()),
+    )
+    async with app.container.request_scope() as dependencies:
+        factory = await dependencies.resolve(UNIT_OF_WORK_FACTORY)
+    tenant_locked = asyncio.Event()
+    release_authority = asyncio.Event()
+
+    class SignallingTenantValidator(DatabaseTenantAccessValidator):
+        async def require_active_in(
+            self, tenant_id: UUID, persistence: Any, *, lock: bool = False
+        ) -> None:
+            await super().require_active_in(tenant_id, persistence, lock=lock)
+            tenant_locked.set()
+            await release_authority.wait()
+
+    resolver = OIDCContextResolver(
+        installation_id=uuid4(),
+        verifier=verifier,
+        unit_of_work_factory=factory,
+        tenant_access=SignallingTenantValidator(uuid4(), factory),
+    )
+    now = datetime.now(UTC)
+    token = jwt.encode(
+        {
+            "iss": "https://authority.example.test",
+            "sub": "authority-subject",
+            "aud": "businessos",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+            "businessos_tenant_id": str(tenant_id),
+            "amr": ["mfa"],
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "authority"},
+    )
+    resolution = asyncio.create_task(
+        resolver.resolve(
+            RequestIdentity(
+                method="GET",
+                path="/",
+                headers={"authorization": f"Bearer {token}"},
+                correlation_id="coherent-authority",
+                trace_id=uuid4().hex,
+            )
+        )
+    )
+    await asyncio.wait_for(tenant_locked.wait(), timeout=5)
+    suspension = asyncio.create_task(
+        _dispatch(
+            app,
+            TransitionTenant(tenant_id=tenant_id, target=TenantStatus.SUSPENDED),
+            context,
+        )
+    )
+    await asyncio.sleep(0.1)
+    assert not suspension.done()
+    release_authority.set()
+    with pytest.raises(BusinessOSError) as rejected:
+        await resolution
+    assert rejected.value.code == "invalid_membership"
+    await suspension
+
+    await app.shutdown()
+    app.runtime.migrations.downgrade(postgres_database.migration_url)

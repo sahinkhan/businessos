@@ -28,7 +28,13 @@ active|suspended -> terminating -> deleted
 
 Every change records actor, reason and time. Provisioning, state/history and its event outbox entry
 share one tenant-scoped Unit of Work. Export, delete and restore are ordered lifecycle hook contracts;
-their business-specific implementations remain owned by participating modules.
+their business-specific implementations remain owned by participating modules. Entering
+`terminating` runs export hooks, entering `deleted` runs delete hooks, and returning from
+`retention_hold` to `active` runs restore hooks. A hook failure prevents the lifecycle transition.
+
+Tenant entitlements are the Phase 2 subscription abstraction: their effective period and external
+`reference` identify the plan/subscription authority without making billing a Tenant concern.
+Quota records remain a separate public read model.
 
 ## Authentication trust
 
@@ -42,9 +48,17 @@ An HTTP tenant header is never authoritative. OIDC processing follows this order
 6. resolve issuer/subject to an active principal and effective membership under identity RLS;
 7. create the immutable BusinessOS `RequestContext`/`TenantContext`.
 
+The shipped ASGI composition discovers exactly one trusted context-resolver entry point. Installing
+Identity supplies the OIDC resolver, wired to the framework-owned Unit of Work; configured providers
+and MFA policy therefore govern normal Uvicorn requests. An installation with multiple resolver
+providers fails startup composition instead of choosing one implicitly.
+
 SAML is exposed as a validation adapter contract. Local break-glass identities are local-only and
 store only a secret-provider reference, never credential material. Service-account and device
-identities remain tenant-scoped principals.
+identities remain tenant-scoped principals. These federation/credential adapters feed validated
+`PrincipalIdentity` values into the same application boundary; Phase 2 does not define browser or
+protocol transport endpoints. Authentication-session commands create, validate, query and revoke
+tenant-scoped session context for users, service accounts and devices, and emit start/revoke events.
 
 ## Organization and scope
 
@@ -56,7 +70,9 @@ parent in another tenant.
 Active scope selection is immutable. Every selected record must belong to the tenant, selected
 parent/child values must describe one consistent hierarchy, and the principal must have an
 effective assignment or matching time-bounded delegation. Assignment/delegation representation in
-Phase 2 does not replace the Phase 4 policy engine.
+Phase 2 does not replace the Phase 4 policy engine. A delegation must cover every explicitly selected
+record and include the requested action. A child-only grant cannot authorize an explicitly selected
+ancestor, while an ancestor grant may authorize its consistent descendants.
 
 ## Isolation and migrations
 

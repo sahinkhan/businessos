@@ -9,8 +9,10 @@ import jwt
 import psycopg
 import pytest
 from businessos_identity import (
+    AuthenticationSessionRecord,
     ConfigureOIDCProvider,
     CreateUser,
+    GetAuthenticationSession,
     GetMembership,
     GrantMembership,
     IdentityModule,
@@ -21,8 +23,11 @@ from businessos_identity import (
     OIDCTokenVerifier,
     RegisterDevice,
     RegisterServiceAccount,
+    RevokeAuthenticationSession,
     RevokeMembership,
     SetMFAPolicy,
+    StartAuthenticationSession,
+    ValidateAuthenticationSession,
 )
 from businessos_organization import (
     AssignPrincipal,
@@ -140,6 +145,72 @@ async def _query(app: Any, message: object, context: RequestContext) -> object:
     assert app.runtime is not None
     async with app.container.request_scope() as dependencies:
         return await app.runtime.messages.query(message, context, dependencies)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_tenant_transitions_orchestrate_lifecycle_hooks(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    calls: list[str] = []
+
+    class Hook:
+        async def export(self, tenant_id: UUID) -> None:
+            calls.append(f"export:{tenant_id}")
+
+        async def delete(self, tenant_id: UUID) -> None:
+            calls.append(f"delete:{tenant_id}")
+
+        async def restore(self, tenant_id: UUID) -> None:
+            calls.append(f"restore:{tenant_id}")
+
+    tenant_module = TenantModule()
+    tenant_module.lifecycle_hooks.register("test.lifecycle", Hook())
+    app = create_application(
+        _settings(postgres_database.runtime_url),
+        modules=(tenant_module,),
+        authorizer=Authorizer(AllowAllPolicy()),
+    )
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    tenant_id = uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_id, "lifecycle-hooks")
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "UPDATE platform_tenant.tenants SET status = 'active' WHERE tenant_id = %s",
+            (tenant_id,),
+        )
+        connection.commit()
+    context = _context(tenant_id)
+    await _dispatch(
+        app,
+        TransitionTenant(tenant_id=tenant_id, target=TenantStatus.RETENTION_HOLD),
+        context,
+    )
+    await _dispatch(
+        app,
+        TransitionTenant(tenant_id=tenant_id, target=TenantStatus.ACTIVE),
+        context,
+    )
+    await _dispatch(
+        app,
+        TransitionTenant(tenant_id=tenant_id, target=TenantStatus.TERMINATING),
+        context,
+    )
+    await _dispatch(
+        app,
+        TransitionTenant(tenant_id=tenant_id, target=TenantStatus.DELETED),
+        context,
+    )
+    assert calls == [
+        f"restore:{tenant_id}",
+        f"export:{tenant_id}",
+        f"delete:{tenant_id}",
+    ]
+    await app.shutdown()
+    app.runtime.migrations.downgrade(postgres_database.migration_url)
 
 
 @pytest.mark.integration
@@ -806,6 +877,30 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         ),
         context,
     )
+    with pytest.raises(BusinessOSError) as delegation_action_escape:
+        await _query(
+            app,
+            SelectActiveScope(
+                tenant_id=tenant_id,
+                operating_site_id=site_id,
+                delegation_id=delegation_id,
+                action="organization.manage",
+            ),
+            context,
+        )
+    assert delegation_action_escape.value.code == "forbidden"
+    with pytest.raises(BusinessOSError) as narrow_delegation_broader_context:
+        await _query(
+            app,
+            SelectActiveScope(
+                tenant_id=tenant_id,
+                company_id=company_us_id,
+                operating_site_id=site_id,
+                delegation_id=delegation_id,
+            ),
+            context,
+        )
+    assert narrow_delegation_broader_context.value.code == "forbidden"
     for principal_id, principal_type in (
         (service_account_id, "service_account"),
         (device_id, "device"),
@@ -847,6 +942,78 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     assert selected.delegation_id is None
     assert isinstance(delegated, TenantContext)
     assert delegated.delegation_id == delegation_id
+    session_id = uuid4()
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    await _dispatch(
+        app,
+        StartAuthenticationSession(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            principal_id=admin_id,
+            principal_type="user",
+            authentication_strength="mfa",
+            expires_at=expires_at,
+        ),
+        context,
+    )
+    session = await _query(
+        app,
+        GetAuthenticationSession(tenant_id=tenant_id, session_id=session_id),
+        context,
+    )
+    assert isinstance(session, AuthenticationSessionRecord) and session.is_active()
+    validated_session = await _query(
+        app,
+        ValidateAuthenticationSession(tenant_id=tenant_id, session_id=session_id),
+        context,
+    )
+    assert validated_session == session
+    await _dispatch(
+        app,
+        RevokeAuthenticationSession(tenant_id=tenant_id, session_id=session_id),
+        context,
+    )
+    revoked_session = await _query(
+        app,
+        GetAuthenticationSession(tenant_id=tenant_id, session_id=session_id),
+        context,
+    )
+    assert isinstance(revoked_session, AuthenticationSessionRecord)
+    assert not revoked_session.is_active()
+    with pytest.raises(BusinessOSError) as invalid_revoked_session:
+        await _query(
+            app,
+            ValidateAuthenticationSession(tenant_id=tenant_id, session_id=session_id),
+            context,
+        )
+    assert invalid_revoked_session.value.code == "invalid_session"
+    for principal_id, principal_type in (
+        (service_account_id, "service_account"),
+        (device_id, "device"),
+    ):
+        nonhuman_session_id = uuid4()
+        await _dispatch(
+            app,
+            StartAuthenticationSession(
+                session_id=nonhuman_session_id,
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                principal_type=principal_type,
+                authentication_strength="credential-provider",
+                expires_at=datetime.now(UTC) + timedelta(minutes=10),
+            ),
+            context,
+        )
+        nonhuman_session = await _query(
+            app,
+            ValidateAuthenticationSession(
+                tenant_id=tenant_id,
+                session_id=nonhuman_session_id,
+            ),
+            context,
+        )
+        assert isinstance(nonhuman_session, AuthenticationSessionRecord)
+        assert nonhuman_session.principal_type == principal_type
     with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
         audit_count = connection.execute(
             "SELECT count(*) FROM eventing.outbox_messages "

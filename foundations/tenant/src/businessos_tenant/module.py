@@ -198,6 +198,14 @@ class TenantModule:
                 "Tenant lifecycle transition is not allowed",
                 status_code=409,
             )
+        if command.target is TenantStatus.TERMINATING:
+            await self.lifecycle_hooks.export(tenant.tenant_id)
+        elif command.target is TenantStatus.DELETED:
+            await self.lifecycle_hooks.delete(tenant.tenant_id)
+        elif (
+            current_status is TenantStatus.RETENTION_HOLD and command.target is TenantStatus.ACTIVE
+        ):
+            await self.lifecycle_hooks.restore(tenant.tenant_id)
         await context.unit_of_work.persistence.execute(
             update(TENANTS)
             .where(TENANTS.c.tenant_id == tenant.tenant_id)

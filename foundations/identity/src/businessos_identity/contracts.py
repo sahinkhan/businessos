@@ -34,6 +34,25 @@ class PrincipalIdentity(BaseModel):
     scopes: tuple[dict[str, str], ...] = ()
 
 
+class AuthenticationSessionRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    tenant_id: UUID
+    principal_id: UUID
+    principal_type: str
+    authentication_strength: AuthenticationStrength | str
+    started_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None = None
+
+    def is_active(self, at: datetime | None = None) -> bool:
+        from datetime import UTC
+
+        instant = at or datetime.now(UTC)
+        return self.revoked_at is None and self.started_at <= instant < self.expires_at
+
+
 class SAMLAssertionValidator(Protocol):
     """Deployment adapter boundary; raw SAML never reaches domain code."""
 
@@ -82,8 +101,12 @@ class ActiveScopeSelection(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class IdentityContract:
-    version: str = "1.0"
+    version: str = "1.1"
     membership_query: str = "businessos_identity.GetMembership"
     active_scope_contract: str = "businessos_identity.ActiveScopeSelection"
     oidc_resolver: str = "businessos_identity.OIDCContextResolver"
     saml_adapter: str = "businessos_identity.SAMLAssertionValidator"
+    session_start_command: str = "businessos_identity.StartAuthenticationSession"
+    session_revoke_command: str = "businessos_identity.RevokeAuthenticationSession"
+    session_query: str = "businessos_identity.GetAuthenticationSession"
+    session_validation_query: str = "businessos_identity.ValidateAuthenticationSession"

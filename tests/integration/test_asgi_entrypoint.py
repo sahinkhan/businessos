@@ -5,6 +5,7 @@ from collections import deque
 from typing import Any
 
 import pytest
+from businessos_identity import OIDCContextResolver
 
 from businessos.config import get_settings
 from businessos.modules import ModuleState
@@ -30,6 +31,7 @@ async def test_shipped_asgi_entrypoint_completes_real_lifespan(
     sys.modules.pop("businessos.asgi", None)
     asgi = importlib.import_module("businessos.asgi")
     application = asgi.application
+    assert isinstance(application._context_resolver, OIDCContextResolver)
     messages: deque[dict[str, Any]] = deque(
         ({"type": "lifespan.startup"}, {"type": "lifespan.shutdown"})
     )

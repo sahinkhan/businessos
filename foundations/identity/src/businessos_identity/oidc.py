@@ -8,7 +8,7 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 import jwt
-from businessos_tenant import TenantAccessValidator
+from businessos_tenant import DatabaseTenantAccessValidator, TenantAccessValidator
 from jwt import InvalidTokenError, PyJWKClient
 from jwt.exceptions import PyJWKClientError, PyJWKError
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -277,6 +277,18 @@ class OIDCContextResolver:
         except (TypeError, ValueError):
             raise _invalid_token() from None
         return _ResolvedProvider(cast(UUID, row["id"]), configuration)
+
+
+def create_context_resolver(
+    installation_id: UUID, unit_of_work_factory: UnitOfWorkFactory
+) -> OIDCContextResolver:
+    """Compose the standard OIDC trust boundary for the shipped ASGI target."""
+
+    return OIDCContextResolver(
+        installation_id=installation_id,
+        unit_of_work_factory=unit_of_work_factory,
+        tenant_access=DatabaseTenantAccessValidator(installation_id, unit_of_work_factory),
+    )
 
 
 class _ProviderHint(BaseModel):

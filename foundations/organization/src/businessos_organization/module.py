@@ -176,6 +176,7 @@ class ReadOrganization(Query):
 class SelectActiveScope(Query):
     tenant_id: UUID
     principal_type: Literal["user", "service_account", "device"] = "user"
+    action: str = Field(default="organization.read", pattern=r"^[a-z][a-z0-9_.:-]+$")
     enterprise_group_id: UUID | None = None
     legal_entity_id: UUID | None = None
     company_id: UUID | None = None
@@ -711,6 +712,7 @@ class OrganizationModule:
                 or delegation["recipient_principal_type"] != query.principal_type
                 or delegation["valid_from"] > now
                 or delegation["valid_until"] <= now
+                or query.action not in delegation["allowed_actions"]
                 or not selection.authorized_by((delegation["scope_type"], delegation["scope_id"]))
             ):
                 raise BusinessOSError(
@@ -749,10 +751,7 @@ class OrganizationModule:
                 except (BusinessOSError, ValueError):
                     continue
                 valid_assignments.add((scope_type, scope_id))
-            if not all(
-                any(grant in selection.lineages[leaf] for grant in valid_assignments)
-                for leaf in selection.leaves
-            ):
+            if not selection.authorized_by_any(valid_assignments):
                 raise BusinessOSError(
                     "forbidden", "Principal is not assigned to the selected scope", status_code=403
                 )
@@ -794,7 +793,10 @@ class _ScopeSelection:
     leaves: frozenset[tuple[str, UUID]]
 
     def authorized_by(self, grant: tuple[str, UUID]) -> bool:
-        return bool(self.leaves) and all(grant in self.lineages[leaf] for leaf in self.leaves)
+        return bool(self.lineages) and all(grant in lineage for lineage in self.lineages.values())
+
+    def authorized_by_any(self, grants: set[tuple[str, UUID]]) -> bool:
+        return all(any(grant in lineage for grant in grants) for lineage in self.lineages.values())
 
 
 async def _canonical_scope_selection(

@@ -38,7 +38,12 @@ from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 from businessos.providers import ProviderRegistry, S3ObjectStorageProvider
 from businessos.runtime import FrameworkRuntime
-from businessos.security import Authorizer, DenyAllPolicyEvaluator, TrustedContextResolver
+from businessos.security import (
+    Authorizer,
+    ContextResolverFactory,
+    DenyAllPolicyEvaluator,
+    TrustedContextResolver,
+)
 from businessos.telemetry import configure_telemetry
 from businessos.version import runtime_version
 
@@ -77,6 +82,7 @@ def create_application(
     *,
     modules: Iterable[BusinessOSModule] = (),
     context_resolver: TrustedContextResolver | None = None,
+    context_resolver_factory: ContextResolverFactory | None = None,
     authorizer: Authorizer | None = None,
     infrastructure_providers: Mapping[str, object] | None = None,
 ) -> BusinessOSApplication:
@@ -91,6 +97,12 @@ def create_application(
     container = Container()
     database = Database(resolved_settings)
     unit_of_work_factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    if context_resolver is not None and context_resolver_factory is not None:
+        raise ValueError("Provide a context resolver or resolver factory, not both")
+    if context_resolver_factory is not None:
+        context_resolver = context_resolver_factory(
+            resolved_settings.installation_id, unit_of_work_factory
+        )
     resolved_authorizer = authorizer or Authorizer(DenyAllPolicyEvaluator())
     event_bus = EventBus(contributions, resolved_authorizer)
     message_dispatcher = MessageDispatcher(

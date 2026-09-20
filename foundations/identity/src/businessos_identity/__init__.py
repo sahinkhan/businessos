@@ -2,6 +2,7 @@
 
 from .contracts import (
     ActiveScopeSelection,
+    AuthenticationSessionRecord,
     AuthenticationStrength,
     BreakGlassCredentialValidator,
     IdentityContract,
@@ -11,8 +12,11 @@ from .contracts import (
     SAMLAssertionValidator,
 )
 from .module import (
+    AuthenticationSessionRevoked,
+    AuthenticationSessionStarted,
     ConfigureOIDCProvider,
     CreateUser,
+    GetAuthenticationSession,
     GetMembership,
     GrantMembership,
     IdentityModule,
@@ -21,8 +25,11 @@ from .module import (
     MembershipRevoked,
     RegisterDevice,
     RegisterServiceAccount,
+    RevokeAuthenticationSession,
     RevokeMembership,
     SetMFAPolicy,
+    StartAuthenticationSession,
+    ValidateAuthenticationSession,
 )
 from .oidc import (
     OIDCConfiguration,
@@ -35,10 +42,14 @@ from .oidc import (
 
 __all__ = [
     "ActiveScopeSelection",
+    "AuthenticationSessionRecord",
+    "AuthenticationSessionRevoked",
+    "AuthenticationSessionStarted",
     "AuthenticationStrength",
     "BreakGlassCredentialValidator",
     "ConfigureOIDCProvider",
     "CreateUser",
+    "GetAuthenticationSession",
     "GetMembership",
     "GrantMembership",
     "IdentityContract",
@@ -55,9 +66,12 @@ __all__ = [
     "RegisterDevice",
     "RegisterServiceAccount",
     "RemoteJWKSetResolver",
+    "RevokeAuthenticationSession",
     "RevokeMembership",
     "SAMLAssertionValidator",
     "SetMFAPolicy",
     "SigningKeyResolver",
+    "StartAuthenticationSession",
+    "ValidateAuthenticationSession",
     "VerifiedOIDCClaims",
 ]

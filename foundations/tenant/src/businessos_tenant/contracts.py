@@ -223,3 +223,4 @@ class TenantManagementContract:
     read_query: str = "businessos_tenant.GetTenant"
     entitlements_query: str = "businessos_tenant.GetTenantEntitlements"
     quotas_query: str = "businessos_tenant.GetTenantQuotas"
+    lifecycle_hooks: str = "foundation.tenant.lifecycle-hooks.v1"

@@ -18,6 +18,9 @@ dependencies = [
 [project.entry-points."businessos.modules"]
 foundation-identity = "businessos_identity:IdentityModule"
 
+[project.entry-points."businessos.context_resolvers"]
+foundation-identity-oidc = "businessos_identity.oidc:create_context_resolver"
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 include-package-data = true

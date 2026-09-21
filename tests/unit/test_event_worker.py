@@ -8,8 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 import businessos.__main__ as cli
+from businessos.context import current_request_context
 from businessos.errors import BusinessOSError, DeliveryUnavailableError
 from businessos.event_worker import EventWorkerSettings, create_event_worker
+from businessos.logging import JsonFormatter
 from businessos.messages import DomainEvent
 from businessos.providers import BrokerEvent, PermanentDeliveryError
 
@@ -36,6 +38,74 @@ def _settings() -> EventWorkerSettings:
         installation_id=uuid4(),
         principal_id=uuid4(),
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_delivery_logs_bind_correlation_tenant_and_restore_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = create_event_worker(_settings(), modules=(), broker=cast(Any, _Broker()))
+    assert worker.application.runtime is not None
+    runtime = worker.application.runtime
+    runtime.events.subscribe(_UnknownEvent, "test.log-projection", cast(Any, lambda *_: None))
+    observed: list[str] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            observed.append(JsonFormatter().format(record))
+
+    logger = logging.getLogger("businessos.event-worker")
+    handler = Capture()
+    logger.addHandler(handler)
+    old_level = logger.level
+    logger.setLevel(logging.INFO)
+
+    async def synchronize() -> None:
+        return None
+
+    async def consume(event: _UnknownEvent, context: object, dependencies: object) -> None:
+        logging.getLogger("businessos.event-worker").info("handler log")
+        if event.correlation_id == "first-delivery":
+            raise RuntimeError("delivery failed")
+
+    monkeypatch.setattr(worker, "_synchronize_subscriber_obligations", synchronize)
+    monkeypatch.setattr(runtime.event_consumer, "consume", consume)
+
+    tenant_id = uuid4()
+
+    def delivery(correlation: str) -> BrokerEvent:
+        event = _UnknownEvent(tenant_id=tenant_id, correlation_id=correlation)
+        return BrokerEvent(
+            subject=f"businessos.events.tenant.{tenant_id}.future.event",
+            payload=event.model_dump_json().encode(),
+            headers={
+                "event-id": str(event.event_id),
+                "event-type": event.event_type,
+                "tenant-id": str(tenant_id),
+                "schema-version": "1",
+                "correlation-id": correlation,
+            },
+        )
+
+    try:
+        with pytest.raises(RuntimeError, match="delivery failed"):
+            await worker._consume_delivery(delivery("first-delivery"))
+        assert current_request_context() is None
+        await worker._consume_delivery(delivery("second-delivery"))
+        assert current_request_context() is None
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+        await worker.stop()
+
+    entries = [json.loads(line) for line in observed]
+    assert [entry["correlation_id"] for entry in entries] == [
+        "first-delivery",
+        "first-delivery",
+        "second-delivery",
+    ]
+    assert all(entry["tenant_id"] == str(tenant_id) for entry in entries)
+    assert entries[1]["message"] == "Event delivery failed"
 
 
 def test_event_worker_configuration_redacts_role_credentials() -> None:

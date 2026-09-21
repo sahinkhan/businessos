@@ -85,7 +85,7 @@ A commit is eligible to be released only when the Release Maintainer records tha
 - cross-tenant, authorization, identity, secret, and supply-chain blockers are resolved or the release is rejected;
 - known non-blocking limitations and security advisories are recorded;
 - release notes or a changelog describe changes, deprecations, migrations, compatibility ranges, and operator action;
-- required accountable reviewers approved the change under [MAINTAINERS.md](MAINTAINERS.md); and
+- required accountable roles have independent human review or, while eligible during pre-`1.0.0` development, explicit owner attestation under the [Solo Maintainer Exception](MAINTAINERS.md#temporary-solo-maintainer-exception); and
 - the exact commit SHA to tag is recorded after post-merge verification.
 
 Known release blockers cannot be waived informally. A proposed exception must name the risk, affected users, mitigation, expiry, and approving roles. Cross-tenant exposure and unresolved critical security defects remain release-blocking.
@@ -103,6 +103,10 @@ Known release blockers cannot be waived informally. A proposed exception must na
 | LTS designation | Release Maintainer and Architecture Maintainer under a separately published support policy |
 
 One person may hold multiple roles while the maintainer group is small, but the release record must list each role being exercised. Approval means a traceable pull-request review, release approval record, or signed/attributed commit evidence; authorship alone is not an undocumented approval.
+
+In the current single-maintainer pre-`1.0.0` stage, the role matrix remains intact, but each required role may be evidenced through the owner's explicit exact-SHA attestation only when every Solo Maintainer Exception gate is met. The record distinguishes **Solo Maintainer Owner Attestation** from independent human review and cites exact-head CI, independent technical audit, and zero unresolved Critical/High findings. A merge action or authorship alone is not approval evidence. Once another eligible human maintainer is formally assigned and available, normal independent accountable review resumes.
+
+Before declaring a production-grade `1.0.0`, Stable enterprise, or LTS release, the accumulated protected-platform governance baseline must receive independent human review unless a later accepted governance decision explicitly changes that requirement. Solo attestation is not equivalent independent-human assurance. It never waives Critical security or cross-tenant isolation blockers, migration safety, immutable release evidence, CI, or compatibility requirements.
 
 ## Tag and artifact integrity
 

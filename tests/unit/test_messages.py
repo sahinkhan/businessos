@@ -1,16 +1,20 @@
 import asyncio
+import json
+import logging
 from collections.abc import Mapping
 from types import TracebackType
 from typing import ClassVar, Self, cast
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import DDL, text
 
 from businessos.activation import ContributionGate
-from businessos.context import RequestContext, TenantContext
+from businessos.context import RequestContext, TenantContext, current_request_context
 from businessos.di import Container
 from businessos.errors import BusinessOSError, ConflictError, DeliveryUnavailableError
 from businessos.eventing import DurableEventConsumer
+from businessos.logging import JsonFormatter
 from businessos.messages import (
     Command,
     DomainEvent,
@@ -47,7 +51,7 @@ class FakeUnitOfWork:
 
     @property
     def persistence(self) -> TransactionalPersistence:
-        raise NotImplementedError
+        return cast(TransactionalPersistence, self)
 
     async def __aenter__(self) -> Self:
         self.timeline.append("begin")
@@ -91,6 +95,90 @@ class FakeUnitOfWorkFactory:
         unit_of_work = FakeUnitOfWork(self.timeline)
         self.created.append(unit_of_work)
         return unit_of_work
+
+
+@pytest.mark.asyncio
+async def test_handler_receives_only_transaction_bound_capabilities() -> None:
+    timeline: list[str] = []
+    factory = FakeUnitOfWorkFactory(timeline)
+    dispatcher = MessageDispatcher(factory, EventBus())
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+
+    async def handle(_: ChangeName, handling: HandlingContext) -> object:
+        assert current_request_context() is handling.request
+        assert handling.unit_of_work is not factory.created[0]
+        assert not hasattr(handling.unit_of_work, "commit")
+        assert not hasattr(handling.unit_of_work, "rollback")
+        assert not hasattr(handling.unit_of_work, "session")
+        assert not hasattr(handling.unit_of_work, "__aenter__")
+        with pytest.raises(ValueError, match="cannot control"):
+            await handling.unit_of_work.persistence.execute(text("COMMIT"))
+        with pytest.raises(ValueError, match="cannot control"):
+            await handling.unit_of_work.persistence.execute(text("SELECT 1; ROLLBACK"))
+        with pytest.raises(ValueError, match="cannot control"):
+            await handling.unit_of_work.persistence.execute(DDL("COMMIT"))  # type: ignore[no-untyped-call]
+        handling.emit(
+            NameChanged(tenant_id=tenant.tenant_id, correlation_id="restricted", name="new")
+        )
+        return "new"
+
+    dispatcher.commands.register(ChangeName, "test.restricted", handle)
+    container = Container()
+    async with container.request_scope() as dependencies:
+        assert (
+            await dispatcher.command(
+                ChangeName(name="new"), RequestContext(tenant=tenant), dependencies
+            )
+            == "new"
+        )
+    assert timeline == ["begin", "outbox", "commit", "close"]
+    assert current_request_context() is None
+
+
+@pytest.mark.asyncio
+async def test_real_event_handler_logs_trusted_context_without_delivery_leak() -> None:
+    logger = logging.getLogger("businessos.test.event-handler")
+    observed: list[dict[str, object]] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            observed.append(json.loads(JsonFormatter().format(record)))
+
+    capture = Capture()
+    previous_level = logger.level
+    logger.addHandler(capture)
+    logger.setLevel(logging.INFO)
+    events = EventBus()
+
+    async def handle(event: NameChanged, handling: EventHandlingContext) -> None:
+        assert handling.request.correlation_id == event.correlation_id
+        logger.info("subscriber executed")
+
+    events.subscribe(NameChanged, "test.handler-log", handle)
+    consumer = DurableEventConsumer(FakeUnitOfWorkFactory([]), events)
+    container = Container()
+    try:
+        async with container.request_scope() as dependencies:
+            for correlation in ("first-handler", "second-handler"):
+                tenant = TenantContext(uuid4(), uuid4(), uuid4())
+                await consumer.consume(
+                    NameChanged(
+                        tenant_id=tenant.tenant_id,
+                        correlation_id=correlation,
+                        name="value",
+                    ),
+                    RequestContext(correlation_id=correlation, tenant=tenant),
+                    dependencies,
+                )
+                assert observed[-1]["tenant_id"] == str(tenant.tenant_id)
+                assert current_request_context() is None
+    finally:
+        logger.removeHandler(capture)
+        logger.setLevel(previous_level)
+    assert [entry["correlation_id"] for entry in observed] == [
+        "first-handler",
+        "second-handler",
+    ]
 
 
 class DenyPolicy:

@@ -32,7 +32,9 @@ A new business or industry domain must be implementable through published platfo
 
 ## 3. BusinessOS Framework Boundary
 
-The custom BusinessOS framework is the protected application runtime and owns:
+The custom BusinessOS framework is the protected application runtime. Its complete
+responsibility inventory is [the canonical protected-kernel map](KERNEL-RESPONSIBILITIES.md).
+The following describes the execution-facing subset and does not redefine that map:
 
 - module discovery and lifecycle
 - ASGI routing
@@ -53,6 +55,9 @@ Uvicorn owns process-level ASGI serving only. Raw ASGI and Uvicorn objects remai
 
 Generic runtime only:
 
+See the [canonical protected-kernel map](KERNEL-RESPONSIBILITIES.md) for the full
+inventory; this layer sketch groups related primitives:
+
 - bootstrap
 - TenantContext/RequestContext
 - module registry
@@ -65,6 +70,8 @@ Generic runtime only:
 - event/outbox runtime
 - provider registry
 - configuration
+- feature flags
+- metadata/permission registration primitives
 - migration/compatibility runtime
 - module SDK/upgrade coordination
 - diagnostics

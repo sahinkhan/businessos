@@ -88,13 +88,16 @@ Dependencies must flow downward. A lower layer must never depend on a higher lay
 
 ## Protected Kernel
 
-The protected kernel may contain only generic runtime concerns:
+The authoritative responsibility inventory is
+[`docs/architecture/KERNEL-RESPONSIBILITIES.md`](docs/architecture/KERNEL-RESPONSIBILITIES.md).
+The protected kernel may contain only generic runtime concerns, including:
 
 - bootstrap/runtime
 - TenantContext and RequestContext
 - module registry and loader
 - ASGI routing and middleware
 - dependency injection
+- configuration runtime
 - contract registry
 - entity runtime primitives
 - command and query dispatch
@@ -102,8 +105,8 @@ The protected kernel may contain only generic runtime concerns:
 - authorization enforcement entry point
 - event/outbox runtime
 - provider registry
-- configuration runtime
 - feature flags
+- metadata and permission registration primitives
 - migration runtime
 - module SDK and upgrade coordination
 - compatibility runtime

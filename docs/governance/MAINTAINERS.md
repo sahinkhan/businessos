@@ -39,11 +39,25 @@ Governance roles describe accountability, not permanent people. The repository c
 | CI workflow, packaging, signing, or release metadata | Release Maintainer; Security Maintainer for supply-chain controls |
 | Governance policy | Documentation/Governance Maintainer and the accountable role whose policy changes |
 
-Review must come from the required accountable role even when the author also holds that role. While one person holds several roles, the pull request or decision record lists each role exercised so later audits can distinguish responsibility from identity.
+Review must cover every required accountable role. In the normal case, that review comes from another eligible human maintainer rather than the author. While one person holds several roles, the pull request or decision record lists each role exercised so later audits can distinguish responsibility from identity. The temporary Solo Maintainer Exception below is the only alternative when no independent eligible human reviewer is available.
 
 ## Multiple approvals
 
 The union of applicable review rows is required. Changes need multiple role approvals when they cross ownership boundaries, affect public contracts, change security or tenancy semantics, alter migration/data ownership, accept an ADR, or create a release. A single person may satisfy several roles during the initial maintainer stage, but this temporary staffing model does not collapse the roles or remove their separate review obligations.
+
+## Temporary Solo Maintainer Exception
+
+This exception is available only during pre-`1.0.0` development when the repository has exactly one verified eligible human maintainer for the required roles and no independent eligible human reviewer is available. The acceptance record identifies this temporary staffing condition. Once another eligible human maintainer is formally assigned and available for the required role, normal independent accountable review is required again; the exception must not be used.
+
+The sole owner may provide **Solo Maintainer Owner Attestation** instead of independent human review only when the exact candidate SHA has passing CI, an independent technical/read-only audit has passed on that SHA, and unresolved Critical and High findings are both zero. The owner personally posts an explicit exact-SHA attestation identifying their GitHub identity and every accountable role exercised. The evidence must state:
+
+```text
+Review model: SOLO MAINTAINER OWNER ATTESTATION
+Independent human review: NOT PERFORMED
+Independent technical audit: PERFORMED
+```
+
+Authorship alone is not approval evidence. A merge action alone is not approval evidence. Codex, automation, and another person's account must not generate or submit the owner's attestation. Owner attestation is not independent human review and does not waive CI, audit, security, tenancy, migration, compatibility, or release blockers. Before a production-grade `1.0.0`, Stable enterprise, or LTS release, the accumulated protected-platform governance baseline requires independent human review unless a later accepted governance decision explicitly changes that requirement.
 
 ## Availability and escalation
 

@@ -1,19 +1,29 @@
 """Framework-owned command, query and event contracts and dispatch."""
 
+import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import ClassVar, cast
+from typing import Any, ClassVar, Protocol, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.engine import Result
+from sqlalchemy.sql.base import Executable
+from sqlalchemy.sql.ddl import ExecutableDDLElement
+from sqlalchemy.sql.elements import TextClause
 
 from businessos.activation import ContributionGate, ContributionGeneration, ContributionState
-from businessos.context import RequestContext
+from businessos.context import RequestContext, bind_request_context
 from businessos.di import RequestDependencyScope
 from businessos.errors import ConflictError, DeliveryUnavailableError, NotFoundError
-from businessos.persistence import PendingOutboxMessage, UnitOfWork, UnitOfWorkFactory
+from businessos.persistence import (
+    PendingOutboxMessage,
+    TransactionalPersistence,
+    UnitOfWork,
+    UnitOfWorkFactory,
+)
 from businessos.security import Authorizer
 from businessos.telemetry import dispatch_span
 
@@ -58,11 +68,66 @@ Handler = Callable[[Message, "HandlingContext"], Awaitable[object]]
 EventHandler = Callable[[DomainEvent, "EventHandlingContext"], Awaitable[None]]
 
 
+class HandlerTransaction(Protocol):
+    """The handler's view of a framework-owned transaction, without completion methods."""
+
+    @property
+    def persistence(self) -> TransactionalPersistence: ...
+
+    def add_outbox(self, message: PendingOutboxMessage) -> None: ...
+
+
+_TRANSACTION_SQL = re.compile(
+    r"(?:^|;)\s*(?:(?:/\*.*?\*/|--[^\n]*(?:\n|$))\s*)*"
+    r"(?:COMMIT|ROLLBACK|BEGIN|START\s+TRANSACTION|END|SAVEPOINT|RELEASE\s+SAVEPOINT|"
+    r"PREPARE\s+TRANSACTION)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _HandlerPersistence:
+    _delegate: TransactionalPersistence
+
+    async def execute(
+        self,
+        statement: Executable,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> Result[Any]:
+        # DDL is not a handler persistence operation. SQLAlchemy's DDL("COMMIT")
+        # bypasses TextClause checks and can finish the owning transaction.
+        if isinstance(statement, ExecutableDDLElement) or _TRANSACTION_SQL.search(
+            statement.text if isinstance(statement, TextClause) else str(statement)
+        ):
+            raise ValueError("Handler persistence cannot control the framework transaction")
+        return await self._delegate.execute(statement, parameters)
+
+    async def flush(self) -> None:
+        await self._delegate.flush()
+
+
+@dataclass(frozen=True, slots=True)
+class _RestrictedHandlerTransaction:
+    """Runtime adapter that never exposes the owning Unit of Work to a handler."""
+
+    persistence: TransactionalPersistence
+    _add_outbox: Callable[[PendingOutboxMessage], None] = field(repr=False)
+
+    def add_outbox(self, message: PendingOutboxMessage) -> None:
+        self._add_outbox(message)
+
+
+def handler_transaction_view(unit_of_work: UnitOfWork) -> HandlerTransaction:
+    return _RestrictedHandlerTransaction(
+        _HandlerPersistence(unit_of_work.persistence), unit_of_work.add_outbox
+    )
+
+
 @dataclass(slots=True)
 class HandlingContext:
     request: RequestContext
     dependencies: RequestDependencyScope
-    unit_of_work: UnitOfWork
+    unit_of_work: HandlerTransaction
     _events: list[DomainEvent] = field(default_factory=list[DomainEvent])
 
     def emit(self, event: DomainEvent) -> None:
@@ -87,7 +152,7 @@ class EventHandlingContext:
 
     request: RequestContext
     dependencies: RequestDependencyScope
-    unit_of_work: UnitOfWork
+    unit_of_work: HandlerTransaction
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,13 +464,15 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
-        with dispatch_span("command", type(message).__name__):
+        with bind_request_context(context), dispatch_span("command", type(message).__name__):
             registered = self.commands.resolve(message)
             async with self.commands.admitted(registered):
                 await self._authorize(context, registered.permission)
                 unit_of_work = self._unit_of_work(context)
                 async with unit_of_work:
-                    handling = HandlingContext(context, dependencies, unit_of_work)
+                    handling = HandlingContext(
+                        context, dependencies, handler_transaction_view(unit_of_work)
+                    )
                     result = await self.commands.invoke_registered(registered, message, handling)
                     await unit_of_work.commit()
                 return result
@@ -416,13 +483,15 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
-        with dispatch_span("query", type(message).__name__):
+        with bind_request_context(context), dispatch_span("query", type(message).__name__):
             registered = self.queries.resolve(message)
             async with self.queries.admitted(registered):
                 await self._authorize(context, registered.permission)
                 unit_of_work = self._unit_of_work(context)
                 async with unit_of_work:
-                    handling = HandlingContext(context, dependencies, unit_of_work)
+                    handling = HandlingContext(
+                        context, dependencies, handler_transaction_view(unit_of_work)
+                    )
                     return await self.queries.invoke_registered(registered, message, handling)
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:

@@ -10,7 +10,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
-from businessos.modules.manifest import ModuleManifest
+from businessos.modules.manifest import ModuleContractDeclaration, ModuleManifest
 from businessos.modules.sdk import BusinessOSModule, ModuleRegistration
 from businessos.providers import ProviderRegistry
 
@@ -79,6 +79,56 @@ def _validate_dependencies(
             raise ConfigurationError(
                 f"Module '{manifest.module_id}' requires '{dependency.module_id}' "
                 f"{dependency.version}, found {target.version}"
+            )
+
+
+def _validate_contract_upgrade(
+    module_id: str,
+    kind: str,
+    current: tuple[ModuleContractDeclaration, ...],
+    target: tuple[ModuleContractDeclaration, ...],
+) -> None:
+    proposed = {declaration.contract_id: declaration for declaration in target}
+    for declaration in current:
+        replacement = proposed.get(declaration.contract_id)
+        if replacement is None:
+            raise ConfigurationError(
+                f"Upgrade target removes {kind} contract "
+                f"'{declaration.contract_id}' from module '{module_id}'"
+            )
+        if Version(replacement.version) < Version(declaration.version):
+            raise ConfigurationError(
+                f"Upgrade target downgrades {kind} contract "
+                f"'{declaration.contract_id}' in module '{module_id}'"
+            )
+
+
+def _validate_manifest_upgrade(current: ModuleManifest, target: ModuleManifest) -> None:
+    for kind, old_contracts, new_contracts in (
+        ("API", current.api_contracts, target.api_contracts),
+        ("event", current.event_contracts, target.event_contracts),
+        ("public", current.public_contracts, target.public_contracts),
+    ):
+        _validate_contract_upgrade(current.module_id, kind, old_contracts, new_contracts)
+    for kind, old_values, new_values in (
+        ("UI contribution", current.ui_contributions, target.ui_contributions),
+        ("configuration scope", current.configuration_scopes, target.configuration_scopes),
+        ("localization resource", current.localization_resources, target.localization_resources),
+    ):
+        removed = set(old_values) - set(new_values)
+        if removed:
+            raise ConfigurationError(
+                f"Upgrade target removes {kind} {sorted(removed)} from module '{current.module_id}'"
+            )
+    for kind, old_support, new_support in (
+        ("tenant export", current.tenant_export_supported, target.tenant_export_supported),
+        ("tenant delete", current.tenant_delete_supported, target.tenant_delete_supported),
+    ):
+        if (old_support is True and new_support is not True) or (
+            old_support is False and new_support is None
+        ):
+            raise ConfigurationError(
+                f"Upgrade target withdraws {kind} declaration from module '{current.module_id}'"
             )
 
 
@@ -390,6 +440,7 @@ class UpgradeCoordinator:
                 python=str(self._registry.python_version),
             ):
                 raise ConfigurationError(f"Upgrade target is incompatible: {target.module_id}")
+            _validate_manifest_upgrade(current, target)
         ordered = _ordered_manifests(proposed)
         migrations = tuple(
             (manifest.module_id, location)

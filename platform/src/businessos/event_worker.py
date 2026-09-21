@@ -16,7 +16,7 @@ from sqlalchemy.engine import make_url
 from businessos.application import BusinessOSApplication
 from businessos.bootstrap import create_application
 from businessos.config import Settings
-from businessos.context import RequestContext, TenantContext
+from businessos.context import RequestContext, TenantContext, bind_request_context
 from businessos.eventing import OutboxPublisher
 from businessos.messages import DurableSubscriberDeclaration
 from businessos.modules import BusinessOSModule, discover_modules
@@ -396,10 +396,18 @@ class EventWorker:
         except (LookupError, TypeError, ValueError) as exc:
             raise PermanentDeliveryError("Invalid event envelope") from exc
 
-        await self._synchronize_subscriber_obligations()
         context = self._context_resolver.resolve(delivery, tenant_id, correlation_id)
-        async with self.application.container.request_scope() as dependencies:
-            await runtime.event_consumer.consume(event, context, dependencies)
+        with bind_request_context(context):
+            try:
+                await self._synchronize_subscriber_obligations()
+                async with self.application.container.request_scope() as dependencies:
+                    await runtime.event_consumer.consume(event, context, dependencies)
+            except Exception as exc:
+                self._logger.warning(
+                    "Event delivery failed",
+                    extra={"error_type": type(exc).__name__},
+                )
+                raise
 
     async def _synchronize_subscriber_obligations(self) -> None:
         runtime = self.application.runtime

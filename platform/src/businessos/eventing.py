@@ -11,9 +11,14 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from businessos.context import RequestContext
+from businessos.context import RequestContext, bind_request_context
 from businessos.di import RequestDependencyScope
-from businessos.messages import DomainEvent, EventBus, EventHandlingContext
+from businessos.messages import (
+    DomainEvent,
+    EventBus,
+    EventHandlingContext,
+    handler_transaction_view,
+)
 from businessos.persistence import (
     InboxReceipt,
     OutboxMessage,
@@ -126,23 +131,28 @@ class DurableEventConsumer:
         with consumer_span(event.event_type, event.trace_context) as trace_id:
             traced_context = replace(context, trace_id=trace_id)
             processed = 0
-            async with self._events.admit_delivery(event) as subscribers:
-                for subscriber in subscribers:
-                    await self._events.authorize(traced_context, subscriber.permission)
-                    unit_of_work = self._unit_of_work_factory.for_tenant(tenant)
-                    async with unit_of_work:
-                        claimed = await unit_of_work.claim_inbox(
-                            consumer=subscriber.subscriber,
-                            event_id=event.event_id,
-                            tenant_id=tenant.tenant_id,
-                        )
-                        if not claimed:
-                            continue
-                        await self._events.invoke_registered(
-                            subscriber,
-                            event,
-                            EventHandlingContext(traced_context, dependencies, unit_of_work),
-                        )
-                        await unit_of_work.commit()
-                        processed += 1
+            with bind_request_context(traced_context):
+                async with self._events.admit_delivery(event) as subscribers:
+                    for subscriber in subscribers:
+                        await self._events.authorize(traced_context, subscriber.permission)
+                        unit_of_work = self._unit_of_work_factory.for_tenant(tenant)
+                        async with unit_of_work:
+                            claimed = await unit_of_work.claim_inbox(
+                                consumer=subscriber.subscriber,
+                                event_id=event.event_id,
+                                tenant_id=tenant.tenant_id,
+                            )
+                            if not claimed:
+                                continue
+                            await self._events.invoke_registered(
+                                subscriber,
+                                event,
+                                EventHandlingContext(
+                                    traced_context,
+                                    dependencies,
+                                    handler_transaction_view(unit_of_work),
+                                ),
+                            )
+                            await unit_of_work.commit()
+                            processed += 1
             return processed

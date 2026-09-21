@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from businessos.activation import ContributionGate
-from businessos.context import RequestContext, TenantContext
+from businessos.context import RequestContext, TenantContext, current_request_context
 from businessos.di import Container
 from businessos.errors import BusinessOSError
 from businessos.jobs import BackoffStrategy, DeadLetter, Job, JobHandlerRegistry, JobState
@@ -113,6 +113,29 @@ async def test_job_dispatch_binds_payload_tenant_to_trusted_context(
 
     assert raised.value.code == expected_code
     assert not called
+
+
+@pytest.mark.asyncio
+async def test_job_handler_binds_and_restores_trusted_provider_context() -> None:
+    registry = JobHandlerRegistry()
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    context = RequestContext(correlation_id="job-bound", tenant=tenant)
+    job = Job(
+        job_id=uuid4(),
+        tenant_id=tenant.tenant_id,
+        job_type="proof.rebuild",
+        payload={},
+        correlation_id=context.correlation_id,
+    )
+
+    async def handler(job: Job, request: RequestContext, dependencies: object) -> None:
+        assert current_request_context() is request
+
+    registry.add("proof.rebuild", "example", handler)
+    container = Container()
+    async with container.request_scope() as dependencies:
+        await registry.invoke(job, context, dependencies)
+    assert current_request_context() is None
 
 
 @pytest.mark.asyncio

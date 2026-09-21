@@ -8,9 +8,16 @@ from businessos.features import FeatureFlag
 from businessos.http import Request, Response
 from businessos.http.middleware import Middleware
 from businessos.jobs import Job
-from businessos.messages import Command, DomainEvent, EventHandlingContext, HandlingContext, Query
+from businessos.messages import (
+    Command,
+    DomainEvent,
+    EventHandlingContext,
+    HandlerTransaction,
+    HandlingContext,
+    Query,
+)
 from businessos.metadata import MetadataDeclaration
-from businessos.modules import ModuleManifest, ModuleRegistration
+from businessos.modules import ModuleContractDeclaration, ModuleManifest, ModuleRegistration
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.uow import UnitOfWork, UnitOfWorkFactory
@@ -32,10 +39,12 @@ __all__ = [
     "DomainEvent",
     "EventHandlingContext",
     "FeatureFlag",
+    "HandlerTransaction",
     "HandlingContext",
     "Job",
     "MetadataDeclaration",
     "Middleware",
+    "ModuleContractDeclaration",
     "ModuleManifest",
     "ModuleRegistration",
     "PermissionDeclaration",

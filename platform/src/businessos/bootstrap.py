@@ -36,7 +36,7 @@ from businessos.modules import (
 )
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
-from businessos.providers import ProviderRegistry, S3ObjectStorageProvider
+from businessos.providers import ProviderRegistry, S3ObjectStorageProvider, tenant_bound_provider
 from businessos.runtime import FrameworkRuntime
 from businessos.security import (
     Authorizer,
@@ -140,15 +140,30 @@ def create_application(
 
         return provide
 
+    def bound_dependency_provider(
+        capability: str, value: object
+    ) -> Callable[[DependencyResolver], object]:
+        def provide(_: DependencyResolver) -> object:
+            return tenant_bound_provider(capability, value)
+
+        return provide
+
     for capability, provider in sorted((infrastructure_providers or {}).items()):
         providers.register(capability, "businessos.infrastructure", provider)
         dependency = provider_dependencies.get(capability)
         if dependency is not None:
-            container.register(
-                dependency,
-                dependency_provider(provider),
-                scope=DependencyScope.SINGLETON,
-            )
+            if capability in {"cache", "object-storage"}:
+                container.register(
+                    dependency,
+                    bound_dependency_provider(capability, provider),
+                    scope=DependencyScope.REQUEST,
+                )
+            else:
+                container.register(
+                    dependency,
+                    dependency_provider(provider),
+                    scope=DependencyScope.SINGLETON,
+                )
     features = FeatureFlagRegistry(contributions)
     jobs = JobHandlerRegistry(contributions, resolved_authorizer)
     module_registry = ModuleRegistry(platform_version=version, sdk_version="0.1.0")

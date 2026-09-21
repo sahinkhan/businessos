@@ -1,7 +1,8 @@
 """Validate active Phase 0 architecture and technology declarations.
 
-Historical ADRs and audit/migration evidence are deliberately outside the active-source
-inventory. New files under active architecture/governance directories are discovered.
+Roadmaps and ADRs are discovered recursively. ADR status determines whether its
+decision is authoritative; superseded/rejected/withdrawn records remain historical.
+Historical audit/migration evidence outside active source directories is not scanned.
 """
 
 from __future__ import annotations
@@ -54,13 +55,24 @@ ACTIVE_REQUIRED = (
     Path("compose.yaml"),
     Path(".github/workflows/ci.yml"),
 )
-ACTIVE_DIRS = ("docs/architecture", "docs/governance", "docs/codex")
+ACTIVE_DIRS = ("docs/architecture", "docs/governance", "docs/codex", "docs/roadmap")
+ADR_DIR = Path("docs/adr")
+ADR_STATUSES = frozenset({"ACCEPTED", "SUPERSEDED", "REJECTED", "WITHDRAWN", "DRAFT", "PROPOSED"})
+ADR_STATUS_LINE = re.compile(r"^Status:\s*\*{0,2}([A-Za-z]+)\b", re.I | re.M)
+PREMATURE_AUTHORITY = re.compile(
+    r"\b(?:this\s+(?:ADR|proposal|decision)|the\s+decision)\s+"
+    r"(?:is|has\s+been)\s+(?:already\s+)?(?:accepted|authoritative|current|in\s+force)\b",
+    re.I,
+)
 RULES = (
     (
         "go-primary",
         re.compile(
-            r"\b(?:Go(?:/Gin)?\s+(?:as|is|remains)\s+(?:the\s+)?primary\s+(?:backend|worker)|"
-            r"(?:primary|default)\s+(?:backend|worker)(?:\s+language)?\s*[:=-]\s*Go\b)",
+            r"\b(?:Go(?:/Gin)?\s+(?:as|is|remains)\s+(?:the\s+)?primary\s+"
+            r"(?:BusinessOS\s+)?(?:backend|runtime|worker)|"
+            r"(?:primary|default)\s+(?:BusinessOS\s+)?(?:backend|runtime|worker)"
+            r"(?:\s+language)?\s*[:=-]\s*Go\b|"
+            r"core\s+BusinessOS\s+runtime\s+is\s+implemented\s+in\s+Go\b)",
             re.I,
         ),
     ),
@@ -85,7 +97,8 @@ RULES = (
         "old-python-primary",
         re.compile(
             r"\bPython\s+3\.(?:[0-9]|10|11|12)(?!\d)(?:\+|\s+or\s+newer)?"
-            r"\s+(?:as|is)\s+(?:the\s+)?primary\s+(?:backend|runtime|worker)\b|"
+            r"\s+(?:as|is)\s+(?:the\s+|approved\s+)?primary\s+"
+            r"(?:backend|runtime|worker)\b|"
             r"\b(?:primary|default)\s+(?:Python\s+)?(?:backend|runtime|worker)"
             r"\s*[:=-]\s*Python\s+3\.(?:[0-9]|10|11|12)(?!\d)",
             re.I,
@@ -124,7 +137,8 @@ class Violation:
 def active_files(root: Path) -> tuple[set[Path], list[Violation]]:
     files = set(ACTIVE_REQUIRED)
     for directory in ACTIVE_DIRS:
-        files.update(path.relative_to(root) for path in (root / directory).glob("*.md"))
+        files.update(path.relative_to(root) for path in (root / directory).rglob("*.md"))
+    files.update(path.relative_to(root) for path in (root / ADR_DIR).rglob("*.md"))
     for extension in ("*.yml", "*.yaml"):
         files.update(
             path.relative_to(root) for path in (root / ".github/workflows").glob(extension)
@@ -152,6 +166,32 @@ def check(root: Path) -> list[Violation]:
             violations.append(Violation(path.as_posix(), 0, "unreadable-active-source", str(exc)))
             continue
         contents[path] = content
+        if path.is_relative_to(ADR_DIR):
+            matches = list(ADR_STATUS_LINE.finditer(content))
+            if len(matches) != 1 or matches[0].group(1).upper() not in ADR_STATUSES:
+                violations.append(
+                    Violation(path.as_posix(), 0, "adr-status", "one known ADR Status is required")
+                )
+                continue
+            status = matches[0].group(1).upper()
+            if (
+                path == Path("docs/adr/ADR-008-python-asgi-technology-baseline.md")
+                and status != "ACCEPTED"
+            ):
+                violations.append(
+                    Violation(path.as_posix(), 0, "baseline-adr-status", "ADR-008 must be ACCEPTED")
+                )
+            if status in {"SUPERSEDED", "REJECTED", "WITHDRAWN"}:
+                continue
+            if status in {"DRAFT", "PROPOSED"}:
+                for number, line in enumerate(content.splitlines(), 1):
+                    if PREMATURE_AUTHORITY.search(line):
+                        violations.append(
+                            Violation(
+                                path.as_posix(), number, "premature-adr-authority", line.strip()
+                            )
+                        )
+                continue
         for number, line in enumerate(content.splitlines(), 1):
             for name, pattern in RULES:
                 if pattern.search(line):

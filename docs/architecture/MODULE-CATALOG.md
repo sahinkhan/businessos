@@ -6,9 +6,14 @@ This catalog defines target bounded contexts. Names may evolve through ADR/desig
 
 ## Protected Platform
 
+This catalog groups bounded contexts and runtime components. The authoritative
+protected-kernel ownership inventory is the [canonical responsibility map](KERNEL-RESPONSIBILITIES.md);
+the list below is a shorter catalog, not a competing ownership decision.
+
 - runtime
 - context
 - configuration
+- feature flags
 - module registry
 - ASGI routing and middleware
 - dependency injection

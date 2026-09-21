@@ -27,6 +27,30 @@ _SCOPE_TABLES = (
 
 
 def upgrade() -> None:
+    # The legacy unique index permits repeated NULL valid_from values. Never pick an
+    # arbitrary surviving assignment while tightening that invariant.
+    op.execute(
+        """
+        DO $$
+        DECLARE collision record;
+        BEGIN
+          SELECT tenant_id, principal_id, scope_type, scope_id, valid_from,
+                 (array_agg(id ORDER BY id))[1:2] AS assignment_ids
+          INTO collision
+          FROM platform_org.assignments
+          GROUP BY tenant_id, principal_id, scope_type, scope_id, valid_from
+          HAVING count(*) > 1
+          ORDER BY tenant_id, principal_id, scope_type, scope_id, valid_from NULLS FIRST
+          LIMIT 1;
+          IF FOUND THEN
+            RAISE EXCEPTION
+              'organization_0002 upgrade collision: tenant %, assignment IDs %. Resolve first',
+              collision.tenant_id, collision.assignment_ids
+              USING ERRCODE = '23505';
+          END IF;
+        END $$
+        """
+    )
     op.add_column(
         "assignments",
         sa.Column("principal_type", sa.String(length=30), server_default="user", nullable=False),
@@ -143,20 +167,6 @@ def upgrade() -> None:
         """
     )
     op.drop_constraint("assignment_identity", "assignments", schema="platform_org", type_="unique")
-    op.execute(
-        """
-        WITH ranked AS (
-          SELECT id, row_number() OVER (
-            PARTITION BY tenant_id, principal_type, principal_id, scope_type, scope_id, valid_from
-            ORDER BY created_at, id
-          ) AS position
-          FROM platform_org.assignments
-        )
-        DELETE FROM platform_org.assignments AS assignment
-        USING ranked
-        WHERE assignment.id = ranked.id AND ranked.position > 1
-        """
-    )
     op.create_unique_constraint(
         "assignment_identity",
         "assignments",
@@ -280,6 +290,56 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Older grants cannot express non-user principals or distinguish same-key
+    # assignments that differ only by principal type. Fail before changing schema.
+    op.execute(
+        """
+        DO $$
+        DECLARE collision record;
+        BEGIN
+          SELECT tenant_id, (array_agg(id ORDER BY id))[1] AS assignment_id
+          INTO collision
+          FROM platform_org.assignments
+          WHERE principal_type <> 'user'
+          GROUP BY tenant_id
+          ORDER BY tenant_id
+          LIMIT 1;
+          IF FOUND THEN
+            RAISE EXCEPTION
+              'organization_0002 downgrade has non-user assignment: tenant %, ID %. Review first',
+              collision.tenant_id, collision.assignment_id
+              USING ERRCODE = '23505';
+          END IF;
+          SELECT tenant_id, (array_agg(id ORDER BY id))[1] AS delegation_id
+          INTO collision
+          FROM platform_org.delegated_scopes
+          WHERE grantor_principal_type <> 'user' OR recipient_principal_type <> 'user'
+          GROUP BY tenant_id
+          ORDER BY tenant_id
+          LIMIT 1;
+          IF FOUND THEN
+            RAISE EXCEPTION
+              'organization_0002 downgrade has non-user delegation: tenant %, ID %. Review first',
+              collision.tenant_id, collision.delegation_id
+              USING ERRCODE = '23505';
+          END IF;
+          SELECT tenant_id, (array_agg(id ORDER BY id))[1:2] AS assignment_ids
+          INTO collision
+          FROM platform_org.assignments
+          WHERE valid_from IS NOT NULL
+          GROUP BY tenant_id, principal_id, scope_type, scope_id, valid_from
+          HAVING count(*) > 1
+          ORDER BY tenant_id, principal_id, scope_type, scope_id, valid_from
+          LIMIT 1;
+          IF FOUND THEN
+            RAISE EXCEPTION
+              'organization_0002 downgrade collision: tenant %, assignment IDs %. Resolve first',
+              collision.tenant_id, collision.assignment_ids
+              USING ERRCODE = '23505';
+          END IF;
+        END $$
+        """
+    )
     for table in ("users", "service_accounts", "devices"):
         op.execute(
             f"DROP TRIGGER IF EXISTS {table}_protect_organization_grants "
@@ -299,20 +359,6 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS platform_org.validate_grant_references()")
     op.execute("DROP FUNCTION IF EXISTS platform_org.scope_exists(uuid, text, uuid)")
     op.drop_constraint("assignment_identity", "assignments", schema="platform_org", type_="unique")
-    op.execute(
-        """
-        WITH ranked AS (
-          SELECT id, row_number() OVER (
-            PARTITION BY tenant_id, principal_id, scope_type, scope_id, valid_from
-            ORDER BY created_at, id
-          ) AS position
-          FROM platform_org.assignments
-        )
-        DELETE FROM platform_org.assignments AS assignment
-        USING ranked
-        WHERE assignment.id = ranked.id AND ranked.position > 1
-        """
-    )
     op.create_unique_constraint(
         "assignment_identity",
         "assignments",

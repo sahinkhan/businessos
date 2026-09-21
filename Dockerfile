@@ -63,6 +63,7 @@ CMD ["uvicorn", "businessos.asgi:application", "--host", "0.0.0.0", "--port", "8
 FROM base AS production
 
 COPY requirements/constraints-py313.txt /tmp/constraints-py313.txt
+COPY scripts/bootstrap_first_tenant.py /opt/businessos/bootstrap_first_tenant.py
 COPY --from=wheel-builder /wheels/*.whl /tmp/wheels/
 
 RUN python -m pip install --no-cache-dir \

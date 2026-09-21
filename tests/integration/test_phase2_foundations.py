@@ -1419,6 +1419,15 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     } <= event_types
 
     await app.shutdown()
+    # The exit-criterion fixture includes typed service/device grants. Downgrade
+    # correctly refuses to erase them, so clear this disposable fixture explicitly.
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "DELETE FROM platform_org.assignments WHERE tenant_id = %s "
+            "AND principal_type <> 'user'",
+            (tenant_id,),
+        )
+        connection.commit()
     app.runtime.migrations.downgrade(postgres_database.migration_url)
 
 
@@ -1864,7 +1873,7 @@ def test_organization_migration_rejects_existing_cross_tenant_grants(
 
 @pytest.mark.integration
 @pytest.mark.postgres
-def test_organization_migration_deduplicates_null_window_assignments(
+def test_organization_migration_rejects_ambiguous_null_window_assignments(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
@@ -1885,22 +1894,35 @@ def test_organization_migration_deduplicates_null_window_assignments(
             "VALUES (%s, %s, 'GROUP', 'Group')",
             (group_id, tenant_id),
         )
-        for assignment_id in (first_id, second_id):
+        for assignment_id, title in ((first_id, "Primary"), (second_id, "Distinct")):
             connection.execute(
                 "INSERT INTO platform_org.assignments "
-                "(id, tenant_id, principal_id, scope_type, scope_id) "
-                "VALUES (%s, %s, %s, 'enterprise_group', %s)",
-                (assignment_id, tenant_id, principal_id, group_id),
+                "(id, tenant_id, principal_id, scope_type, scope_id, title) "
+                "VALUES (%s, %s, %s, 'enterprise_group', %s, %s)",
+                (assignment_id, tenant_id, principal_id, group_id, title),
             )
+        connection.commit()
+
+    with pytest.raises(IntegrityError, match="organization_0002 upgrade collision"):
+        migrations.upgrade(postgres_database.migration_url)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
+        retained = connection.execute(
+            "SELECT id, title FROM platform_org.assignments WHERE tenant_id = %s",
+            (tenant_id,),
+        ).fetchall()
+        assert heads == {"organization_0001"}
+        assert set(retained) == {(first_id, "Primary"), (second_id, "Distinct")}
+        connection.execute("DELETE FROM platform_org.assignments WHERE id = %s", (second_id,))
         connection.commit()
 
     migrations.upgrade(postgres_database.migration_url)
     with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
         retained = connection.execute(
-            "SELECT id FROM platform_org.assignments WHERE tenant_id = %s",
+            "SELECT id, title FROM platform_org.assignments WHERE tenant_id = %s",
             (tenant_id,),
         ).fetchall()
-        assert retained == [(min(first_id, second_id),)]
+        assert retained == [(first_id, "Primary")]
         with pytest.raises(psycopg.errors.UniqueViolation):
             connection.execute(
                 "INSERT INTO platform_org.assignments "
@@ -2126,6 +2148,16 @@ async def test_organization_grants_validate_lineage_typed_identity_and_uniquenes
         ),
         context,
     )
+    await _dispatch(
+        app,
+        AssignPrincipal(
+            tenant_id=tenant_id,
+            principal_id=actor_id,
+            scope_type=OrganizationScopeType.ENTERPRISE_GROUP,
+            scope_id=group_id,
+        ),
+        context,
+    )
     valid_from = datetime.now(UTC)
     for principal_type in ("user", "service_account"):
         await _dispatch(
@@ -2263,6 +2295,29 @@ async def test_organization_grants_validate_lineage_typed_identity_and_uniquenes
     assert ambiguous_grantor.value.code == "forbidden"
 
     await app.shutdown()
+    with pytest.raises(IntegrityError, match="downgrade has non-user assignment"):
+        app.runtime.migrations.downgrade(postgres_database.migration_url)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM platform_org.assignments WHERE tenant_id = %s "
+            "AND principal_type <> 'user'",
+            (tenant_id,),
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = 'platform_org' "
+            "AND table_name = 'assignments' AND column_name = 'principal_type'"
+        ).fetchone() == (1,)
+        connection.execute(
+            "DELETE FROM platform_org.delegated_scopes WHERE tenant_id = %s "
+            "AND (recipient_principal_type <> 'user' OR grantor_principal_type <> 'user')",
+            (tenant_id,),
+        )
+        connection.execute(
+            "DELETE FROM platform_org.assignments WHERE tenant_id = %s "
+            "AND principal_type <> 'user'",
+            (tenant_id,),
+        )
+        connection.commit()
     app.runtime.migrations.downgrade(postgres_database.migration_url)
 
 

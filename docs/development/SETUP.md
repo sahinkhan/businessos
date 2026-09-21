@@ -104,6 +104,27 @@ The development database uses separate roles:
 
 The checked-in credentials are local-development values only. Production deployments must supply these roles and credentials through deployment secrets.
 
+### First-tenant installation bootstrap
+
+After applying migrations, an installation operator can provision the first tenant with the offline
+script packaged in the production image at `/opt/businessos/bootstrap_first_tenant.py` (or
+`scripts/bootstrap_first_tenant.py` in a source checkout). Supply the ordinary application database
+URL as `BOS_DATABASE_URL`, the separately credentialed `businessos_ops` URL as
+`BOS_OPERATIONS_DATABASE_URL`, and set `BOS_FIRST_TENANT_BOOTSTRAP_ENABLED=true` for this operation
+only. For example, inside the production image after injecting both URLs from deployment secrets:
+
+```bash
+python /opt/businessos/bootstrap_first_tenant.py \
+  --slug first-tenant --name 'First Tenant' \
+  --deployment-mode shared_schema --region global
+```
+
+The script checks the authenticated database role, holds an installation-wide advisory lock and
+rejects the operation once any tenant exists. It dispatches only `ProvisionTenant` through the
+normal command and outbox path, records status history and logs the operator/correlation identifiers.
+The operations URL must not be added to the web application service or exposed to tenant users.
+Remove the one-time enablement and operations secret from the invocation environment afterward.
+
 ### Retained databases from before role separation
 
 Do not delete the PostgreSQL volume. Stop application traffic, retain a verified backup, start

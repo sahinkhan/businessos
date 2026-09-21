@@ -2,12 +2,12 @@
 
 import json
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from importlib.resources import files
 from typing import ClassVar, Literal, cast
 from uuid import UUID, uuid4
 
-from businessos_identity import GetMembership, MembershipRecord
+from businessos_identity import GetMembership, MembershipRecord, lock_membership_for_authority
 from businessos_tenant import effective_at, validate_effective_period
 from pydantic import Field
 from sqlalchemy import insert, select
@@ -522,22 +522,73 @@ class OrganizationModule:
             raise BusinessOSError(
                 "invalid_delegation", "Delegation actions are required", status_code=422
             )
+        now = datetime.now(UTC)
+        if command.valid_until <= now:
+            raise BusinessOSError("invalid_delegation", "Delegation has expired", status_code=422)
         await self._require_actor_membership(
             tenant.principal_id, command.grantor_principal_type, context
         )
-        membership = await self._membership(
-            command.recipient_principal_id, command.recipient_principal_type, context
+        recipient = await lock_membership_for_authority(
+            context.unit_of_work.persistence,
+            tenant.tenant_id,
+            command.recipient_principal_id,
+            command.recipient_principal_type,
         )
-        if not _membership_is_current(membership):
+        if not _membership_covers(recipient, now, command.valid_from, command.valid_until):
             raise BusinessOSError(
                 "inactive_membership", "Active membership is required", status_code=409
             )
-        await _require_effective_scope_lineage(
-            context, command.scope_type, command.scope_id, tenant, datetime.now(UTC)
+        target = await _require_effective_scope_lineage(
+            context, command.scope_type, command.scope_id, tenant, now
         )
-        await self._require_effective_membership(
-            command.recipient_principal_id, command.recipient_principal_type, context
-        )
+        lineage = await _scope_lineage(context, tenant, command.scope_type.value, target)
+        if not _selected_scope_covers(tenant, lineage):
+            raise BusinessOSError(
+                "forbidden", "Selected scope does not cover delegation", status_code=403
+            )
+        authority_principal_id = tenant.principal_id
+        authority_principal_type = command.grantor_principal_type
+        visited: frozenset[UUID] = frozenset()
+        if tenant.delegation_id is not None:
+            selected_grant = await _require_owned(
+                context, DELEGATED_SCOPES, tenant.delegation_id, tenant, lock=True
+            )
+            if (
+                selected_grant["recipient_principal_id"] != tenant.principal_id
+                or selected_grant["recipient_principal_type"] != command.grantor_principal_type
+                or (selected_grant["scope_type"], selected_grant["scope_id"]) not in lineage
+                or not frozenset(command.allowed_actions).issubset(
+                    selected_grant["allowed_actions"]
+                )
+                or not _period_covers(
+                    selected_grant["valid_from"],
+                    selected_grant["valid_until"],
+                    command.valid_from,
+                    command.valid_until,
+                    now,
+                )
+            ):
+                raise BusinessOSError(
+                    "forbidden",
+                    "Selected delegation cannot grant requested authority",
+                    status_code=403,
+                )
+            authority_principal_id = selected_grant["grantor_principal_id"]
+            authority_principal_type = selected_grant["grantor_principal_type"]
+            visited = frozenset((selected_grant["id"],))
+        if not await _grantor_has_authority(
+            context,
+            tenant,
+            authority_principal_id,
+            authority_principal_type,
+            lineage,
+            frozenset(command.allowed_actions),
+            command.valid_from,
+            command.valid_until,
+            now,
+            visited,
+        ):
+            raise BusinessOSError("forbidden", "Grantor lacks delegated authority", status_code=403)
         await context.unit_of_work.persistence.execute(
             insert(DELEGATED_SCOPES).values(
                 **command.model_dump(), grantor_principal_id=tenant.principal_id
@@ -718,13 +769,29 @@ class OrganizationModule:
                 raise BusinessOSError(
                     "forbidden", "Delegation does not authorize the selected scope", status_code=403
                 )
-            await _require_effective_scope_lineage(
+            source = await _require_effective_scope_lineage(
                 context,
                 OrganizationScopeType(delegation["scope_type"]),
                 delegation["scope_id"],
                 tenant,
                 now,
             )
+            lineage = await _scope_lineage(context, tenant, delegation["scope_type"], source)
+            if not await _grantor_has_authority(
+                context,
+                tenant,
+                delegation["grantor_principal_id"],
+                delegation["grantor_principal_type"],
+                lineage,
+                frozenset((query.action,)),
+                now,
+                now + timedelta(microseconds=1),
+                now,
+                frozenset((delegation["id"],)),
+            ):
+                raise BusinessOSError(
+                    "forbidden", "Delegation source is no longer authorized", status_code=403
+                )
             authorized_by_delegation = True
         if selection.leaves and not authorized_by_delegation:
             assignments = await context.unit_of_work.persistence.execute(
@@ -1103,6 +1170,133 @@ async def _require_effective_scope_lineage(
         kind = str(row["dimension_type"])
     await _scope_lineage(context, tenant, kind, row)
     return row
+
+
+def _membership_covers(
+    membership: MembershipRecord, now: datetime, start: datetime, end: datetime
+) -> bool:
+    return (
+        membership.is_effective(now)
+        and (membership.valid_from is None or membership.valid_from <= start)
+        and (membership.valid_until is None or end <= membership.valid_until)
+    )
+
+
+def _period_covers(
+    valid_from: datetime | None,
+    valid_until: datetime | None,
+    start: datetime,
+    end: datetime,
+    now: datetime,
+) -> bool:
+    return (
+        (valid_from is None or valid_from <= start)
+        and (valid_until is None or end <= valid_until)
+        and (valid_from is None or valid_from <= now)
+        and (valid_until is None or now < valid_until)
+    )
+
+
+def _selected_scope_covers(
+    tenant: TenantContext, target_lineage: frozenset[tuple[str, UUID]]
+) -> bool:
+    selected = (
+        ("enterprise_group", tenant.enterprise_group_id),
+        ("legal_entity", tenant.legal_entity_id),
+        ("company", tenant.active_company_id),
+        ("org_unit", tenant.business_unit_id),
+        ("org_unit", tenant.division_id),
+        ("org_unit", tenant.department_id),
+        ("org_unit", tenant.team_id),
+        ("region", tenant.region_id),
+        ("operating_site", tenant.operating_site_id),
+        ("warehouse", tenant.warehouse_id),
+        ("financial_dimension", tenant.cost_center_id),
+        ("financial_dimension", tenant.profit_center_id),
+        ("financial_dimension", tenant.project_id),
+    )
+    return all(
+        identifier is None or (kind, identifier) in target_lineage for kind, identifier in selected
+    )
+
+
+async def _grantor_has_authority(
+    context: HandlingContext,
+    tenant: TenantContext,
+    principal_id: UUID,
+    principal_type: Literal["user", "service_account", "device"],
+    target_lineage: frozenset[tuple[str, UUID]],
+    actions: frozenset[str],
+    start: datetime,
+    end: datetime,
+    now: datetime,
+    visited: frozenset[UUID],
+) -> bool:
+    """Trace a locked authority chain to a current assignment in this transaction."""
+    if len(visited) >= 16:
+        return False
+    try:
+        membership = await lock_membership_for_authority(
+            context.unit_of_work.persistence, tenant.tenant_id, principal_id, principal_type
+        )
+    except BusinessOSError as error:
+        if error.code == "not_found":
+            return False
+        raise
+    if not _membership_covers(membership, now, start, end):
+        return False
+
+    assignments = await context.unit_of_work.persistence.execute(
+        select(ASSIGNMENTS)
+        .where(
+            ASSIGNMENTS.c.tenant_id == tenant.tenant_id,
+            ASSIGNMENTS.c.principal_id == principal_id,
+            ASSIGNMENTS.c.principal_type == principal_type,
+        )
+        .with_for_update(read=True)
+    )
+    for assignment in assignments.mappings():
+        if (assignment["scope_type"], assignment["scope_id"]) in target_lineage and _period_covers(
+            assignment["valid_from"], assignment["valid_until"], start, end, now
+        ):
+            # Assignments are the Phase 2 root organizational grant. Action-specific
+            # restrictions live on delegations and the framework permission check.
+            return True
+
+    delegations = await context.unit_of_work.persistence.execute(
+        select(DELEGATED_SCOPES)
+        .where(
+            DELEGATED_SCOPES.c.tenant_id == tenant.tenant_id,
+            DELEGATED_SCOPES.c.recipient_principal_id == principal_id,
+            DELEGATED_SCOPES.c.recipient_principal_type == principal_type,
+        )
+        .with_for_update(read=True)
+    )
+    for delegation in delegations.mappings():
+        identifier = cast(UUID, delegation["id"])
+        if (
+            identifier in visited
+            or (delegation["scope_type"], delegation["scope_id"]) not in target_lineage
+            or not actions.issubset(delegation["allowed_actions"])
+            or not _period_covers(
+                delegation["valid_from"], delegation["valid_until"], start, end, now
+            )
+        ):
+            continue
+        if await _grantor_has_authority(
+            context,
+            tenant,
+            delegation["grantor_principal_id"],
+            delegation["grantor_principal_type"],
+            target_lineage,
+            actions,
+            start,
+            end,
+            now,
+            visited | {identifier},
+        ):
+            return True
+    return False
 
 
 def _membership_is_current(membership: MembershipRecord) -> bool:

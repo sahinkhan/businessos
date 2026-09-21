@@ -1,5 +1,6 @@
 """BusinessOS identity foundation public surface."""
 
+from .authority import lock_membership_for_authority
 from .contracts import (
     ActiveScopeSelection,
     AuthenticationSessionRecord,
@@ -74,4 +75,5 @@ __all__ = [
     "StartAuthenticationSession",
     "ValidateAuthenticationSession",
     "VerifiedOIDCClaims",
+    "lock_membership_for_authority",
 ]

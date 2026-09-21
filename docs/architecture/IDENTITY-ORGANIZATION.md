@@ -42,6 +42,16 @@ Tenant entitlements are the Phase 2 subscription abstraction: their effective pe
 `reference` identify the plan/subscription authority without making billing a Tenant concern.
 Quota records remain a separate public read model.
 
+The first tenant is created through an explicit offline installation operation, never through an
+anonymous HTTP route or a caller-selected bootstrap header. The operator must enable the operation
+and authenticate to the installation database as `businessos_ops` using a separately supplied secret.
+An installation-wide PostgreSQL advisory lock serializes first use, and the operation fails if any
+tenant already exists. It then dispatches the existing `ProvisionTenant` command using the ordinary
+application role and a one-command authorization policy. The trusted installation operator identity
+is derived from the installation ID and authenticated database role; request input cannot assert it.
+The tenant status history, transactional outbox event, correlation ID and operator log provide the
+available audit evidence. Subsequent tenant operations use normal tenant context and permissions.
+
 ## Authentication trust
 
 An HTTP tenant header is never authoritative. OIDC processing follows this order:
@@ -90,6 +100,11 @@ effective assignment or matching time-bounded delegation. Assignment/delegation 
 Phase 2 does not replace the Phase 4 policy engine. A delegation must cover every explicitly selected
 record and include the requested action. A child-only grant cannot authorize an explicitly selected
 ancestor, while an ancestor grant may authorize its consistent descendants.
+Delegation creation additionally requires a current, active grantor membership and an authority
+chain rooted in an effective assignment. Requested scope, actions and validity period must be
+subsets of that chain. Identity membership and organization grant rows are locked in the same
+framework-owned transaction as the delegation insert. Active-scope selection rechecks the source
+chain so a later membership revocation cannot keep a stored delegation authoritative.
 
 ## Isolation and migrations
 
@@ -97,3 +112,8 @@ All Phase 2 tenant-owned tables preserve `tenant_id`, enable and force PostgreSQ
 `businessos_migrator`. `businessos_app` has only ordinary DML privileges and cannot own or bypass
 RLS. The three packaged Alembic chains participate in framework graph/inventory preflight and are
 validated through upgrade, downgrade, replay, clean wheel and production-image tests.
+Before the unreleased `organization_0002` tightens the assignment key, it rejects ambiguous legacy
+rows with the tenant and assignment IDs needed for operator review. It never chooses a row to delete.
+Downgrade likewise rejects non-user grants or incompatible assignment collisions rather than
+discarding records. The pre-release implementation of `organization_0002` was corrected without
+changing its revision ID or any frozen migration history.

@@ -17,7 +17,7 @@ from businessos.messages import (
     Query,
 )
 from businessos.metadata import MetadataDeclaration
-from businessos.modules import ModuleManifest, ModuleRegistration
+from businessos.modules import ModuleContractDeclaration, ModuleManifest, ModuleRegistration
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.uow import UnitOfWork, UnitOfWorkFactory
@@ -44,6 +44,7 @@ __all__ = [
     "Job",
     "MetadataDeclaration",
     "Middleware",
+    "ModuleContractDeclaration",
     "ModuleManifest",
     "ModuleRegistration",
     "PermissionDeclaration",

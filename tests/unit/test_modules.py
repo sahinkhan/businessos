@@ -18,6 +18,7 @@ from businessos.jobs import Job
 from businessos.messages import Command, DomainEvent, EventHandlingContext, HandlingContext, Query
 from businessos.metadata import MetadataDeclaration
 from businessos.modules import (
+    ModuleContractDeclaration,
     ModuleDependency,
     ModuleManifest,
     ModuleRegistration,
@@ -140,6 +141,39 @@ def _settings() -> Settings:
         database_url="postgresql+psycopg://test:test@db/test",
         database_readiness_enabled=False,
     )
+
+
+def test_manifest_preserves_versioned_contract_and_lifecycle_declarations() -> None:
+    baseline = ProofModule(migrations=()).manifest.model_dump(mode="json")
+    baseline.update(
+        {
+            "api_contracts": [{"contract_id": "example.proof.api", "version": "1.2.0"}],
+            "event_contracts": [{"contract_id": "example.proof.stored", "version": "2.0.0"}],
+            "public_contracts": [{"contract_id": "example.proof.query", "version": "1.0.0"}],
+            "ui_contributions": ["example.proof.page"],
+            "configuration_scopes": ["tenant"],
+            "localization_resources": ["resources/en.json"],
+            "tenant_export_supported": True,
+            "tenant_delete_supported": False,
+            "artifact_sha256": "a" * 64,
+            "signature_reference": "signatures/module.sig",
+            "sbom_reference": "sbom/module.spdx.json",
+        }
+    )
+
+    manifest = ModuleManifest.model_validate(baseline)
+    assert manifest.api_contracts == (
+        ModuleContractDeclaration(contract_id="example.proof.api", version="1.2.0"),
+    )
+    assert manifest.model_dump(mode="json")["localization_resources"] == ["resources/en.json"]
+    assert ModuleManifest.model_validate_json(manifest.model_dump_json()) == manifest
+
+    baseline["event_contracts"] = [
+        {"contract_id": "example.proof.stored", "version": "2.0.0"},
+        {"contract_id": "example.proof.stored", "version": "2.1.0"},
+    ]
+    with pytest.raises(ValueError, match="event_contracts must contain unique"):
+        ModuleManifest.model_validate(baseline)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # ADR-010: Delegation Action Authority Boundary
 
-Status: Proposed
+Status: PROPOSED
 
 Decision date: Pending acceptance
 Approving roles: Architecture Maintainer; Security Maintainer; Policy Maintainer; Organization Maintainer; SDK/Contract Maintainer

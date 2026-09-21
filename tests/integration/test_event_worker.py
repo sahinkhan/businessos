@@ -337,13 +337,9 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     await second_worker.application.runtime.lifecycle.enable(second_module.manifest.module_id)
     await asyncio.wait_for(second_module.projected.wait(), timeout=10.0)
     assert second_module.delivery_attempts == 2
-    async with inspection_factory.for_tenant(tenant) as unit_of_work:
-        assert unit_of_work.session is not None
-        deferred_receipts = (
-            await unit_of_work.session.scalars(
-                select(InboxReceipt).where(InboxReceipt.event_id == deferred_event.event_id)
-            )
-        ).all()
+    deferred_receipts = await _wait_for_inbox_receipt_count(
+        inspection_factory, tenant, deferred_event.event_id, expected=1
+    )
     assert len(deferred_receipts) == 1
     await second_worker.stop()
     await inspection_database.close()

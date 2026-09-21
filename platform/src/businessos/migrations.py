@@ -779,7 +779,7 @@ class MigrationCoordinator:
                             f"Migration child exited without an outcome (exit {process.exitcode})"
                         )
                     await asyncio.sleep(0.01)
-                except EOFError as exc:
+                except (EOFError, OSError) as exc:
                     if terminal_outcome is not None:
                         # The terminal path never reads the pipe again. This guard documents
                         # that any later transport closure is cleanup-only information.

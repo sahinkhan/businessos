@@ -7,7 +7,7 @@ from typing import ClassVar, Self, cast
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import DDL, text
 
 from businessos.activation import ContributionGate
 from businessos.context import RequestContext, TenantContext, current_request_context
@@ -114,6 +114,8 @@ async def test_handler_receives_only_transaction_bound_capabilities() -> None:
             await handling.unit_of_work.persistence.execute(text("COMMIT"))
         with pytest.raises(ValueError, match="cannot control"):
             await handling.unit_of_work.persistence.execute(text("SELECT 1; ROLLBACK"))
+        with pytest.raises(ValueError, match="cannot control"):
+            await handling.unit_of_work.persistence.execute(DDL("COMMIT"))  # type: ignore[no-untyped-call]
         handling.emit(
             NameChanged(tenant_id=tenant.tenant_id, correlation_id="restricted", name="new")
         )

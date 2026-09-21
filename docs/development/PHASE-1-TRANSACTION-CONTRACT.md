@@ -6,8 +6,9 @@ handler's `HandlingContext.unit_of_work` or `EventHandlingContext.unit_of_work` 
 available, but `commit`, `rollback`, session creation/closure, and transaction context-manager
 operations are not. The dispatcher/consumer commits only after successful handler completion;
 otherwise the framework rolls back the state, outbox, and inbox claim together.
-The handler persistence adapter also rejects explicit transaction-control SQL statements such as
-`COMMIT` and `ROLLBACK` passed through its textual SQL execution path.
+The handler persistence adapter also rejects SQLAlchemy DDL executables and explicit
+transaction-control SQL such as `COMMIT` and `ROLLBACK`. This includes `DDL("COMMIT")`, which
+could otherwise commit the framework's connection without calling the Unit of Work API.
 
 This corrects the prior public handler contract, which typed `unit_of_work` as the full
 `UnitOfWork` and handed the handler the same mutable object that the framework would later

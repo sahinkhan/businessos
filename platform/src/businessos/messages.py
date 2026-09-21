@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.engine import Result
 from sqlalchemy.sql.base import Executable
+from sqlalchemy.sql.ddl import ExecutableDDLElement
 from sqlalchemy.sql.elements import TextClause
 
 from businessos.activation import ContributionGate, ContributionGeneration, ContributionState
@@ -93,7 +94,11 @@ class _HandlerPersistence:
         statement: Executable,
         parameters: Mapping[str, Any] | None = None,
     ) -> Result[Any]:
-        if isinstance(statement, TextClause) and _TRANSACTION_SQL.search(statement.text):
+        # DDL is not a handler persistence operation. SQLAlchemy's DDL("COMMIT")
+        # bypasses TextClause checks and can finish the owning transaction.
+        if isinstance(statement, ExecutableDDLElement) or _TRANSACTION_SQL.search(
+            statement.text if isinstance(statement, TextClause) else str(statement)
+        ):
             raise ValueError("Handler persistence cannot control the framework transaction")
         return await self._delegate.execute(statement, parameters)
 

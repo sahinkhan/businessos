@@ -4,7 +4,7 @@ from typing import ClassVar
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import DDL, select
 
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
@@ -231,6 +231,8 @@ async def test_durable_consumer_rolls_back_receipt_and_side_effect_then_retries(
     async def handle(_: ProbeEvent, handling: EventHandlingContext) -> None:
         assert not hasattr(handling.unit_of_work, "commit")
         assert not hasattr(handling.unit_of_work, "rollback")
+        with pytest.raises(ValueError, match="cannot control"):
+            await handling.unit_of_work.persistence.execute(DDL("COMMIT"))  # type: ignore[no-untyped-call]
         handling.unit_of_work.add_outbox(
             PendingOutboxMessage(
                 event_id=side_effect_id,

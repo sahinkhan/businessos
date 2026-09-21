@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 from businessos_proof.module import PROOF_RECORDS
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import DDL, delete, insert, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -222,6 +222,8 @@ async def test_public_handler_cannot_finish_the_framework_transaction(
                     value=command.value,
                 )
             )
+            with pytest.raises(ValueError, match="cannot control"):
+                await context.unit_of_work.persistence.execute(DDL("COMMIT"))  # type: ignore[no-untyped-call]
             assert not hasattr(context.unit_of_work, "commit")
             assert not hasattr(context.unit_of_work, "rollback")
             raise RuntimeError("handler failed after write and event")

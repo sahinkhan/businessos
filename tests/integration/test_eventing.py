@@ -229,6 +229,8 @@ async def test_durable_consumer_rolls_back_receipt_and_side_effect_then_retries(
     should_fail = True
 
     async def handle(_: ProbeEvent, handling: EventHandlingContext) -> None:
+        assert not hasattr(handling.unit_of_work, "commit")
+        assert not hasattr(handling.unit_of_work, "rollback")
         handling.unit_of_work.add_outbox(
             PendingOutboxMessage(
                 event_id=side_effect_id,

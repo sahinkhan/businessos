@@ -52,6 +52,33 @@ async def test_nats_jetstream_provider_publishes_to_managed_stream() -> None:
 @pytest.mark.integration
 @pytest.mark.providers
 @pytest.mark.asyncio
+async def test_nats_jetstream_provider_restarts_with_existing_identical_stream() -> None:
+    token = uuid4().hex
+    url = _required_env("BOS_TEST_NATS_URL")
+    stream_name = f"BUSINESSOS_RESTART_{token.upper()}"
+    subjects = (f"businessos.restart.{token}.>",)
+    subject = f"businessos.restart.{token}.event"
+
+    first = NatsJetStreamPublisher((url,), stream_name=stream_name, subjects=subjects)
+    await first.start()
+    try:
+        await first.readiness()
+        await first.publish(subject, b"first", {"event-id": str(uuid4())})
+    finally:
+        await first.close()
+
+    second = NatsJetStreamPublisher((url,), stream_name=stream_name, subjects=subjects)
+    await second.start()
+    try:
+        await second.readiness()
+        await second.publish(subject, b"second", {"event-id": str(uuid4())})
+    finally:
+        await second.close()
+
+
+@pytest.mark.integration
+@pytest.mark.providers
+@pytest.mark.asyncio
 async def test_s3_provider_enforces_tenant_object_prefixes() -> None:
     endpoint = _required_env("BOS_TEST_S3_ENDPOINT")
     access_key = _required_env("BOS_TEST_S3_ACCESS_KEY")

@@ -194,6 +194,55 @@ async def test_handler_exception_and_cancellation_roll_back_state_and_outbox(
 @pytest.mark.integration
 @pytest.mark.postgres
 @pytest.mark.asyncio
+async def test_public_handler_cannot_finish_the_framework_transaction(
+    postgres_database_url: str,
+    postgres_migration_database_url: str,
+) -> None:
+    async with _migrated_proof_database(
+        postgres_database_url, postgres_migration_database_url
+    ) as database:
+        dispatcher = MessageDispatcher(SQLAlchemyUnitOfWorkFactory(database.sessions), EventBus())
+        tenant = _tenant()
+
+        async def adversarial(command: AtomicProbe, context: HandlingContext) -> object:
+            await context.unit_of_work.persistence.execute(
+                insert(PROOF_RECORDS).values(
+                    id=command.record_id,
+                    tenant_id=tenant.tenant_id,
+                    command_id=uuid4(),
+                    value=command.value,
+                )
+            )
+            context.emit(
+                AtomicProbeStored(
+                    event_id=command.event_id,
+                    tenant_id=tenant.tenant_id,
+                    correlation_id="atomic-probe",
+                    record_id=command.record_id,
+                    value=command.value,
+                )
+            )
+            assert not hasattr(context.unit_of_work, "commit")
+            assert not hasattr(context.unit_of_work, "rollback")
+            raise RuntimeError("handler failed after write and event")
+
+        dispatcher.commands.register(AtomicProbe, "test.restricted-transaction", adversarial)
+        command = AtomicProbe(record_id=uuid4(), event_id=uuid4(), value="uncommitted")
+        container = Container()
+        async with container.request_scope() as dependencies:
+            with pytest.raises(RuntimeError, match="handler failed after write and event"):
+                await _dispatch(dispatcher, command, tenant, dependencies)
+        assert await asyncio.to_thread(
+            _stored_counts,
+            postgres_migration_database_url,
+            command.record_id,
+            command.event_id,
+        ) == (0, 0)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
 async def test_state_outbox_and_commit_failures_are_atomic(
     postgres_database_url: str,
     postgres_migration_database_url: str,

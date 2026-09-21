@@ -123,6 +123,12 @@ async def test_new_durable_replays_published_backlog_and_existing_durable_resume
         subscription = await provider.subscribe(subject, f"BACKLOG_{token}", handle)
         await asyncio.wait_for(first_received.wait(), timeout=10)
         await subscription.close()
+        async with asyncio.timeout(10):
+            # NATS exposes no event for the server-side push-bound transition.
+            while (  # noqa: ASYNC110
+                await provider._jetstream.consumer_info(provider._stream_name, f"BACKLOG_{token}")
+            ).push_bound:
+                await asyncio.sleep(0.05)
 
         await provider.subscribe(subject, f"BACKLOG_{token}", handle)
         await provider.publish(subject, b"published-after-rebind", {"event-id": str(uuid4())})

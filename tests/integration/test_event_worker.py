@@ -137,7 +137,9 @@ class _ObligationEvent(DomainEvent):
 
 
 class _SubscriberModule:
-    def __init__(self, module_id: str, calls: list[str], completed: asyncio.Event) -> None:
+    def __init__(
+        self, module_id: str, calls: list[str], completed: asyncio.Event, event_id: UUID
+    ) -> None:
         self.manifest = ModuleManifest(
             module_id=module_id,
             name=module_id,
@@ -149,6 +151,7 @@ class _SubscriberModule:
         )
         self._calls = calls
         self._completed = completed
+        self._event_id = event_id
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.event(_ObligationEvent, "projection", self._consume)
@@ -164,6 +167,8 @@ class _SubscriberModule:
         event: _ObligationEvent,
         context: EventHandlingContext,
     ) -> None:
+        if event.event_id != self._event_id:
+            return
         self._calls.append(self.manifest.module_id)
         if len(self._calls) == 2:
             self._completed.set()
@@ -372,12 +377,16 @@ async def test_subscriber_obligations_survive_worker_recreation(
         )
         calls: list[str] = []
         completed = asyncio.Event()
+        event = _ObligationEvent(
+            tenant_id=tenant.tenant_id,
+            correlation_id="durable-obligation-restart",
+        )
 
         first_worker = create_event_worker(
             settings,
             modules=(
-                _SubscriberModule("example.obligation-a", calls, completed),
-                _SubscriberModule("example.obligation-b", calls, completed),
+                _SubscriberModule("example.obligation-a", calls, completed, event.event_id),
+                _SubscriberModule("example.obligation-b", calls, completed, event.event_id),
             ),
             broker=NatsJetStreamPublisher((settings.nats_url,)),
         )
@@ -387,12 +396,8 @@ async def test_subscriber_obligations_survive_worker_recreation(
         second_broker = NatsJetStreamPublisher((settings.nats_url,))
         second_worker = create_event_worker(
             settings,
-            modules=(_SubscriberModule("example.obligation-a", calls, completed),),
+            modules=(_SubscriberModule("example.obligation-a", calls, completed, event.event_id),),
             broker=second_broker,
-        )
-        event = _ObligationEvent(
-            tenant_id=tenant.tenant_id,
-            correlation_id="durable-obligation-restart",
         )
         subject = f"businessos.events.tenant.{tenant.tenant_id}.{event.event_type}"
         headers = {
@@ -421,8 +426,8 @@ async def test_subscriber_obligations_survive_worker_recreation(
         third_worker = create_event_worker(
             settings,
             modules=(
-                _SubscriberModule("example.obligation-a", calls, completed),
-                _SubscriberModule("example.obligation-b", calls, completed),
+                _SubscriberModule("example.obligation-a", calls, completed, event.event_id),
+                _SubscriberModule("example.obligation-b", calls, completed, event.event_id),
             ),
             broker=third_broker,
         )

@@ -18,3 +18,11 @@ The declarations are validated and survive JSON serialization so upgrade tools
 can compare published surfaces without importing private module code. Declaring
 an export or delete capability does not itself register a lifecycle hook; the
 owning module must separately implement and test that behavior.
+
+Upgrade preflight compares a proposed manifest with the installed manifest. A
+target may add contracts or increase their versions, but it cannot remove or
+downgrade an API, event, or other public contract. It also cannot withdraw
+declared UI contributions, configuration scopes, localization resources, or
+tenant export/delete support. The check applies even when the module version
+increases. Artifact digest, signature, and SBOM references describe the new
+artifact and may change on upgrade; Phase 1 does not verify those references.

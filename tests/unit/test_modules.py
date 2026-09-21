@@ -361,6 +361,90 @@ def test_upgrade_plan_rejects_unknown_duplicate_downgrade_and_incompatible_targe
             coordinator.plan((incompatible,))
 
 
+@pytest.mark.parametrize("field", ("api_contracts", "event_contracts", "public_contracts"))
+@pytest.mark.parametrize("mutation", ("remove", "downgrade"))
+def test_upgrade_plan_preserves_published_contracts(field: str, mutation: str) -> None:
+    module = ProofModule(migrations=())
+    declaration = ModuleContractDeclaration(contract_id="example.proof.contract", version="2.0.0")
+    module.manifest = module.manifest.model_copy(update={field: (declaration,)})
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry.add(module)
+    replacement = (
+        ()
+        if mutation == "remove"
+        else (ModuleContractDeclaration(contract_id=declaration.contract_id, version="1.0.0"),)
+    )
+    target = module.manifest.model_copy(update={"version": "3.0.0", field: replacement})
+
+    with pytest.raises(ConfigurationError, match="contract"):
+        UpgradeCoordinator(registry).plan((target,))
+
+
+@pytest.mark.parametrize(
+    ("field", "current_value", "target_value"),
+    (
+        ("ui_contributions", ("example.proof.form",), ()),
+        ("configuration_scopes", ("tenant",), ()),
+        ("localization_resources", ("resources/en.json",), ()),
+        ("tenant_export_supported", True, False),
+        ("tenant_delete_supported", True, None),
+    ),
+)
+def test_upgrade_plan_rejects_declared_surface_removal(
+    field: str, current_value: object, target_value: object
+) -> None:
+    module = ProofModule(migrations=())
+    module.manifest = module.manifest.model_copy(update={field: current_value})
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry.add(module)
+    target = module.manifest.model_copy(update={"version": "2.0.0", field: target_value})
+
+    with pytest.raises(ConfigurationError, match=r"removes|withdraws"):
+        UpgradeCoordinator(registry).plan((target,))
+
+
+def test_upgrade_plan_allows_additive_and_versioned_contract_changes() -> None:
+    module = ProofModule(migrations=())
+    module.manifest = module.manifest.model_copy(
+        update={
+            "event_contracts": (
+                ModuleContractDeclaration(contract_id="example.proof.stored", version="1.0.0"),
+            ),
+            "ui_contributions": ("example.proof.form",),
+            "tenant_export_supported": False,
+        }
+    )
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry.add(module)
+    target = module.manifest.model_copy(
+        update={
+            "version": "2.0.0",
+            "event_contracts": (
+                ModuleContractDeclaration(contract_id="example.proof.stored", version="1.1.0"),
+                ModuleContractDeclaration(contract_id="example.proof.deleted", version="1.0.0"),
+            ),
+            "ui_contributions": ("example.proof.form", "example.proof.list"),
+            "tenant_export_supported": True,
+        }
+    )
+
+    assert UpgradeCoordinator(registry).plan((target,)).ordered_module_ids == ("example.proof",)
+
+
+def test_external_proof_manifest_inventories_registered_surfaces() -> None:
+    from businessos_proof import ProofModule as ExternalProofModule
+
+    manifest = ExternalProofModule().manifest
+    assert {contract.contract_id for contract in manifest.api_contracts} == {
+        "example.phase1-proof.store",
+        "example.phase1-proof.read",
+    }
+    assert {contract.contract_id for contract in manifest.event_contracts} == {
+        "example.phase1_proof.stored"
+    }
+    assert manifest.ui_contributions == ("example.phase1-proof.form",)
+
+
 @pytest.mark.asyncio
 async def test_protected_route_denies_anonymous_request() -> None:
     module = ProofModule()

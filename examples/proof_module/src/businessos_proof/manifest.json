@@ -11,9 +11,18 @@
   "dependencies": [],
   "capabilities": ["object-storage"],
   "permissions": ["example.phase1-proof.read", "example.phase1-proof.write"],
+  "api_contracts": [
+    {"contract_id": "example.phase1-proof.store", "version": "1.0.0"},
+    {"contract_id": "example.phase1-proof.read", "version": "1.0.0"}
+  ],
   "event_contracts": [
     {"contract_id": "example.phase1_proof.stored", "version": "1.0.0"}
   ],
+  "public_contracts": [
+    {"contract_id": "example.phase1-proof.command.store", "version": "1.0.0"},
+    {"contract_id": "example.phase1-proof.query.read", "version": "1.0.0"}
+  ],
+  "ui_contributions": ["example.phase1-proof.form"],
   "migrations": ["python://businessos_proof/migrations/versions"],
   "migration_namespace": "module_example_phase1_proof",
   "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]

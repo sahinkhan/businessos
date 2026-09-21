@@ -1,14 +1,52 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
+from uuid import UUID, uuid4
 
 import pytest
 
+from businessos.context import RequestContext, TenantContext, bind_request_context
 from businessos.providers import (
     BrokerEvent,
+    CacheProvider,
     NatsJetStreamPublisher,
     PermanentDeliveryError,
+    tenant_bound_provider,
 )
+
+
+@pytest.mark.asyncio
+async def test_injected_cache_rejects_foreign_tenant_before_calling_custom_adapter() -> None:
+    calls: list[tuple[UUID, str]] = []
+
+    class CustomCache:
+        async def readiness(self) -> None:
+            pass
+
+        async def get(self, tenant_id: UUID, key: str) -> bytes | None:
+            calls.append((tenant_id, key))
+            return b"owned"
+
+        async def set(self, tenant_id: UUID, key: str, value: bytes, ttl_seconds: int) -> None:
+            calls.append((tenant_id, key))
+
+    provider = CustomCache()
+    own = TenantContext(uuid4(), uuid4(), uuid4())
+    foreign = TenantContext(uuid4(), uuid4(), uuid4())
+    with pytest.raises(PermissionError):
+        tenant_bound_provider("cache", provider)
+    with bind_request_context(RequestContext(tenant=own)):
+        cache = cast(CacheProvider, tenant_bound_provider("cache", provider))
+        await cache.set(own.tenant_id, "item", b"owned", 30)
+        with pytest.raises(PermissionError):
+            await cache.get(foreign.tenant_id, "item")
+        with pytest.raises(PermissionError):
+            await cache.set(foreign.tenant_id, "item", b"overwrite", 30)
+        assert await cache.get(own.tenant_id, "item") == b"owned"
+    with bind_request_context(RequestContext(tenant=foreign)):
+        with pytest.raises(PermissionError):
+            await cache.get(own.tenant_id, "item")
+    assert calls == [(own.tenant_id, "item"), (own.tenant_id, "item")]
 
 
 class _Connection:

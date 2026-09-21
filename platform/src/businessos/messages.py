@@ -15,7 +15,7 @@ from sqlalchemy.sql.ddl import ExecutableDDLElement
 from sqlalchemy.sql.elements import TextClause
 
 from businessos.activation import ContributionGate, ContributionGeneration, ContributionState
-from businessos.context import RequestContext
+from businessos.context import RequestContext, bind_request_context
 from businessos.di import RequestDependencyScope
 from businessos.errors import ConflictError, DeliveryUnavailableError, NotFoundError
 from businessos.persistence import (
@@ -464,7 +464,7 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
-        with dispatch_span("command", type(message).__name__):
+        with bind_request_context(context), dispatch_span("command", type(message).__name__):
             registered = self.commands.resolve(message)
             async with self.commands.admitted(registered):
                 await self._authorize(context, registered.permission)
@@ -483,7 +483,7 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
-        with dispatch_span("query", type(message).__name__):
+        with bind_request_context(context), dispatch_span("query", type(message).__name__):
             registered = self.queries.resolve(message)
             async with self.queries.admitted(registered):
                 await self._authorize(context, registered.permission)

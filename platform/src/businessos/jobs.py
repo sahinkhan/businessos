@@ -9,7 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from businessos.activation import ContributionGate, ContributionGeneration
-from businessos.context import RequestContext
+from businessos.context import RequestContext, bind_request_context
 from businessos.di import RequestDependencyScope
 from businessos.errors import BusinessOSError
 from businessos.registry import OwnedRegistry
@@ -135,7 +135,7 @@ class JobHandlerRegistry(OwnedRegistry[JobHandler]):
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> None:
-        with dispatch_span("job", job.job_type):
+        with bind_request_context(context), dispatch_span("job", job.job_type):
             if context.tenant is None:
                 raise BusinessOSError(
                     "unauthenticated",

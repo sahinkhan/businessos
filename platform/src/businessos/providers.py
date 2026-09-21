@@ -12,6 +12,7 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from businessos.activation import ContributionGate
+from businessos.context import current_request_context
 from businessos.registry import OwnedRegistry
 
 
@@ -60,6 +61,69 @@ class ObjectStorageProvider(HealthProvider, Protocol):
     async def put(self, tenant_id: UUID, key: str, content: bytes) -> None: ...
 
     async def get(self, tenant_id: UUID, key: str) -> bytes: ...
+
+
+def _require_provider_tenant(tenant_id: UUID) -> None:
+    context = current_request_context()
+    if context is None or context.tenant is None or context.tenant.tenant_id != tenant_id:
+        raise PermissionError("Provider tenant does not match the trusted request tenant")
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundCacheProvider:
+    provider: CacheProvider
+    tenant_id: UUID
+
+    def _authorize(self, tenant_id: UUID) -> None:
+        _require_provider_tenant(tenant_id)
+        if tenant_id != self.tenant_id:
+            raise PermissionError("Provider is bound to another request tenant")
+
+    async def get(self, tenant_id: UUID, key: str) -> bytes | None:
+        self._authorize(tenant_id)
+        return await self.provider.get(tenant_id, key)
+
+    async def set(self, tenant_id: UUID, key: str, value: bytes, ttl_seconds: int) -> None:
+        self._authorize(tenant_id)
+        await self.provider.set(tenant_id, key, value, ttl_seconds)
+
+    async def readiness(self) -> None:
+        await self.provider.readiness()
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundObjectStorageProvider:
+    provider: ObjectStorageProvider
+    tenant_id: UUID
+
+    def _authorize(self, tenant_id: UUID) -> None:
+        _require_provider_tenant(tenant_id)
+        if tenant_id != self.tenant_id:
+            raise PermissionError("Provider is bound to another request tenant")
+
+    async def put(self, tenant_id: UUID, key: str, content: bytes) -> None:
+        self._authorize(tenant_id)
+        await self.provider.put(tenant_id, key, content)
+
+    async def get(self, tenant_id: UUID, key: str) -> bytes:
+        self._authorize(tenant_id)
+        return await self.provider.get(tenant_id, key)
+
+    async def readiness(self) -> None:
+        await self.provider.readiness()
+
+
+def tenant_bound_provider(capability: str, provider: object) -> object:
+    """Expose tenant data providers only inside a trusted request or delivery."""
+    context = current_request_context()
+    if context is None or context.tenant is None:
+        raise PermissionError("Tenant provider requires a trusted request tenant")
+    tenant_id = context.tenant.tenant_id
+    if capability == "cache":
+        return _BoundCacheProvider(cast(CacheProvider, provider), tenant_id)
+    if capability == "object-storage":
+        return _BoundObjectStorageProvider(cast(ObjectStorageProvider, provider), tenant_id)
+    raise ValueError(f"Unsupported tenant provider: {capability}")
 
 
 class ProviderRegistry(OwnedRegistry[object]):
@@ -131,10 +195,12 @@ class RedisCacheProvider:
         return f"{self._namespace}:tenant:{tenant_id}:{key}"
 
     async def get(self, tenant_id: UUID, key: str) -> bytes | None:
+        _require_provider_tenant(tenant_id)
         value = await self._client.get(self._key(tenant_id, key))
         return value if isinstance(value, bytes) else None
 
     async def set(self, tenant_id: UUID, key: str, value: bytes, ttl_seconds: int) -> None:
+        _require_provider_tenant(tenant_id)
         await self._client.set(self._key(tenant_id, key), value, ex=ttl_seconds)
 
     async def readiness(self) -> None:
@@ -223,7 +289,7 @@ class NatsJetStreamPublisher:
             stream=self._stream_name,
             cb=deliver,
             manual_ack=True,
-            deliver_policy=DeliverPolicy.NEW,
+            deliver_policy=DeliverPolicy.ALL,
         )
         subscription = _NatsSubscription(
             raw_subscription,
@@ -320,6 +386,7 @@ class S3ObjectStorageProvider:
         return f"tenant/{tenant_id}/{key.lstrip('/')}"
 
     async def put(self, tenant_id: UUID, key: str, content: bytes) -> None:
+        _require_provider_tenant(tenant_id)
         await asyncio.to_thread(
             self._client.put_object,
             Bucket=self._bucket,
@@ -328,6 +395,7 @@ class S3ObjectStorageProvider:
         )
 
     async def get(self, tenant_id: UUID, key: str) -> bytes:
+        _require_provider_tenant(tenant_id)
         response = await asyncio.to_thread(
             self._client.get_object,
             Bucket=self._bucket,

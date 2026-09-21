@@ -105,6 +105,7 @@ async def test_handler_receives_only_transaction_bound_capabilities() -> None:
     tenant = TenantContext(uuid4(), uuid4(), uuid4())
 
     async def handle(_: ChangeName, handling: HandlingContext) -> object:
+        assert current_request_context() is handling.request
         assert handling.unit_of_work is not factory.created[0]
         assert not hasattr(handling.unit_of_work, "commit")
         assert not hasattr(handling.unit_of_work, "rollback")
@@ -131,6 +132,7 @@ async def test_handler_receives_only_transaction_bound_capabilities() -> None:
             == "new"
         )
     assert timeline == ["begin", "outbox", "commit", "close"]
+    assert current_request_context() is None
 
 
 @pytest.mark.asyncio

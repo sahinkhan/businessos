@@ -267,16 +267,16 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
                 ).where(OutboxMessage.correlation_id == "event-worker-e2e")
             )
         ).one()
-        receipts = (
-            await unit_of_work.session.scalars(
-                select(InboxReceipt).where(InboxReceipt.event_id == outbox.id)
-            )
-        ).all()
+    assert outbox.published_at is not None
+    receipts = await _wait_for_inbox_receipt_count(
+        inspection_factory, tenant, outbox.id, expected=1
+    )
+    assert len(receipts) == 1
+    async with inspection_factory.for_tenant(tenant) as unit_of_work:
+        assert unit_of_work.session is not None
         description = await unit_of_work.session.scalar(
             select(PROOF_RECORDS.c.description).where(PROOF_RECORDS.c.command_id == command_id)
         )
-    assert outbox.published_at is not None
-    assert len(receipts) == 1
     assert description == "object-storage-projection"
     await first_worker.stop()
 

@@ -8,7 +8,7 @@ import pytest
 from businessos.activation import ContributionState
 from businessos.bootstrap import configured_infrastructure_providers, create_application
 from businessos.config import Settings
-from businessos.context import RequestContext, TenantContext
+from businessos.context import RequestContext, TenantContext, bind_request_context
 from businessos.di import DependencyKey, DependencyScope
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
 from businessos.features import FeatureFlag
@@ -853,6 +853,7 @@ async def test_production_composition_without_storage_fails_closed_deterministic
 @pytest.mark.asyncio
 async def test_supplied_provider_is_started_ready_injected_and_closed() -> None:
     timeline: list[str] = []
+    stored: dict[str, bytes] = {}
 
     class StorageProvider:
         async def start(self) -> None:
@@ -860,6 +861,12 @@ async def test_supplied_provider_is_started_ready_injected_and_closed() -> None:
 
         async def readiness(self) -> None:
             timeline.append("provider:ready")
+
+        async def put(self, tenant_id: object, key: str, content: bytes) -> None:
+            stored[f"{tenant_id}/{key}"] = content
+
+        async def get(self, tenant_id: object, key: str) -> bytes:
+            return stored[f"{tenant_id}/{key}"]
 
         async def close(self) -> None:
             timeline.append("provider:close")
@@ -877,10 +884,26 @@ async def test_supplied_provider_is_started_ready_injected_and_closed() -> None:
     assert module.lifecycle == ["register", "start"]
     assert app.runtime is not None
     assert app.runtime.providers.get("object-storage") is provider
-    async with app.container.request_scope() as dependencies:
-        from businessos.dependencies import OBJECT_STORAGE
+    from businessos.dependencies import OBJECT_STORAGE
 
-        assert cast(object, await dependencies.resolve(OBJECT_STORAGE)) is provider
+    with pytest.raises(PermissionError):
+        async with app.container.request_scope() as dependencies:
+            await dependencies.resolve(OBJECT_STORAGE)
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    other = TenantContext(uuid4(), uuid4(), uuid4())
+    with bind_request_context(RequestContext(tenant=tenant)):
+        async with app.container.request_scope() as dependencies:
+            bound = await dependencies.resolve(OBJECT_STORAGE)
+            assert cast(object, bound) is not provider
+            await bound.put(tenant.tenant_id, "item", b"owned")
+            with pytest.raises(PermissionError):
+                await bound.put(other.tenant_id, "item", b"overwrite")
+            with pytest.raises(PermissionError):
+                await bound.get(other.tenant_id, "item")
+    with bind_request_context(RequestContext(tenant=other)):
+        with pytest.raises(PermissionError):
+            await bound.get(tenant.tenant_id, "item")
+    assert stored == {f"{tenant.tenant_id}/item": b"owned"}
     await app.shutdown()
 
     assert timeline == ["provider:start", "provider:ready", "provider:close"]

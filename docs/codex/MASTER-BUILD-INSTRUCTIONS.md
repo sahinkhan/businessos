@@ -1,5 +1,9 @@
 # BusinessOS Master Build Instructions for Codex
 
+The [canonical protected-kernel responsibility map](../architecture/KERNEL-RESPONSIBILITIES.md)
+governs runtime ownership. The build instructions below describe implementation scope
+and do not supersede that map.
+
 Status: Authoritative implementation guidance
 
 This document describes the complete BusinessOS destination. It is not a single-task prompt. Codex must use it together with root/scoped `AGENTS.md`, architecture documents, ADRs and the roadmap.

@@ -1,5 +1,9 @@
 # BusinessOS Complete System Implementation Roadmap
 
+Phase 1 deliverables below are an implementation sequence. The
+[canonical protected-kernel responsibility map](../architecture/KERNEL-RESPONSIBILITIES.md)
+governs ownership, including feature flags and metadata/permission primitives.
+
 Status: Master roadmap
 
 This roadmap describes the full product sequence. Phases are dependency gates, not isolated product editions. Parallel work is allowed only when prerequisites and contracts are stable.

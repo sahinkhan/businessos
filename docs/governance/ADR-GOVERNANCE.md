@@ -60,17 +60,21 @@ Do not record fictional evidence. A missing historical field is documented as un
 
 One human may initially hold more than one role, but the acceptance evidence lists every role exercised. When a decision crosses several rows, the union of required roles approves it.
 
+Normal approval is an independent accountable review by another eligible human maintainer. During the temporary single-maintainer pre-`1.0.0` stage, the documented [Solo Maintainer Exception](MAINTAINERS.md#temporary-solo-maintainer-exception) may instead provide owner governance attestation when its eligibility, exact-head CI, independent technical audit, and zero Critical/High finding gates are met. Owner attestation is not independent human review.
+
 ## Acceptance procedure
 
 An ADR becomes formally `ACCEPTED` only when:
 
 1. it is in `PROPOSED` status and contains the required impact analysis;
-2. required role reviewers approve the exact ADR revision;
+2. the required roles approve the exact ADR revision through independent accountable review or the documented Solo Maintainer Exception;
 3. unresolved blocking review findings are closed;
 4. the accepting pull request or commit records the decision date and approving roles; and
 5. the accepted ADR is present on `main` with traceable approval evidence.
 
 Green CI proves repository integrity but is not decision authority. GitHub mergeability alone does not accept an ADR. The merge or commit that changes status to `ACCEPTED` is the recorded acceptance checkpoint.
+
+For solo acceptance, the owner personally records the exact ADR revision and commit SHA, GitHub identity, every accountable role exercised, applicable CI and independent technical audit evidence, and an explicit statement that independent human review was unavailable and was not performed. Authorship or merge action alone is not approval evidence. The normal ADR lifecycle, required impact analysis, status transitions, and supersession rules remain unchanged. Once another eligible human maintainer is formally assigned and available, independent accountable review is required.
 
 ## Accepted decisions and supersession
 

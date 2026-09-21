@@ -155,7 +155,8 @@ businessos/
 
 ## Current Status
 
-Phase 0's Python/ASGI cutover and Phase 1's protected runtime are complete. Phase 2 provides the
+Phase 0's Python/ASGI cutover is implemented, with final architecture-governance
+re-audit pending. Phase 1's protected runtime is implemented. Phase 2 provides the
 first three installable foundation modules: `foundation.tenant`, `foundation.identity` and
 `foundation.organization`. No shared business module or Phase 3+ master data has been introduced.
 

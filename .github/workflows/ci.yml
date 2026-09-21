@@ -56,6 +56,9 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Phase 0 architecture governance gate
+        run: python scripts/check_phase0_architecture.py
+
       - name: Start pinned infrastructure
         run: docker compose up --detach --wait postgres redis nats object-storage
 

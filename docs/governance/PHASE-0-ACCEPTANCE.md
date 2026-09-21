@@ -1,6 +1,6 @@
 # Phase 0 architecture and governance acceptance record
 
-Status: **Remediation candidate; final independent focused re-audit pending.** This document does not self-certify Phase 0.
+Status: **Solo-maintainer governance remediation candidate; new exact-head CI, bounded independent re-audit, and owner attestation pending.** This document does not self-certify Phase 0. The earlier audited implementation SHA `9dbd5229bcc7f3f51dd27e95a3193fa90d5a4e51` and CI run `35573079236` are historical evidence, not certification of a later governance commit.
 
 ## Scope and authority
 
@@ -27,3 +27,17 @@ Phase 1 runtime corrections, Phase 2 remediation (currently HOLD/FROZEN), Phase 
 An independent read-only auditor must inspect one exact final commit and verify: canonical ownership including feature flags; derived documentation consistency; accepted Python/ASGI baseline; deterministic scan with historical exemptions and active-file coverage; focused tests and CI step; ADR/release/maintainer coherence; no forbidden production, migration, contract or downstream changes. The auditor records findings and exact commands/results. Any unresolved Phase 0 architecture or gate contradiction blocks final PASS.
 
 The candidate commit SHA is reported externally after commit creation, avoiding a self-referential file edit. Record the SHA, changed-file inventory, local validator and test outputs, exact-head CI links/results, accountable review evidence, and independent audit verdict in the PR or independent audit record. Green CI or GitHub mergeability alone is not Phase 0 acceptance. Architectural changes after acceptance require the applicable ADR and role review, not an undocumented edit to this record.
+
+## Formal acceptance under temporary solo-maintainer staffing
+
+Normal Phase 0 acceptance uses independent accountable human review under [MAINTAINERS.md](MAINTAINERS.md). When exactly one verified eligible human maintainer holds all applicable roles and no second eligible reviewer is available, the temporary **Solo Maintainer Exception** may instead be used for this pre-`1.0.0` baseline. It requires new exact-head CI PASS, a bounded independent technical/read-only audit PASS on the new final candidate, zero unresolved Critical and High findings, and an explicit exact-SHA attestation personally submitted by the owner. Authorship and merge action alone are not approval evidence.
+
+The Phase 0 PR evidence must record the final candidate SHA, PR number, exact-head CI run and result, independent technical audit verdict, Critical/High counts, owner GitHub identity, and each accountable role exercised: Documentation/Governance Maintainer, Architecture Maintainer, Platform/Kernel Maintainer, and Release Maintainer. The attestation must identify the review model without claiming human independence:
+
+```text
+Review model: SOLO MAINTAINER OWNER ATTESTATION
+Independent human review: NOT PERFORMED
+Independent technical audit: PERFORMED
+```
+
+After valid attestation and merge, record the distinct merge/`main` SHA and post-merge evidence. An evidence-only record never replaces or relabels the audited implementation SHA. Until the owner personally attests and all gates pass, Phase 0 remains technically passed but formally pending; it is not FINAL PASS / FROZEN. Once another eligible human maintainer is formally assigned and available, this exception is unavailable. Independent human review of the accumulated protected-platform governance baseline remains required before a production-grade `1.0.0`, Stable enterprise, or LTS release unless a later accepted governance decision explicitly changes that requirement.

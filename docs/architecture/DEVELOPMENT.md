@@ -49,7 +49,13 @@ Review ownership and accountable roles are defined in
 [`docs/governance/MAINTAINERS.md`](../governance/MAINTAINERS.md). A pull request must collect the
 union of applicable role reviews when it crosses ownership, security, tenancy, migration, SDK, or
 public-contract boundaries. CODEOWNERS provides routing; the pull-request record provides the
-review evidence.
+review evidence. In the normal case, another eligible human maintainer performs independent
+accountable review. During the temporary single-maintainer pre-`1.0.0` stage, the documented
+[Solo Maintainer Exception](../governance/MAINTAINERS.md#temporary-solo-maintainer-exception)
+may instead use the owner's explicit exact-SHA attestation after exact-head CI and independent
+technical audit pass with zero unresolved Critical/High findings. The record must distinguish
+owner attestation from independent human review. Authorship or merge action alone is not
+acceptance evidence; the exception ends when another eligible reviewer is formally available.
 
 ## Commit Style
 
@@ -82,7 +88,8 @@ Create/propose an ADR when a change affects:
 Implementation convenience alone is not sufficient reason to bypass an accepted ADR.
 
 Green CI or GitHub mergeability does not change an ADR to `ACCEPTED`. Acceptance requires the
-accountable role approvals and exact-revision evidence defined by the governance policy.
+accountable role approvals and exact-revision evidence defined by the governance policy,
+through normal independent review or the eligible temporary Solo Maintainer Exception.
 
 ## Validation Expectations
 

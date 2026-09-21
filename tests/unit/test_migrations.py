@@ -72,6 +72,61 @@ def _registry(*modules: MigrationModule) -> ModuleRegistry:
     return registry
 
 
+@pytest.mark.asyncio
+async def test_broken_migration_pipe_stops_child_and_waits_for_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows can raise BrokenPipeError from poll instead of EOFError from recv."""
+
+    calls: list[str] = []
+
+    class ClosedParent:
+        def poll(self) -> bool:
+            raise BrokenPipeError("migration child closed its pipe")
+
+        def close(self) -> None:
+            calls.append("parent closed")
+
+    class ClosedChild:
+        def close(self) -> None:
+            calls.append("child closed")
+
+    class FakeProcess:
+        def start(self) -> None:
+            calls.append("started")
+
+    parent = ClosedParent()
+    child = ClosedChild()
+    process = FakeProcess()
+
+    class Context:
+        def Pipe(self, *, duplex: bool) -> tuple[ClosedParent, ClosedChild]:
+            assert duplex
+            return parent, child
+
+        def Process(self, *, target: object, args: object, name: str) -> FakeProcess:
+            return process
+
+    coordinator = MigrationCoordinator(_registry())
+    monkeypatch.setattr(coordinator, "plan", lambda: None)
+    monkeypatch.setattr("businessos.migrations.multiprocessing.get_context", lambda _: Context())
+
+    async def stop_process(_process: object, _protocol: object) -> None:
+        assert _process is process and _protocol is parent
+        calls.append("child stopped")
+
+    async def wait_backend(_database_url: str, _backend_pid: int | None) -> None:
+        calls.append("backend stopped")
+
+    monkeypatch.setattr(coordinator, "_stop_process", stop_process)
+    monkeypatch.setattr(coordinator, "_wait_backend_stopped", wait_backend)
+
+    with pytest.raises(RuntimeError, match="pipe closed before a terminal outcome"):
+        await coordinator._execute_async("unused", "upgrade", "heads", None)
+
+    assert calls == ["started", "child closed", "child stopped", "backend stopped", "parent closed"]
+
+
 def test_plan_supports_core_and_two_independent_module_heads(tmp_path: Path) -> None:
     alpha_path = tmp_path / "alpha"
     beta_path = tmp_path / "beta"

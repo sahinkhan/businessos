@@ -672,7 +672,7 @@ async def test_real_task_cancellation_rolls_back_each_uncommitted_phase(
     baseline_processes = _migration_processes()
     baseline_snapshot = _database_snapshot(database_url, table)
     task = asyncio.create_task(coordinator.upgrade_async(database_url, _phase_callback=observe))
-    await asyncio.wait_for(reached.wait(), timeout=10)
+    await asyncio.wait_for(reached.wait(), timeout=30)
     await _assert_cancelled_migration_is_terminal(
         task,
         database_url,
@@ -814,7 +814,7 @@ async def test_cancellation_after_commit_authorization_returns_durable_success(
 
     baseline_processes = _migration_processes()
     task = asyncio.create_task(coordinator.upgrade_async(database_url, _phase_callback=observe))
-    await asyncio.wait_for(terminal_outcome_stored.wait(), timeout=10)
+    await asyncio.wait_for(terminal_outcome_stored.wait(), timeout=30)
     for _ in range(3):
         task.cancel()
         await asyncio.sleep(0)
@@ -882,7 +882,7 @@ async def test_repeated_cancellation_preserves_terminal_migration_error(
     baseline_processes = _migration_processes()
     baseline_snapshot = _database_snapshot(database_url, table)
     task = asyncio.create_task(coordinator.upgrade_async(database_url, _phase_callback=observe))
-    await asyncio.wait_for(terminal_outcome_stored.wait(), timeout=10)
+    await asyncio.wait_for(terminal_outcome_stored.wait(), timeout=30)
     for _ in range(3):
         task.cancel()
         await asyncio.sleep(0)

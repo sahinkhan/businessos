@@ -29,6 +29,23 @@ class ModuleDependency(BaseModel):
         return self
 
 
+class ModuleContractDeclaration(BaseModel):
+    """Versioned public contract advertised by a module manifest."""
+
+    model_config = ConfigDict(frozen=True)
+
+    contract_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]+$")
+    version: str
+
+    @model_validator(mode="after")
+    def validate_version(self) -> Self:
+        try:
+            Version(self.version)
+        except InvalidVersion as exc:
+            raise ValueError("contract version must be valid") from exc
+        return self
+
+
 class ModuleManifest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -44,6 +61,17 @@ class ModuleManifest(BaseModel):
     dependencies: tuple[ModuleDependency, ...] = ()
     capabilities: tuple[str, ...] = ()
     permissions: tuple[str, ...] = ()
+    api_contracts: tuple[ModuleContractDeclaration, ...] = ()
+    event_contracts: tuple[ModuleContractDeclaration, ...] = ()
+    public_contracts: tuple[ModuleContractDeclaration, ...] = ()
+    ui_contributions: tuple[str, ...] = ()
+    configuration_scopes: tuple[str, ...] = ()
+    localization_resources: tuple[str, ...] = ()
+    tenant_export_supported: bool | None = None
+    tenant_delete_supported: bool | None = None
+    artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    signature_reference: str | None = None
+    sbom_reference: str | None = None
     migrations: tuple[str, ...] = ()
     migration_namespace: str | None = Field(
         default=None,
@@ -73,6 +101,15 @@ class ModuleManifest(BaseModel):
         dependency_ids = [dependency.module_id for dependency in self.dependencies]
         if len(dependency_ids) != len(set(dependency_ids)):
             raise ValueError("module dependencies must be unique")
+        for name in ("api_contracts", "event_contracts", "public_contracts"):
+            declarations = getattr(self, name)
+            contract_ids = [declaration.contract_id for declaration in declarations]
+            if len(contract_ids) != len(set(contract_ids)):
+                raise ValueError(f"{name} must contain unique contract IDs")
+        for name in ("ui_contributions", "configuration_scopes", "localization_resources"):
+            values = getattr(self, name)
+            if len(values) != len(set(values)) or any(not value.strip() for value in values):
+                raise ValueError(f"{name} must contain unique nonempty values")
         return self
 
     def supports(self, *, platform: str, sdk: str, python: str) -> bool:

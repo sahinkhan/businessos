@@ -8,7 +8,7 @@ import pytest
 from businessos.activation import ContributionState
 from businessos.bootstrap import configured_infrastructure_providers, create_application
 from businessos.config import Settings
-from businessos.context import RequestContext, TenantContext
+from businessos.context import RequestContext, TenantContext, bind_request_context
 from businessos.di import DependencyKey, DependencyScope
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
 from businessos.features import FeatureFlag
@@ -18,6 +18,7 @@ from businessos.jobs import Job
 from businessos.messages import Command, DomainEvent, EventHandlingContext, HandlingContext, Query
 from businessos.metadata import MetadataDeclaration
 from businessos.modules import (
+    ModuleContractDeclaration,
     ModuleDependency,
     ModuleManifest,
     ModuleRegistration,
@@ -140,6 +141,39 @@ def _settings() -> Settings:
         database_url="postgresql+psycopg://test:test@db/test",
         database_readiness_enabled=False,
     )
+
+
+def test_manifest_preserves_versioned_contract_and_lifecycle_declarations() -> None:
+    baseline = ProofModule(migrations=()).manifest.model_dump(mode="json")
+    baseline.update(
+        {
+            "api_contracts": [{"contract_id": "example.proof.api", "version": "1.2.0"}],
+            "event_contracts": [{"contract_id": "example.proof.stored", "version": "2.0.0"}],
+            "public_contracts": [{"contract_id": "example.proof.query", "version": "1.0.0"}],
+            "ui_contributions": ["example.proof.page"],
+            "configuration_scopes": ["tenant"],
+            "localization_resources": ["resources/en.json"],
+            "tenant_export_supported": True,
+            "tenant_delete_supported": False,
+            "artifact_sha256": "a" * 64,
+            "signature_reference": "signatures/module.sig",
+            "sbom_reference": "sbom/module.spdx.json",
+        }
+    )
+
+    manifest = ModuleManifest.model_validate(baseline)
+    assert manifest.api_contracts == (
+        ModuleContractDeclaration(contract_id="example.proof.api", version="1.2.0"),
+    )
+    assert manifest.model_dump(mode="json")["localization_resources"] == ["resources/en.json"]
+    assert ModuleManifest.model_validate_json(manifest.model_dump_json()) == manifest
+
+    baseline["event_contracts"] = [
+        {"contract_id": "example.proof.stored", "version": "2.0.0"},
+        {"contract_id": "example.proof.stored", "version": "2.1.0"},
+    ]
+    with pytest.raises(ValueError, match="event_contracts must contain unique"):
+        ModuleManifest.model_validate(baseline)
 
 
 @pytest.mark.asyncio
@@ -325,6 +359,90 @@ def test_upgrade_plan_rejects_unknown_duplicate_downgrade_and_incompatible_targe
         incompatible = module.manifest.model_copy(update={"version": "2.1.0", **compatibility})
         with pytest.raises(ConfigurationError, match="incompatible"):
             coordinator.plan((incompatible,))
+
+
+@pytest.mark.parametrize("field", ("api_contracts", "event_contracts", "public_contracts"))
+@pytest.mark.parametrize("mutation", ("remove", "downgrade"))
+def test_upgrade_plan_preserves_published_contracts(field: str, mutation: str) -> None:
+    module = ProofModule(migrations=())
+    declaration = ModuleContractDeclaration(contract_id="example.proof.contract", version="2.0.0")
+    module.manifest = module.manifest.model_copy(update={field: (declaration,)})
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry.add(module)
+    replacement = (
+        ()
+        if mutation == "remove"
+        else (ModuleContractDeclaration(contract_id=declaration.contract_id, version="1.0.0"),)
+    )
+    target = module.manifest.model_copy(update={"version": "3.0.0", field: replacement})
+
+    with pytest.raises(ConfigurationError, match="contract"):
+        UpgradeCoordinator(registry).plan((target,))
+
+
+@pytest.mark.parametrize(
+    ("field", "current_value", "target_value"),
+    (
+        ("ui_contributions", ("example.proof.form",), ()),
+        ("configuration_scopes", ("tenant",), ()),
+        ("localization_resources", ("resources/en.json",), ()),
+        ("tenant_export_supported", True, False),
+        ("tenant_delete_supported", True, None),
+    ),
+)
+def test_upgrade_plan_rejects_declared_surface_removal(
+    field: str, current_value: object, target_value: object
+) -> None:
+    module = ProofModule(migrations=())
+    module.manifest = module.manifest.model_copy(update={field: current_value})
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry.add(module)
+    target = module.manifest.model_copy(update={"version": "2.0.0", field: target_value})
+
+    with pytest.raises(ConfigurationError, match=r"removes|withdraws"):
+        UpgradeCoordinator(registry).plan((target,))
+
+
+def test_upgrade_plan_allows_additive_and_versioned_contract_changes() -> None:
+    module = ProofModule(migrations=())
+    module.manifest = module.manifest.model_copy(
+        update={
+            "event_contracts": (
+                ModuleContractDeclaration(contract_id="example.proof.stored", version="1.0.0"),
+            ),
+            "ui_contributions": ("example.proof.form",),
+            "tenant_export_supported": False,
+        }
+    )
+    registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    registry.add(module)
+    target = module.manifest.model_copy(
+        update={
+            "version": "2.0.0",
+            "event_contracts": (
+                ModuleContractDeclaration(contract_id="example.proof.stored", version="1.1.0"),
+                ModuleContractDeclaration(contract_id="example.proof.deleted", version="1.0.0"),
+            ),
+            "ui_contributions": ("example.proof.form", "example.proof.list"),
+            "tenant_export_supported": True,
+        }
+    )
+
+    assert UpgradeCoordinator(registry).plan((target,)).ordered_module_ids == ("example.proof",)
+
+
+def test_external_proof_manifest_inventories_registered_surfaces() -> None:
+    from businessos_proof import ProofModule as ExternalProofModule
+
+    manifest = ExternalProofModule().manifest
+    assert {contract.contract_id for contract in manifest.api_contracts} == {
+        "example.phase1-proof.store",
+        "example.phase1-proof.read",
+    }
+    assert {contract.contract_id for contract in manifest.event_contracts} == {
+        "example.phase1_proof.stored"
+    }
+    assert manifest.ui_contributions == ("example.phase1-proof.form",)
 
 
 @pytest.mark.asyncio
@@ -853,6 +971,7 @@ async def test_production_composition_without_storage_fails_closed_deterministic
 @pytest.mark.asyncio
 async def test_supplied_provider_is_started_ready_injected_and_closed() -> None:
     timeline: list[str] = []
+    stored: dict[str, bytes] = {}
 
     class StorageProvider:
         async def start(self) -> None:
@@ -860,6 +979,12 @@ async def test_supplied_provider_is_started_ready_injected_and_closed() -> None:
 
         async def readiness(self) -> None:
             timeline.append("provider:ready")
+
+        async def put(self, tenant_id: object, key: str, content: bytes) -> None:
+            stored[f"{tenant_id}/{key}"] = content
+
+        async def get(self, tenant_id: object, key: str) -> bytes:
+            return stored[f"{tenant_id}/{key}"]
 
         async def close(self) -> None:
             timeline.append("provider:close")
@@ -877,10 +1002,26 @@ async def test_supplied_provider_is_started_ready_injected_and_closed() -> None:
     assert module.lifecycle == ["register", "start"]
     assert app.runtime is not None
     assert app.runtime.providers.get("object-storage") is provider
-    async with app.container.request_scope() as dependencies:
-        from businessos.dependencies import OBJECT_STORAGE
+    from businessos.dependencies import OBJECT_STORAGE
 
-        assert cast(object, await dependencies.resolve(OBJECT_STORAGE)) is provider
+    with pytest.raises(PermissionError):
+        async with app.container.request_scope() as dependencies:
+            await dependencies.resolve(OBJECT_STORAGE)
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    other = TenantContext(uuid4(), uuid4(), uuid4())
+    with bind_request_context(RequestContext(tenant=tenant)):
+        async with app.container.request_scope() as dependencies:
+            bound = await dependencies.resolve(OBJECT_STORAGE)
+            assert cast(object, bound) is not provider
+            await bound.put(tenant.tenant_id, "item", b"owned")
+            with pytest.raises(PermissionError):
+                await bound.put(other.tenant_id, "item", b"overwrite")
+            with pytest.raises(PermissionError):
+                await bound.get(other.tenant_id, "item")
+    with bind_request_context(RequestContext(tenant=other)):
+        with pytest.raises(PermissionError):
+            await bound.get(tenant.tenant_id, "item")
+    assert stored == {f"{tenant.tenant_id}/item": b"owned"}
     await app.shutdown()
 
     assert timeline == ["provider:start", "provider:ready", "provider:close"]

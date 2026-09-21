@@ -154,6 +154,7 @@ class OIDCContextResolver:
                 tenant_id=claims.businessos_tenant_id,
                 principal_id=principal_id,
                 authentication_strength=strength,
+                credential_expires_at=datetime.fromtimestamp(claims.exp, UTC),
             ),
         )
 

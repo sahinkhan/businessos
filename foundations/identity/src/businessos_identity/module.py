@@ -1,7 +1,7 @@
 """Identity and membership module registration and handlers."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from typing import ClassVar, Literal
 from uuid import UUID, uuid4
@@ -165,7 +165,10 @@ class AuthenticationSessionRevoked(DomainEvent):
 
 
 class IdentityModule:
-    def __init__(self) -> None:
+    def __init__(self, *, max_session_lifetime: timedelta = timedelta(hours=8)) -> None:
+        if max_session_lifetime <= timedelta(0):
+            raise ValueError("Maximum authentication session lifetime must be positive")
+        self.max_session_lifetime = max_session_lifetime
         data = json.loads(
             files("businessos_identity").joinpath("manifest.json").read_text(encoding="utf-8")
         )
@@ -482,9 +485,24 @@ class IdentityModule:
     ) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
         now = datetime.now(UTC)
-        if command.expires_at.tzinfo is None or command.expires_at <= now:
+        if (
+            command.expires_at.tzinfo is None
+            or command.expires_at.utcoffset() is None
+            or command.expires_at <= now
+            or command.expires_at > now + self.max_session_lifetime
+            or (
+                tenant.credential_expires_at is not None
+                and (
+                    tenant.credential_expires_at.tzinfo is None
+                    or tenant.credential_expires_at.utcoffset() is None
+                    or command.expires_at > tenant.credential_expires_at
+                )
+            )
+        ):
             raise BusinessOSError(
-                "invalid_session_expiry", "Session expiry must be a future instant", status_code=422
+                "invalid_session_expiry",
+                "Session expiry exceeds the permitted credential or session lifetime",
+                status_code=422,
             )
         membership = await context.unit_of_work.persistence.execute(
             select(MEMBERSHIPS.c.id, MEMBERSHIPS.c.principal_type).where(

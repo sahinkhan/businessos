@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     DateTime,
+    ForeignKeyConstraint,
     MetaData,
     String,
     Table,
@@ -25,6 +26,7 @@ TENANTS = Table(
     Column("slug", String(100), nullable=False, unique=True),
     Column("name", String(200), nullable=False),
     Column("status", String(30), nullable=False),
+    Column("lifecycle_version", BigInteger(), nullable=False, server_default="0"),
     Column("deployment_mode", String(40), nullable=False),
     Column("region", String(100), nullable=False),
     Column("residency", JSONB(), nullable=False, server_default="{}"),
@@ -45,6 +47,34 @@ TENANT_STATUS_HISTORY = Table(
     Column("reason", Text()),
     Column("changed_by", UUID(as_uuid=True)),
     Column("changed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="platform_tenant",
+)
+
+TENANT_LIFECYCLE_OPERATIONS = Table(
+    "tenant_lifecycle_operations",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("tenant_id", UUID(as_uuid=True), nullable=False),
+    Column("lifecycle_version", BigInteger(), nullable=False),
+    Column("operation", String(20), nullable=False),
+    Column("state", String(20), nullable=False, server_default="pending"),
+    Column("depends_on", UUID(as_uuid=True)),
+    Column("completed_at", DateTime(timezone=True)),
+    ForeignKeyConstraint(
+        ["tenant_id"], ["platform_tenant.tenants.tenant_id"], name="fk_tenant_lifecycle_tenant"
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "depends_on"],
+        [
+            "platform_tenant.tenant_lifecycle_operations.tenant_id",
+            "platform_tenant.tenant_lifecycle_operations.id",
+        ],
+        name="fk_tenant_lifecycle_dependency",
+    ),
+    UniqueConstraint("tenant_id", "id", name="tenant_lifecycle_operation_identity"),
+    UniqueConstraint("tenant_id", "lifecycle_version", name="tenant_lifecycle_operation_version"),
+    CheckConstraint("operation IN ('export','delete','restore')", name="tenant_lifecycle_kind"),
+    CheckConstraint("state IN ('pending','completed','skipped')", name="tenant_lifecycle_state"),
     schema="platform_tenant",
 )
 

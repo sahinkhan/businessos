@@ -1,7 +1,7 @@
 """Tenant-management module registration and application handlers."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from importlib.resources import files
 from typing import ClassVar, Literal
 from uuid import UUID, uuid4
@@ -34,7 +34,13 @@ from .contracts import (
     TenantStatus,
     validate_effective_period,
 )
-from .models import TENANT_ENTITLEMENTS, TENANT_QUOTAS, TENANT_STATUS_HISTORY, TENANTS
+from .models import (
+    TENANT_ENTITLEMENTS,
+    TENANT_LIFECYCLE_OPERATIONS,
+    TENANT_QUOTAS,
+    TENANT_STATUS_HISTORY,
+    TENANTS,
+)
 
 
 class ProvisionTenant(Command):
@@ -197,14 +203,15 @@ class TenantModule:
     async def _transition(self, command: TransitionTenant, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
         current = await context.unit_of_work.persistence.execute(
-            select(TENANTS.c.status)
+            select(TENANTS.c.status, TENANTS.c.lifecycle_version)
             .where(TENANTS.c.tenant_id == tenant.tenant_id)
             .with_for_update()
         )
-        value = current.scalar_one_or_none()
-        if value is None:
+        row = current.one_or_none()
+        if row is None:
             raise BusinessOSError("not_found", "Tenant not found", status_code=404)
-        current_status = TenantStatus(value)
+        current_status = TenantStatus(row.status)
+        version = row.lifecycle_version + 1
         if command.target not in _TRANSITIONS[current_status]:
             raise BusinessOSError(
                 "invalid_transition",
@@ -220,10 +227,27 @@ class TenantModule:
             current_status is TenantStatus.RETENTION_HOLD and command.target is TenantStatus.ACTIVE
         ):
             operation = "restore"
+        dependency: UUID | None = None
+        if operation == "delete":
+            previous = await context.unit_of_work.persistence.execute(
+                select(TENANT_LIFECYCLE_OPERATIONS.c.id, TENANT_LIFECYCLE_OPERATIONS.c.state).where(
+                    TENANT_LIFECYCLE_OPERATIONS.c.tenant_id == tenant.tenant_id,
+                    TENANT_LIFECYCLE_OPERATIONS.c.lifecycle_version == row.lifecycle_version,
+                    TENANT_LIFECYCLE_OPERATIONS.c.operation == "export",
+                )
+            )
+            export = previous.one_or_none()
+            if export is None or export.state != "completed":
+                raise BusinessOSError(
+                    "lifecycle_prerequisite_pending",
+                    "Tenant export must finish before deletion",
+                    status_code=409,
+                )
+            dependency = export.id
         await context.unit_of_work.persistence.execute(
             update(TENANTS)
             .where(TENANTS.c.tenant_id == tenant.tenant_id)
-            .values(status=command.target, updated_at=datetime.now().astimezone())
+            .values(status=command.target, lifecycle_version=version, updated_at=datetime.now(UTC))
         )
         await context.unit_of_work.persistence.execute(
             insert(TENANT_STATUS_HISTORY).values(
@@ -250,13 +274,22 @@ class TenantModule:
                 )
             )
         if operation is not None:
-            context.emit(
-                TenantLifecycleWorkRequested(
+            event = TenantLifecycleWorkRequested(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                operation=operation,
+            )
+            await context.unit_of_work.persistence.execute(
+                insert(TENANT_LIFECYCLE_OPERATIONS).values(
+                    id=event.event_id,
                     tenant_id=tenant.tenant_id,
-                    correlation_id=context.request.correlation_id,
+                    lifecycle_version=version,
                     operation=operation,
+                    state="pending",
+                    depends_on=dependency,
                 )
             )
+            context.emit(event)
         return {"tenant_id": tenant.tenant_id, "status": command.target}
 
     async def _run_lifecycle_hooks(
@@ -264,9 +297,56 @@ class TenantModule:
         event: TenantLifecycleWorkRequested,
         context: EventHandlingContext,
     ) -> None:
-        del context
-        operation = getattr(self.lifecycle_hooks, event.operation)
-        await operation(event.tenant_id, event.event_id)
+        persistence = context.unit_of_work.persistence
+        tenant_result = await persistence.execute(
+            select(TENANTS.c.status, TENANTS.c.lifecycle_version)
+            .where(TENANTS.c.tenant_id == event.tenant_id)
+            .with_for_update()
+        )
+        tenant = tenant_result.one_or_none()
+        if tenant is None:
+            raise BusinessOSError("not_found", "Tenant not found", status_code=404)
+        operation_result = await persistence.execute(
+            select(TENANT_LIFECYCLE_OPERATIONS)
+            .where(
+                TENANT_LIFECYCLE_OPERATIONS.c.tenant_id == event.tenant_id,
+                TENANT_LIFECYCLE_OPERATIONS.c.id == event.event_id,
+            )
+            .with_for_update()
+        )
+        work = operation_result.mappings().one_or_none()
+        if work is None or work["operation"] != event.operation:
+            raise BusinessOSError(
+                "invalid_lifecycle_work", "Lifecycle work is unknown", status_code=409
+            )
+        if work["state"] != "pending":
+            return
+        if work["depends_on"] is not None:
+            predecessor = await persistence.execute(
+                select(TENANT_LIFECYCLE_OPERATIONS.c.state).where(
+                    TENANT_LIFECYCLE_OPERATIONS.c.tenant_id == event.tenant_id,
+                    TENANT_LIFECYCLE_OPERATIONS.c.id == work["depends_on"],
+                )
+            )
+            if predecessor.scalar_one_or_none() != "completed":
+                raise BusinessOSError(
+                    "lifecycle_prerequisite_pending",
+                    "Lifecycle prerequisite is pending",
+                    status_code=409,
+                )
+        expected = {
+            "restore": TenantStatus.ACTIVE,
+            "export": TenantStatus.TERMINATING,
+            "delete": TenantStatus.DELETED,
+        }[event.operation]
+        stale = tenant.lifecycle_version != work["lifecycle_version"] or tenant.status != expected
+        if not stale:
+            await getattr(self.lifecycle_hooks, event.operation)(event.tenant_id, event.event_id)
+        await persistence.execute(
+            update(TENANT_LIFECYCLE_OPERATIONS)
+            .where(TENANT_LIFECYCLE_OPERATIONS.c.id == event.event_id)
+            .values(state="skipped" if stale else "completed", completed_at=datetime.now(UTC))
+        )
 
     async def _set_entitlement(
         self, command: SetTenantEntitlement, context: HandlingContext

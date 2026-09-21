@@ -60,7 +60,7 @@ MEMBERSHIPS = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     UniqueConstraint("tenant_id", "principal_type", "principal_id", name="membership_principal"),
     CheckConstraint(
-        "valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from",
+        "valid_until IS NULL OR valid_from IS NULL OR valid_until > valid_from",
         name="membership_dates",
     ),
     schema="platform_identity",

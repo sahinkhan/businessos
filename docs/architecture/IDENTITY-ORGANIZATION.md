@@ -33,6 +33,10 @@ delivered only after commit, and its durable consumer invokes ordered lifecycle 
 ID as a stable operation ID. Hook implementations must be idempotent because a failed delivery is
 retried with the same operation ID. External side effects cannot occur before the database
 transition commits; a hook failure leaves retryable durable work.
+Tenant-owned persisted lifecycle operations record the transition version, completion state and
+delete's export dependency. Deletion is rejected until export completes. The consumer locks the
+tenant and operation, then rejects stale work: a delayed restore after a later transition is
+recorded as skipped without invoking its hook. Retried deliveries use the same operation ID.
 
 Tenant entitlements are the Phase 2 subscription abstraction: their effective period and external
 `reference` identify the plan/subscription authority without making billing a Tenant concern.
@@ -62,8 +66,12 @@ identities remain tenant-scoped principals. These federation/credential adapters
 protocol transport endpoints. Authentication-session commands create, validate, query and revoke
 tenant-scoped session context for users, service accounts and devices, and emit start/revoke events.
 Session creation derives the principal and authentication strength exclusively from the trusted
-`RequestContext`; callers cannot target another principal or assert their own assurance level. MFA
-policy minimum strength is a closed `AuthenticationStrength` value at the command and database
+`RequestContext`; callers cannot target another principal or assert their own assurance level.
+Session lifetime is capped by the configured Identity module maximum (eight hours by default) and
+cannot outlive the verified originating OIDC credential when one is present in trusted context.
+Membership periods are half-open: `valid_from <= instant < valid_until`; an empty period is invalid
+at command and database boundaries.
+MFA policy minimum strength is a closed `AuthenticationStrength` value at the command and database
 boundaries. The Phase 2 upgrade rejects unsupported historical values rather than accepting a policy
 the runtime cannot enforce.
 
@@ -85,7 +93,7 @@ ancestor, while an ancestor grant may authorize its consistent descendants.
 
 ## Isolation and migrations
 
-All 25 Phase 2 tables preserve `tenant_id`, enable and force PostgreSQL RLS, and are owned by
+All Phase 2 tenant-owned tables preserve `tenant_id`, enable and force PostgreSQL RLS, and are owned by
 `businessos_migrator`. `businessos_app` has only ordinary DML privileges and cannot own or bypass
 RLS. The three packaged Alembic chains participate in framework graph/inventory preflight and are
 validated through upgrade, downgrade, replay, clean wheel and production-image tests.

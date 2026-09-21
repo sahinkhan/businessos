@@ -8,6 +8,7 @@ import pytest
 from businessos_identity import (
     ConfigureOIDCProvider,
     CreateUser,
+    IdentityModule,
     MembershipRecord,
     MembershipStatus,
     OIDCConfiguration,
@@ -196,7 +197,13 @@ def test_phase2_v1_public_contracts_preserve_legacy_construction_and_boundary_se
         status=MembershipStatus.ACTIVE,
         valid_until=boundary,
     )
-    assert membership.is_effective(boundary)
+    assert not membership.is_effective(boundary)
+    assert membership.is_effective(boundary - timedelta(microseconds=1))
+    assert IdentityModule(max_session_lifetime=timedelta(minutes=30)).max_session_lifetime == (
+        timedelta(minutes=30)
+    )
+    with pytest.raises(ValueError, match="positive"):
+        IdentityModule(max_session_lifetime=timedelta(0))
 
     with pytest.raises(ValidationError):
         SetMFAPolicy(

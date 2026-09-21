@@ -84,7 +84,7 @@ class MembershipRecord(BaseModel):
         return (
             self.status is MembershipStatus.ACTIVE
             and (self.valid_from is None or self.valid_from <= instant)
-            and (self.valid_until is None or self.valid_until >= instant)
+            and (self.valid_until is None or instant < self.valid_until)
         )
 
 

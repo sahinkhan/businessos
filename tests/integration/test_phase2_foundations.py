@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -155,9 +156,14 @@ async def test_tenant_transitions_orchestrate_lifecycle_hooks(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     calls: list[str] = []
+    fail_export = True
 
     class Hook:
         async def export(self, tenant_id: UUID, operation_id: UUID) -> None:
+            nonlocal fail_export
+            if fail_export:
+                fail_export = False
+                raise RuntimeError("temporary export failure")
             calls.append(f"export:{tenant_id}:{operation_id}")
 
         async def delete(self, tenant_id: UUID, operation_id: UUID) -> None:
@@ -195,14 +201,10 @@ async def test_tenant_transitions_orchestrate_lifecycle_hooks(
         TransitionTenant(tenant_id=tenant_id, target=TenantStatus.ACTIVE),
         context,
     )
+    # Delayed restore must never run after a later termination.
     await _dispatch(
         app,
         TransitionTenant(tenant_id=tenant_id, target=TenantStatus.TERMINATING),
-        context,
-    )
-    await _dispatch(
-        app,
-        TransitionTenant(tenant_id=tenant_id, target=TenantStatus.DELETED),
         context,
     )
     assert calls == []
@@ -214,12 +216,51 @@ async def test_tenant_transitions_orchestrate_lifecycle_hooks(
             (tenant_id,),
         ).fetchall()
     events = tuple(TenantLifecycleWorkRequested.model_validate(row[0]) for row in payloads)
-    assert [event.operation for event in events] == ["restore", "export", "delete"]
+    assert [event.operation for event in events] == ["restore", "export"]
+    with pytest.raises(BusinessOSError) as pending:
+        await _dispatch(
+            app,
+            TransitionTenant(tenant_id=tenant_id, target=TenantStatus.DELETED),
+            context,
+        )
+    assert pending.value.code == "lifecycle_prerequisite_pending"
     async with app.container.request_scope() as dependencies:
-        for event in events:
+        with pytest.raises(RuntimeError, match="temporary export failure"):
+            await app.runtime.event_consumer.consume(events[1], context, dependencies)
+        with pytest.raises(BusinessOSError) as still_pending:
+            await _dispatch(
+                app,
+                TransitionTenant(tenant_id=tenant_id, target=TenantStatus.DELETED),
+                context,
+            )
+        assert still_pending.value.code == "lifecycle_prerequisite_pending"
+        for event in reversed(events):
             assert await app.runtime.event_consumer.consume(event, context, dependencies) == 1
             assert await app.runtime.event_consumer.consume(event, context, dependencies) == 0
-    assert calls == [f"{event.operation}:{tenant_id}:{event.event_id}" for event in events]
+    assert calls == [f"export:{tenant_id}:{events[1].event_id}"]
+    await _dispatch(
+        app,
+        TransitionTenant(tenant_id=tenant_id, target=TenantStatus.DELETED),
+        context,
+    )
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        delete_payload = connection.execute(
+            "SELECT payload FROM eventing.outbox_messages "
+            "WHERE tenant_id = %s AND event_type = 'tenant.lifecycle.work-requested.v1' "
+            "ORDER BY occurred_at DESC, id DESC LIMIT 1",
+            (tenant_id,),
+        ).fetchone()
+        states = connection.execute(
+            "SELECT operation, state FROM platform_tenant.tenant_lifecycle_operations "
+            "WHERE tenant_id = %s ORDER BY lifecycle_version",
+            (tenant_id,),
+        ).fetchall()
+    assert states == [("restore", "skipped"), ("export", "completed"), ("delete", "pending")]
+    assert delete_payload is not None
+    delete_event = TenantLifecycleWorkRequested.model_validate(delete_payload[0])
+    async with app.container.request_scope() as dependencies:
+        assert await app.runtime.event_consumer.consume(delete_event, context, dependencies) == 1
+    assert calls[-1] == f"delete:{tenant_id}:{delete_event.event_id}"
     await app.shutdown()
     app.runtime.migrations.downgrade(postgres_database.migration_url)
 
@@ -955,6 +996,39 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     assert delegated.delegation_id == delegation_id
     session_id = uuid4()
     expires_at = datetime.now(UTC) + timedelta(hours=1)
+    with pytest.raises(BusinessOSError) as unbounded:
+        await _dispatch(
+            app,
+            StartAuthenticationSession(
+                tenant_id=tenant_id, expires_at=datetime.now(UTC) + timedelta(days=30)
+            ),
+            context,
+        )
+    assert unbounded.value.code == "invalid_session_expiry"
+    assert context.tenant is not None
+    credential_context = replace(
+        context,
+        tenant=replace(
+            context.tenant, credential_expires_at=datetime.now(UTC) + timedelta(minutes=5)
+        ),
+    )
+    with pytest.raises(BusinessOSError) as beyond_credential:
+        await _dispatch(
+            app,
+            StartAuthenticationSession(tenant_id=tenant_id, expires_at=expires_at),
+            credential_context,
+        )
+    assert beyond_credential.value.code == "invalid_session_expiry"
+    invalid_context = replace(
+        context, tenant=replace(context.tenant, credential_expires_at=datetime.now())
+    )
+    with pytest.raises(BusinessOSError) as invalid_credential_time:
+        await _dispatch(
+            app,
+            StartAuthenticationSession(tenant_id=tenant_id, expires_at=expires_at),
+            invalid_context,
+        )
+    assert invalid_credential_time.value.code == "invalid_session_expiry"
     await _dispatch(
         app,
         StartAuthenticationSession(
@@ -1156,6 +1230,9 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     assert trusted.tenant.tenant_id == tenant_id
     assert trusted.tenant.principal_id == admin_id
     assert trusted.tenant.authentication_strength == "mfa"
+    assert trusted.tenant.credential_expires_at == datetime.fromtimestamp(
+        int((now + timedelta(minutes=5)).timestamp()), UTC
+    )
     wrong_tenant_token = jwt.encode(
         {
             "iss": "https://identity.example.test",
@@ -1452,7 +1529,7 @@ async def test_phase2_rls_cross_tenant_writes_and_missing_context_fail_closed(
         app_role = connection.execute(
             "SELECT rolsuper, rolbypassrls, rolinherit FROM pg_roles WHERE rolname='businessos_app'"
         ).fetchone()
-    assert len(rls) == 25
+    assert len(rls) == 26
     assert all(row[2] and row[3] and row[4] == "businessos_migrator" for row in rls)
     assert app_role == (False, False, False)
 
@@ -1469,11 +1546,26 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
     app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
     assert app.runtime is not None
     plan = app.runtime.migrations.plan()
-    assert plan.heads == ("organization_0002",)
+    assert set(plan.heads) == {"organization_0002", "identity_0003", "tenant_0002"}
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     tenant_id = uuid4()
     _seed_tenant(postgres_database.migration_url, tenant_id, "constraint-tenant")
     with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        principal_id = uuid4()
+        connection.execute(
+            "INSERT INTO platform_identity.users "
+            "(id, tenant_id, email, display_name) VALUES (%s, %s, %s, 'Boundary')",
+            (principal_id, tenant_id, "boundary@example.test"),
+        )
+        instant = datetime.now(UTC)
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(
+                "INSERT INTO platform_identity.memberships "
+                "(id, tenant_id, principal_id, principal_type, valid_from, valid_until) "
+                "VALUES (%s, %s, %s, 'user', %s, %s)",
+                (uuid4(), tenant_id, principal_id, instant, instant),
+            )
+        connection.rollback()
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             connection.execute(
                 "INSERT INTO platform_org.enterprise_groups "
@@ -1488,7 +1580,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
                 "SELECT module_id FROM platform_module.installed_module_migrations"
             )
         }
-    assert heads == {"organization_0002"}
+    assert heads == {"organization_0002", "identity_0003", "tenant_0002"}
     assert inventory == {
         "foundation.tenant",
         "foundation.identity",
@@ -1497,6 +1589,37 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
     app.runtime.migrations.downgrade(postgres_database.migration_url)
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     app.runtime.migrations.downgrade(postgres_database.migration_url)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_membership_period_upgrade_rejects_empty_historical_interval(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
+    assert app.runtime is not None
+    migrations = app.runtime.migrations
+    migrations.upgrade(postgres_database.migration_url, "identity_0002")
+    tenant_id, principal_id = uuid4(), uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant_id, "empty-membership-period")
+    instant = datetime.now(UTC)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_identity.users "
+            "(id, tenant_id, email, display_name) VALUES (%s, %s, 'empty@example.test', 'Empty')",
+            (principal_id, tenant_id),
+        )
+        connection.execute(
+            "INSERT INTO platform_identity.memberships "
+            "(id, tenant_id, principal_id, principal_type, valid_from, valid_until) "
+            "VALUES (%s, %s, %s, 'user', %s, %s)",
+            (uuid4(), tenant_id, principal_id, instant, instant),
+        )
+        connection.commit()
+    with pytest.raises(IntegrityError) as rejected:
+        migrations.upgrade(postgres_database.migration_url)
+    assert isinstance(rejected.value.orig, psycopg.errors.CheckViolation)
+    migrations.downgrade(postgres_database.migration_url)
 
 
 @pytest.mark.integration
@@ -1569,7 +1692,7 @@ def test_identity_migration_rejects_existing_cross_tenant_device_principal(
             "FROM platform_identity.devices WHERE id = %s",
             (device_id,),
         ).fetchone()
-    assert heads == {"organization_0002"}
+    assert heads == {"organization_0002", "identity_0003", "tenant_0002"}
     assert migrated_device == (principal_tenant_id, principal_id, "user")
     migrations.downgrade(postgres_database.migration_url)
 

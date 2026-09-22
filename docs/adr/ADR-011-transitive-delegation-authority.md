@@ -4,7 +4,7 @@ Status: PROPOSED
 
 Decision date: Not yet applicable
 
-Approving roles required: Architecture Maintainer; Security Maintainer; Policy Maintainer; Organization Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer
+Approving roles required: Architecture Maintainer; Security Maintainer; Identity Maintainer; Policy Maintainer; Organization Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer
 
 Approval pull request or commit: Pending proposal pull request and accountable review
 
@@ -119,12 +119,14 @@ company A authority cannot authorize company B. Policy receives the actual
 requested target, not a broader ancestor or caller-supplied resource.
 
 All validity windows are half-open `[valid_from, valid_until)`. A proposed
-child window must be wholly contained within each parent window and every
-required effective membership, root assignment, and Policy authority window;
-the command denies rather than truncates it. Creation checks authority at its
-evaluation instant and across the proposed window, as ADR-010 requires.
-Consumption checks the complete path and Policy root action at the current
-instant. It does not promise future authority: every later use rechecks.
+child window must be wholly contained within each parent window and the
+**known effective-period bounds** of every required membership, root
+assignment, and Policy grant used for the root decision; the command denies
+rather than truncates it. Creation checks current authority and those known
+bounds for the proposed window, as ADR-010 requires. This is not proof that
+mutable membership, assignment, or Policy authority will remain in force for
+the whole future interval. Consumption checks the complete path and Policy
+root action at the current instant. Every later use rechecks live authority.
 Expired or not-yet-effective links deny. A Policy or scope revocation after
 creation takes effect on the next use even if a stored validity window remains.
 
@@ -190,20 +192,35 @@ effective chain. The framework owns the transaction; handlers neither open a
 second transaction nor commit or release the lock early. Failed resolution or
 lock acquisition aborts. No cross-tenant lock is taken for a delegated action.
 
+Identity owns and publishes an additive, typed **membership-authority port**.
+Organization invokes it with the trusted tenant, principal identifiers, the
+evaluation instant and proposed interval, and the active framework-owned
+`TransactionalPersistence` capability. Identity uses that capability to
+validate and lock its own membership rows in the **same PostgreSQL transaction**
+as the Organization command. The port returns only a bounded allow/deny result
+and known effective-period evidence; it does not expose Identity tables,
+credentials, session records, raw SQLAlchemy sessions, or transaction
+completion control. A missing provider, separate transaction, or inability
+to hold the membership locks through Organization commit denies. The current
+`GetMembership` query opens its own unit of work and cannot satisfy this
+contract. Organization must not access Identity's private tables or simulate
+the lock by calling that query.
+
 The order is: (1) verify trusted tenant and acquire the ADR-010 tenant Policy
 authority lock; (2) read immutable parent IDs to identify candidate rows;
-(3) lock required Identity membership rows in canonical `(principal_type,
-principal_id)` order, required Organization assignment rows by UUID bytes,
-then Organization delegation rows by UUID bytes; (4) re-read and validate the
-whole path and Policy root decision under PostgreSQL `READ COMMITTED`; (5)
-insert, revoke, or emit the selection event in the same transaction. All
-supported writers of the affected Organization rows must observe compatible
-ordering. Identity membership writers that do not acquire the advisory lock
-still serialize through their row locks and must not later try to acquire the
-tenant advisory lock while holding those rows. Any future path that would do
-so must be redesigned before release. Multi-tenant authority writes remain
-forbidden; a future reviewed multi-tenant operation would acquire tenant
-locks in ascending canonical UUID-byte order.
+(3) invoke the Identity-owned port to lock required membership rows in
+canonical `(principal_type, principal_id)` order, lock required Organization
+assignment rows by UUID bytes, then Organization delegation rows by UUID
+bytes; (4) re-read and validate the whole path and Policy root decision under
+PostgreSQL `READ COMMITTED`; (5) insert, revoke, or emit the selection event
+in the same transaction. All supported writers of the affected Organization
+rows must observe compatible ordering. Identity membership writers that do
+not acquire the advisory lock still serialize through their row locks and
+must not later try to acquire the tenant advisory lock while holding those
+rows. Any future path that would do so must be redesigned before release.
+Multi-tenant authority writes remain forbidden; a future reviewed
+multi-tenant operation would acquire tenant locks in ascending canonical
+UUID-byte order.
 
 If child creation obtains the tenant lock first, validates and commits, then
 parent or root revocation proceeds, that is a valid serial order; the child
@@ -235,6 +252,11 @@ unavailable authoritative store is preferable to stale authorization.
 - **Policy:** owns the root action/resource decision and continues to implement
   the Organization-owned ADR-010 port. It does not gain Organization table
   access or fabricate direct roles for intermediate recipients.
+- **Identity:** owns the additive membership-authority port, its public
+  same-transaction validation/locking contract, and its private membership
+  rows. The existing `GetMembership` read contract remains unchanged. Identity
+  and Organization maintain their existing dependency direction; Organization
+  receives only the typed Identity port, never Identity persistence models.
 - **SDK/kernel:** no frozen Phase 1 or Phase 0 semantic change. Existing typed
   dependency and transaction APIs are used as published.
 - **Schema/data:** a new forward Organization migration is required for
@@ -248,6 +270,18 @@ unavailable authoritative store is preferable to stale authorization.
   Mixed-version rollout needs explicit compatibility review because old code
   cannot honor the new source and revocation semantics. Phase 3+ behavior is
   not implemented by this ADR.
+
+## Consequences
+
+Creation and use require bounded live reads and may deny when Identity or
+Policy is unavailable. Membership revocation now participates in the
+cross-module serialization proof without changing the frozen Phase 1
+transaction API. An additive Identity public contract and Organization
+provenance contract require versioning and consumer compatibility review;
+existing membership queries and direct assignment semantics remain intact.
+Legacy delegation rows without provable provenance remain visible for audit
+but unusable until reviewed reconciliation. These costs prevent an effective
+child from outliving its root or being delivered from stale authority.
 
 ## Alternatives considered
 
@@ -274,8 +308,9 @@ unavailable authoritative store is preferable to stale authorization.
 Implementation remains blocked until this ADR receives the accountable
 approval required by [ADR governance](../governance/ADR-GOVERNANCE.md) and the
 accepted revision is on `main`. The required role union is Architecture
-Maintainer, Security Maintainer, Policy Maintainer, Organization Maintainer,
-SDK/Contract Maintainer, and Migration Safety Reviewer. The proposal must
+Maintainer, Security Maintainer, Identity Maintainer, Policy Maintainer,
+Organization Maintainer, SDK/Contract Maintainer, and Migration Safety
+Reviewer. The proposal must
 receive exact-head CI and an independent bounded read-only ADR audit with
 zero Critical and High findings before a Solo Maintainer Owner Proposal
 Attestation can be requested. The owner must personally post any attestation;
@@ -287,8 +322,11 @@ root Policy authority; revoked parent; revoked membership and root assignment;
 short and long principal cycles; depth 17; cross-tenant source; multi-action
 intersection and atomic rejection; consumption after upstream expiry;
 creation/consumption equivalence; provenance evidence; provider absence and
-lifecycle fail-closed behavior; and deterministic concurrent parent revoke
-and Policy revoke against child creation in both serial orders. Validate
+lifecycle fail-closed behavior; and deterministic concurrent parent revoke,
+Policy revoke, and **Identity membership revoke** against child creation in
+both serial orders. The membership tests must prove the Identity-owned port
+uses the active Organization transaction, retains its row locks through the
+child commit, and denies when membership revocation commits first. Validate
 upgrade/backfill, ambiguous legacy rows, data-preserving failure, safe
 downgrade refusal, RLS, and exact installed-wheel migration replay. Run normal
 backend, frontend, image, architecture, and conformance gates, followed by a

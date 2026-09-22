@@ -31,6 +31,7 @@ from businessos_identity import (
     ValidateAuthenticationSession,
 )
 from businessos_organization import (
+    DELEGATION_ACTION_AUTHORITY,
     AssignPrincipal,
     CreateCompany,
     CreateEnterpriseGroup,
@@ -79,6 +80,12 @@ from businessos.dependencies import UNIT_OF_WORK_FACTORY
 from businessos.errors import BusinessOSError
 from businessos.modules import ModuleState
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
+from businessos.sdk import (
+    DependencyScope,
+    ModuleManifest,
+    ModuleRegistration,
+    TransactionalPersistence,
+)
 from businessos.security import Authorizer, RequestIdentity
 from tests.conftest import PostgreSQLTestDatabase
 
@@ -102,6 +109,48 @@ def _settings(url: str) -> Settings:
 
 def _modules() -> tuple[TenantModule, IdentityModule, OrganizationModule]:
     return TenantModule(), IdentityModule(), OrganizationModule()
+
+
+class _ScopeTestAuthority:
+    """Only isolates legacy Organization scope tests from Policy decisions."""
+
+    async def acquire(self, tenant_id: UUID, persistence: TransactionalPersistence) -> None:
+        return None
+
+    async def allows(self, request: object, persistence: TransactionalPersistence) -> bool:
+        return True
+
+
+class _ScopeTestAuthorityModule:
+    manifest = ModuleManifest(
+        module_id="test.scope_authority",
+        name="Organization scope test authority",
+        publisher="BusinessOS tests",
+        version="0.1.0",
+        platform=">=0.1,<1",
+        sdk=">=0.1,<1",
+        entry_point="tests.integration.test_phase2_foundations:_ScopeTestAuthorityModule",
+        dependencies=({"module_id": "foundation.organization", "version": ">=0.2,<1"},),
+    )
+
+    async def register(self, registration: ModuleRegistration) -> None:
+        registration.dependency(
+            DELEGATION_ACTION_AUTHORITY,
+            lambda _resolver: _ScopeTestAuthority(),
+            scope=DependencyScope.REQUEST,
+        )
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+def _modules_with_authority() -> tuple[
+    TenantModule, IdentityModule, OrganizationModule, _ScopeTestAuthorityModule
+]:
+    return (*_modules(), _ScopeTestAuthorityModule())
 
 
 def _context(tenant_id: UUID, principal_id: UUID | None = None) -> RequestContext:
@@ -271,7 +320,7 @@ async def test_tenant_transitions_orchestrate_lifecycle_hooks(
 async def test_multinational_tenant_identity_and_organization_exit_criterion(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
-    modules = _modules()
+    modules = _modules_with_authority()
     app = create_application(
         _settings(postgres_database.runtime_url),
         modules=modules,
@@ -283,11 +332,8 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     admin_id = uuid4()
     context = _context(tenant_id, admin_id)
     await app.startup()
-    assert [entry.state for entry in app.runtime.modules.ordered()] == [
-        ModuleState.ENABLED,
-        ModuleState.ENABLED,
-        ModuleState.ENABLED,
-    ]
+    assert all(entry.state is ModuleState.ENABLED for entry in app.runtime.modules.ordered())
+    assert len(app.runtime.modules.ordered()) == 4
 
     await _dispatch(
         app,
@@ -2063,7 +2109,7 @@ async def test_organization_grants_validate_lineage_typed_identity_and_uniquenes
 ) -> None:
     app = create_application(
         _settings(postgres_database.runtime_url),
-        modules=_modules(),
+        modules=_modules_with_authority(),
         authorizer=Authorizer(AllowAllPolicy()),
     )
     assert app.runtime is not None

@@ -29,8 +29,10 @@ from businessos.sdk import (
 )
 
 from .contracts import (
+    DELEGATION_ACTION_AUTHORITY,
     CompanyRecord,
     DelegatedScopeRecord,
+    DelegationAuthorityRequest,
     EffectiveAssignment,
     EnterpriseGroupRecord,
     FinancialDimensionRecord,
@@ -525,6 +527,11 @@ class OrganizationModule:
         now = datetime.now(UTC)
         if command.valid_until <= now:
             raise BusinessOSError("invalid_delegation", "Delegation has expired", status_code=422)
+        # Policy's transaction lock precedes Organization membership and scope
+        # row locks. A missing or inactive provider is a hard configuration error.
+        authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+        await authority.acquire(tenant.tenant_id, context.unit_of_work.persistence)
+        await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
         await self._require_actor_membership(
             tenant.principal_id, command.grantor_principal_type, context
         )
@@ -589,6 +596,25 @@ class OrganizationModule:
             visited,
         ):
             raise BusinessOSError("forbidden", "Grantor lacks delegated authority", status_code=403)
+        for action in command.allowed_actions:
+            authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+            if not await authority.allows(
+                DelegationAuthorityRequest(
+                    tenant_id=tenant.tenant_id,
+                    grantor_principal_id=authority_principal_id,
+                    scope_type=command.scope_type,
+                    scope_id=command.scope_id,
+                    action=action,
+                    evaluated_at=now,
+                    valid_from=command.valid_from,
+                    valid_until=command.valid_until,
+                ),
+                context.unit_of_work.persistence,
+            ):
+                raise BusinessOSError(
+                    "forbidden", "Grantor lacks action authority", status_code=403
+                )
+        await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
         await context.unit_of_work.persistence.execute(
             insert(DELEGATED_SCOPES).values(
                 **command.model_dump(), grantor_principal_id=tenant.principal_id
@@ -728,6 +754,11 @@ class OrganizationModule:
 
     async def _select_scope(self, query: SelectActiveScope, context: HandlingContext) -> object:
         tenant = _tenant(context.request, query.tenant_id)
+        if query.delegation_id is not None:
+            # Consumption must observe Policy revocations as well as Organization
+            # scope revocations. Keep the authority read in this same transaction.
+            authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+            await authority.acquire(tenant.tenant_id, context.unit_of_work.persistence)
         await self._require_actor_membership(tenant.principal_id, query.principal_type, context)
         checks = (
             ("enterprise_group", query.enterprise_group_id, ENTERPRISE_GROUPS),
@@ -792,6 +823,24 @@ class OrganizationModule:
                 raise BusinessOSError(
                     "forbidden", "Delegation source is no longer authorized", status_code=403
                 )
+            authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+            if not await authority.allows(
+                DelegationAuthorityRequest(
+                    tenant_id=tenant.tenant_id,
+                    grantor_principal_id=delegation["grantor_principal_id"],
+                    scope_type=OrganizationScopeType(delegation["scope_type"]),
+                    scope_id=delegation["scope_id"],
+                    action=query.action,
+                    evaluated_at=now,
+                    valid_from=now,
+                    valid_until=now + timedelta(microseconds=1),
+                ),
+                context.unit_of_work.persistence,
+            ):
+                raise BusinessOSError(
+                    "forbidden", "Delegation source action is no longer authorized", status_code=403
+                )
+            await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
             authorized_by_delegation = True
         if selection.leaves and not authorized_by_delegation:
             assignments = await context.unit_of_work.persistence.execute(

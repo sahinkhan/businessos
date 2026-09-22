@@ -35,7 +35,7 @@ from tests.integration.test_phase2_foundations import (
     AllowAllPolicy,
     _context,
     _dispatch,
-    _modules,
+    _modules_with_authority,
     _seed_tenant,
     _settings,
 )
@@ -46,7 +46,7 @@ async def _setup(
 ) -> tuple[Any, UUID, UUID, UUID, UUID, UUID, RequestContext]:
     app = create_application(
         _settings(postgres_database.runtime_url),
-        modules=_modules(),
+        modules=_modules_with_authority(),
         authorizer=Authorizer(AllowAllPolicy()),
     )
     assert app.runtime is not None

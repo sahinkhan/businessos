@@ -1,8 +1,11 @@
 """BusinessOS organization foundation public surface."""
 
 from .contracts import (
+    DELEGATION_ACTION_AUTHORITY,
     CompanyRecord,
     DelegatedScopeRecord,
+    DelegationActionAuthority,
+    DelegationAuthorityRequest,
     EffectiveAssignment,
     EnterpriseGroupRecord,
     FinancialDimensionRecord,
@@ -45,6 +48,7 @@ from .module import (
 )
 
 __all__ = [
+    "DELEGATION_ACTION_AUTHORITY",
     "ActiveScopeSelected",
     "AssignPrincipal",
     "CompanyCreated",
@@ -61,6 +65,8 @@ __all__ = [
     "CreateWarehouseLocation",
     "DelegateScope",
     "DelegatedScopeRecord",
+    "DelegationActionAuthority",
+    "DelegationAuthorityRequest",
     "EffectiveAssignment",
     "EnterpriseGroupRecord",
     "FinancialDimensionRecord",

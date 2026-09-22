@@ -3,10 +3,12 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+from businessos.sdk import DependencyKey, TransactionalPersistence
 
 
 class OrganizationUnitType(StrEnum):
@@ -33,6 +35,35 @@ class OrganizationScopeType(StrEnum):
     OPERATING_SITE = "operating_site"
     WAREHOUSE = "warehouse"
     FINANCIAL_DIMENSION = "financial_dimension"
+
+
+@dataclass(frozen=True, slots=True)
+class DelegationAuthorityRequest:
+    """Trusted, transaction-bound action and target submitted by Organization."""
+
+    tenant_id: UUID
+    grantor_principal_id: UUID
+    scope_type: OrganizationScopeType
+    scope_id: UUID
+    action: str
+    evaluated_at: datetime
+    valid_from: datetime
+    valid_until: datetime
+
+
+class DelegationActionAuthority(Protocol):
+    """Organization-owned authority port; implementations own their policy data."""
+
+    async def acquire(self, tenant_id: UUID, persistence: TransactionalPersistence) -> None: ...
+
+    async def allows(
+        self, request: DelegationAuthorityRequest, persistence: TransactionalPersistence
+    ) -> bool: ...
+
+
+DELEGATION_ACTION_AUTHORITY = DependencyKey[DelegationActionAuthority](
+    "businessos.organization.delegation_action_authority"
+)
 
 
 class OrganizationNode(BaseModel):

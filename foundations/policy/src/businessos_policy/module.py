@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from importlib.resources import files
 from typing import Any
 from uuid import UUID, uuid4
 
+from businessos_organization import DELEGATION_ACTION_AUTHORITY
 from pydantic import Field
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -16,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert
 from businessos.sdk import (
     BusinessOSError,
     Command,
+    DependencyScope,
     HandlingContext,
     ModuleManifest,
     ModuleRegistration,
@@ -35,6 +38,7 @@ from .contracts import (
     SupportAccessGranted,
     SupportAccessRevoked,
 )
+from .delegation_authority import PolicyDelegationActionAuthority
 from .models import (
     APPROVAL_LIMITS,
     DELEGATIONS,
@@ -215,14 +219,20 @@ class AuthorizeSupportAccessQuery(Query):
 
 
 class PolicyModule:
-    def __init__(self) -> None:
+    def __init__(self, *, action_resources: Mapping[str, str] | None = None) -> None:
         data = json.loads(
             files("businessos_policy").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
         self.evaluator = PolicyEvaluationService()
+        self.delegation_authority = PolicyDelegationActionAuthority(action_resources)
 
     async def register(self, registration: ModuleRegistration) -> None:
+        registration.dependency(
+            DELEGATION_ACTION_AUTHORITY,
+            lambda _resolver: self.delegation_authority,
+            scope=DependencyScope.REQUEST,
+        )
         registration.contract("foundation.policy.authorization.v1", self.evaluator)
         registration.contract("foundation.policy.field-policy.v1", self.evaluator)
         registration.contract("foundation.policy.approval-authority.v1", self.evaluator)
@@ -351,6 +361,7 @@ class PolicyModule:
 
     async def _create_role(self, cmd: CreateRoleCommand, ctx: HandlingContext) -> RoleRecord:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         if cmd.parent_role_id is not None:
             await _require_role(ctx, cmd.tenant_id, cmd.parent_role_id)
         now = datetime.now(UTC)
@@ -393,6 +404,7 @@ class PolicyModule:
         self, cmd: AssignPermissionToRoleCommand, ctx: HandlingContext
     ) -> RolePermissionRecord:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         await _require_role(ctx, cmd.tenant_id, cmd.role_id)
         now = datetime.now(UTC)
         rp_id = uuid4()
@@ -425,6 +437,7 @@ class PolicyModule:
         self, cmd: AssignRoleToSubjectCommand, ctx: HandlingContext
     ) -> SubjectRoleAssignmentRecord:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         await _require_role(ctx, cmd.tenant_id, cmd.role_id)
         _validate_scope(cmd.scope_type, cmd.scope_id)
         _validate_window(cmd.valid_from, cmd.valid_to)
@@ -572,6 +585,7 @@ class PolicyModule:
         self, cmd: SetRecordPolicyCommand, ctx: HandlingContext
     ) -> RecordPolicyRecord:
         _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         if cmd.role_id is not None:
             await _require_role(ctx, cmd.tenant_id, cmd.role_id)
         now = datetime.now(UTC)
@@ -631,6 +645,7 @@ class PolicyModule:
         self, cmd: CreateDelegationCommand, ctx: HandlingContext
     ) -> DelegationGrantRecord:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         if cmd.delegator_id == cmd.delegatee_id:
             raise BusinessOSError(
                 "invalid_delegation", "Delegator and delegatee must differ", status_code=422
@@ -696,6 +711,7 @@ class PolicyModule:
 
     async def _revoke_delegation(self, cmd: RevokeDelegationCommand, ctx: HandlingContext) -> None:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         stmt = (
             update(DELEGATIONS)
             .where(DELEGATIONS.c.id == cmd.delegation_id)

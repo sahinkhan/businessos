@@ -6,14 +6,16 @@ Decision date: 2026-09-22
 
 Approving roles required: Architecture Maintainer; Security Maintainer; Identity Maintainer; Policy Maintainer; Organization Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer
 
-Approval pull request or commit: PR #17 (acceptance candidate; formal acceptance requires the accepted revision on `main`)
+Approval pull request or commit: [PR #17](https://github.com/sahinkhan/businessos/pull/17) — MERGED
 Approved semantic proposal SHA: `9519712f6070c630731779e2c8272135a65c15d5`
+Accepted candidate SHA: `02cd04c42aa76ba8a214bb80a48596585863bc16`
+Accepted main merge SHA: `9e2639caf4cdc804b5473fb0e48bfe69e2129970`
 Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan` ([proposal attestation](https://github.com/sahinkhan/businessos/pull/17#issuecomment-5772146350))
 Accountable roles exercised: Architecture Maintainer; Security Maintainer; Identity Maintainer; Policy Maintainer; Organization Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer
 Independent human review: NOT PERFORMED
 Independent technical audit: bounded ADR review PASS; Critical 0; High 0
 Exact proposal CI: [BusinessOS run 35693815125](https://github.com/sahinkhan/businessos/actions/runs/35693815125) — PASS (`python-quality`, `windows-typing`, `web-quality`)
-Final owner acceptance attestation: Pending for the exact acceptance-candidate SHA
+Final owner acceptance attestation: COMPLETE — [@sahinkhan's exact-candidate attestation](https://github.com/sahinkhan/businessos/pull/17#issuecomment-5772300051)
 
 Extends: [ADR-010 — Delegation Action Authority Boundary](ADR-010-delegation-action-authority-boundary.md)
 

@@ -174,6 +174,31 @@ class UomModule:
         self, command: CreateUnitOfMeasure, context: HandlingContext
     ) -> UnitOfMeasureRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        category = await self._get_category(
+            GetMeasurementCategory(tenant_id=tenant.tenant_id, code=command.category_code),
+            context,
+        )
+        if category is None:
+            raise BusinessOSError("not_found", "Measurement category not found", status_code=404)
+        if command.is_base_unit != (command.code == category.base_unit_code):
+            raise BusinessOSError(
+                "invalid_base_unit", "Unit conflicts with category base unit", status_code=400
+            )
+        if command.is_base_unit and (
+            command.conversion_ratio != Decimal("1") or command.conversion_offset != Decimal("0")
+        ):
+            raise BusinessOSError(
+                "invalid_base_unit", "Base unit must use identity conversion", status_code=400
+            )
+        if not command.is_base_unit:
+            base = await self._get_unit(
+                GetUnitOfMeasure(tenant_id=tenant.tenant_id, code=category.base_unit_code),
+                context,
+            )
+            if base is None or base.category_code != category.code or not base.is_base_unit:
+                raise BusinessOSError(
+                    "invalid_base_unit", "Category base unit must be created first", status_code=400
+                )
         unit_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(UNITS_OF_MEASURE)

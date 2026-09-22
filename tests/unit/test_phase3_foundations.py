@@ -67,6 +67,8 @@ def test_uom_conversion_service_exact_arithmetic_and_round_trip() -> None:
     # Round trip: 1.5 km to meters = 1500 m
     round_trip = service.convert(result.converted_amount, km, m)
     assert round_trip.converted_amount == Decimal("1500.0000")
+    with pytest.raises(ValueError, match="different tenants"):
+        service.convert(Decimal("1"), m, km.model_copy(update={"tenant_id": uuid4()}))
 
 
 def test_uom_rounding_modes() -> None:

@@ -76,6 +76,8 @@ class UomConversionService:
         from_unit: UnitOfMeasureRecord,
         to_unit: UnitOfMeasureRecord,
     ) -> ConvertedAmountRecord:
+        if from_unit.tenant_id != to_unit.tenant_id:
+            raise ValueError("Cannot convert units owned by different tenants")
         if from_unit.category_code != to_unit.category_code:
             raise ValueError(
                 f"Cannot convert between different categories: '{from_unit.category_code}' "

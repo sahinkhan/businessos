@@ -218,6 +218,22 @@ class GeographyModule:
         )
 
     async def _register_city(self, command: RegisterCity, context: HandlingContext) -> CityRecord:
+        country = await self._get_country(GetCountry(code=command.country_code), context)
+        if country is None:
+            raise BusinessOSError("not_found", "Country not found", status_code=404)
+        if command.subdivision_id is not None:
+            subdivision = (
+                await context.unit_of_work.persistence.execute(
+                    select(SUBDIVISIONS.c.id).where(
+                        SUBDIVISIONS.c.id == command.subdivision_id,
+                        SUBDIVISIONS.c.country_code == command.country_code,
+                    )
+                )
+            ).first()
+            if subdivision is None:
+                raise BusinessOSError(
+                    "invalid_subdivision", "Subdivision does not belong to country", status_code=400
+                )
         city_id = uuid4()
         await context.unit_of_work.persistence.execute(
             insert(CITIES).values(
@@ -242,6 +258,41 @@ class GeographyModule:
         self, command: CreateAddress, context: HandlingContext
     ) -> AddressRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        country = await self._get_country(GetCountry(code=command.country_code), context)
+        if country is None:
+            raise BusinessOSError("not_found", "Country not found", status_code=404)
+        subdivision_id = None
+        if command.subdivision_code is not None:
+            subdivision = (
+                await context.unit_of_work.persistence.execute(
+                    select(SUBDIVISIONS.c.id).where(
+                        SUBDIVISIONS.c.country_code == command.country_code,
+                        SUBDIVISIONS.c.code == command.subdivision_code,
+                    )
+                )
+            ).first()
+            if subdivision is None:
+                raise BusinessOSError(
+                    "invalid_subdivision", "Subdivision does not belong to country", status_code=400
+                )
+            subdivision_id = subdivision.id
+        city = (
+            await context.unit_of_work.persistence.execute(
+                select(CITIES.c.id).where(
+                    CITIES.c.country_code == command.country_code,
+                    CITIES.c.name == command.city,
+                    *(
+                        (CITIES.c.subdivision_id == subdivision_id,)
+                        if subdivision_id is not None
+                        else ()
+                    ),
+                )
+            )
+        ).first()
+        if city is None:
+            raise BusinessOSError(
+                "invalid_city", "City does not belong to address parent", status_code=400
+            )
         formatted = self.address_formatter.format(
             street_line1=command.street_line1,
             street_line2=command.street_line2,

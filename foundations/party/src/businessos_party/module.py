@@ -6,10 +6,12 @@ from importlib.resources import files
 from typing import ClassVar
 from uuid import UUID, uuid4
 
+from businessos_geography import AddressRecord, GetAddress
 from pydantic import Field
 from sqlalchemy import insert, or_, select, update
 
 from businessos.sdk import (
+    MESSAGE_DISPATCHER,
     BusinessOSError,
     Command,
     DomainEvent,
@@ -454,6 +456,7 @@ class PartyModule:
         self, command: AddContactPoint, context: HandlingContext
     ) -> ContactPointRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, command.party_id, context)
         cid = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(CONTACT_POINTS)
@@ -487,6 +490,13 @@ class PartyModule:
         self, command: AssignPartyAddress, context: HandlingContext
     ) -> PartyAddressAssignmentRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, command.party_id, context)
+        dispatcher = await context.dependencies.resolve(MESSAGE_DISPATCHER)
+        address = await dispatcher.query(
+            GetAddress(address_id=command.address_id), context.request, context.dependencies
+        )
+        if not isinstance(address, AddressRecord) or address.tenant_id != tenant.tenant_id:
+            raise BusinessOSError("not_found", "Address not found", status_code=404)
         aid = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(PARTY_ADDRESS_ASSIGNMENTS)
@@ -518,6 +528,7 @@ class PartyModule:
         self, command: AddExternalIdentifier, context: HandlingContext
     ) -> ExternalIdentifierRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, command.party_id, context)
         eid = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(EXTERNAL_IDENTIFIERS)
@@ -542,6 +553,13 @@ class PartyModule:
             is_sensitive=command.is_sensitive,
             created_at=created_at,
         )
+
+    async def _require_party_parent(
+        self, tenant_id: UUID, party_id: UUID, context: HandlingContext
+    ) -> None:
+        party = await self._get_party(GetParty(tenant_id=tenant_id, party_id=party_id), context)
+        if party is None:
+            raise BusinessOSError("not_found", "Party not found", status_code=404)
 
     async def _get_party(self, query: GetParty, context: HandlingContext) -> PartyRecord | None:
         tenant = _require_tenant(context.request, query.tenant_id)

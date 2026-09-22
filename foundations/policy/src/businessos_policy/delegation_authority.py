@@ -52,6 +52,81 @@ def authority_lock_key(tenant_id: UUID) -> int:
     )
 
 
+def _scope_covers(
+    source_type: ScopeType,
+    source_id: UUID | None,
+    target_type: ScopeType,
+    target_id: UUID | None,
+) -> bool:
+    # These are the Policy evaluator's existing scope rules: tenant-wide or
+    # the same concrete scope. Policy does not infer Organization lineage.
+    return (source_type is ScopeType.TENANT and source_id is None) or (
+        source_type is target_type and source_id is not None and source_id == target_id
+    )
+
+
+def has_effective_role_source(
+    *,
+    tenant_id: UUID,
+    subject_id: UUID,
+    subject_type: str,
+    role_id: UUID,
+    scope_type: ScopeType,
+    scope_id: UUID | None,
+    valid_from: datetime,
+    valid_until: datetime,
+    evaluated_at: datetime,
+    assignments: list[SubjectRoleAssignmentRecord],
+    delegations: list[DelegationGrantRecord],
+    visited: frozenset[tuple[str, UUID]] = frozenset(),
+) -> bool:
+    """Prove a same-role, currently live Policy path for the whole grant window."""
+    principal = (subject_type, subject_id)
+    if principal in visited or len(visited) > 16:
+        return False
+    path = visited | {principal}
+    for assignment in assignments:
+        if (
+            assignment.tenant_id == tenant_id
+            and assignment.subject_id == subject_id
+            and assignment.subject_type == subject_type
+            and assignment.role_id == role_id
+            and _scope_covers(assignment.scope_type, assignment.scope_id, scope_type, scope_id)
+            and _active_at(assignment.valid_from, assignment.valid_to, evaluated_at)
+            and _covers(assignment.valid_from, assignment.valid_to, valid_from, valid_until)
+        ):
+            return True
+    for grant in delegations:
+        if (
+            grant.tenant_id != tenant_id
+            or grant.delegatee_id != subject_id
+            or grant.delegatee_type != subject_type
+            or grant.delegator_type not in {"user", "service_account", "device"}
+            or grant.role_id != role_id
+            or grant.is_revoked
+            or not _scope_covers(grant.scope_type, grant.scope_id, scope_type, scope_id)
+            or not _active_at(grant.valid_from, grant.valid_to, evaluated_at)
+            or not _covers(grant.valid_from, grant.valid_to, valid_from, valid_until)
+        ):
+            continue
+        if has_effective_role_source(
+            tenant_id=tenant_id,
+            subject_id=grant.delegator_id,
+            subject_type=grant.delegator_type,
+            role_id=role_id,
+            scope_type=grant.scope_type,
+            scope_id=grant.scope_id,
+            valid_from=grant.valid_from,
+            valid_until=grant.valid_to,
+            evaluated_at=evaluated_at,
+            assignments=assignments,
+            delegations=delegations,
+            visited=path,
+        ):
+            return True
+    return False
+
+
 class PolicyDelegationActionAuthority:
     """Fail-closed action decisions using the caller's active transaction."""
 
@@ -117,16 +192,20 @@ class PolicyDelegationActionAuthority:
         roles = [RoleRecord.model_validate(dict(row)) for row in roles_result.mappings()]
         assignments_result = await persistence.execute(
             select(SUBJECT_ROLE_ASSIGNMENTS).where(
-                SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == request.tenant_id,
-                SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == request.grantor_principal_id,
-                SUBJECT_ROLE_ASSIGNMENTS.c.subject_type == request.grantor_principal_type,
+                SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == request.tenant_id
             )
         )
-        assignments = [
+        all_assignments = [
             SubjectRoleAssignmentRecord.model_validate(dict(row))
             for row in assignments_result.mappings()
-            if _active_at(row["valid_from"], row["valid_to"], request.evaluated_at)
-            and _covers(row["valid_from"], row["valid_to"], first, last)
+        ]
+        assignments = [
+            assignment
+            for assignment in all_assignments
+            if assignment.subject_id == request.grantor_principal_id
+            and assignment.subject_type == request.grantor_principal_type
+            and _active_at(assignment.valid_from, assignment.valid_to, request.evaluated_at)
+            and _covers(assignment.valid_from, assignment.valid_to, first, last)
         ]
         permissions_result = await persistence.execute(
             select(ROLE_PERMISSIONS).where(ROLE_PERMISSIONS.c.tenant_id == request.tenant_id)
@@ -137,17 +216,34 @@ class PolicyDelegationActionAuthority:
         delegations_result = await persistence.execute(
             select(DELEGATIONS).where(
                 DELEGATIONS.c.tenant_id == request.tenant_id,
-                DELEGATIONS.c.delegatee_id == request.grantor_principal_id,
-                DELEGATIONS.c.delegatee_type == request.grantor_principal_type,
-                DELEGATIONS.c.delegator_type.is_not(None),
                 DELEGATIONS.c.is_revoked.is_(False),
             )
         )
+        all_delegations = [
+            DelegationGrantRecord.model_validate(dict(row)) for row in delegations_result.mappings()
+        ]
         delegations = [
-            DelegationGrantRecord.model_validate(dict(row))
-            for row in delegations_result.mappings()
-            if _active_at(row["valid_from"], row["valid_to"], request.evaluated_at)
-            and _covers(row["valid_from"], row["valid_to"], first, last)
+            grant
+            for grant in all_delegations
+            if grant.delegatee_id == request.grantor_principal_id
+            and grant.delegatee_type == request.grantor_principal_type
+            and grant.delegator_type in {"user", "service_account", "device"}
+            and _scope_covers(grant.scope_type, grant.scope_id, scope, request.scope_id)
+            and _active_at(grant.valid_from, grant.valid_to, request.evaluated_at)
+            and _covers(grant.valid_from, grant.valid_to, first, last)
+            and has_effective_role_source(
+                tenant_id=request.tenant_id,
+                subject_id=grant.delegator_id,
+                subject_type=grant.delegator_type,
+                role_id=grant.role_id,
+                scope_type=grant.scope_type,
+                scope_id=grant.scope_id,
+                valid_from=grant.valid_from,
+                valid_until=grant.valid_to,
+                evaluated_at=request.evaluated_at,
+                assignments=all_assignments,
+                delegations=all_delegations,
+            )
         ]
         policies_result = await persistence.execute(
             select(RECORD_POLICIES).where(

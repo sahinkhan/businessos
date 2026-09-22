@@ -38,7 +38,7 @@ from .contracts import (
     SupportAccessGranted,
     SupportAccessRevoked,
 )
-from .delegation_authority import PolicyDelegationActionAuthority
+from .delegation_authority import PolicyDelegationActionAuthority, has_effective_role_source
 from .models import (
     APPROVAL_LIMITS,
     DELEGATIONS,
@@ -659,20 +659,54 @@ class PolicyModule:
         await _require_role(ctx, cmd.tenant_id, cmd.role_id)
         _validate_scope(cmd.scope_type, cmd.scope_id)
         _validate_window(cmd.valid_from, cmd.valid_to)
-        authority = await ctx.unit_of_work.persistence.execute(
-            select(SUBJECT_ROLE_ASSIGNMENTS.c.id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == cmd.tenant_id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == cmd.delegator_id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_type == cmd.delegator_type)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.role_id == cmd.role_id)
-        )
-        if authority.first() is None:
+        if (
+            cmd.delegator_type not in {"user", "service_account", "device"}
+            or cmd.delegatee_type not in {"user", "service_account", "device"}
+            or cmd.valid_from.tzinfo is None
+            or cmd.valid_to.tzinfo is None
+        ):
             raise BusinessOSError(
                 "delegation_authority_missing",
-                "Delegator does not hold the delegated role",
+                "Delegation requires verified typed and timezone-aware authority",
                 status_code=403,
             )
+        assignment_result = await ctx.unit_of_work.persistence.execute(
+            select(SUBJECT_ROLE_ASSIGNMENTS)
+            .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == cmd.tenant_id)
+            .where(SUBJECT_ROLE_ASSIGNMENTS.c.role_id == cmd.role_id)
+        )
+        assignments = [
+            SubjectRoleAssignmentRecord.model_validate(dict(row))
+            for row in assignment_result.mappings()
+        ]
+        delegation_result = await ctx.unit_of_work.persistence.execute(
+            select(DELEGATIONS)
+            .where(DELEGATIONS.c.tenant_id == cmd.tenant_id)
+            .where(DELEGATIONS.c.role_id == cmd.role_id)
+            .where(DELEGATIONS.c.is_revoked.is_(False))
+        )
+        delegations = [
+            DelegationGrantRecord.model_validate(dict(row)) for row in delegation_result.mappings()
+        ]
         now = datetime.now(UTC)
+        if not has_effective_role_source(
+            tenant_id=cmd.tenant_id,
+            subject_id=cmd.delegator_id,
+            subject_type=cmd.delegator_type,
+            role_id=cmd.role_id,
+            scope_type=cmd.scope_type,
+            scope_id=cmd.scope_id,
+            valid_from=cmd.valid_from,
+            valid_until=cmd.valid_to,
+            evaluated_at=now,
+            assignments=assignments,
+            delegations=delegations,
+        ):
+            raise BusinessOSError(
+                "delegation_authority_missing",
+                "Delegator lacks effective role authority for scope and period",
+                status_code=403,
+            )
         del_id = uuid4()
         stmt = insert(DELEGATIONS).values(
             id=del_id,

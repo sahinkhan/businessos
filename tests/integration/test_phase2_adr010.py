@@ -187,6 +187,8 @@ async def test_policy_authority_is_target_aware_and_rejects_partial_actions(
             ),
             context,
         )
+        assignment_start = datetime.now(UTC) - timedelta(minutes=1)
+        assignment_end = datetime.now(UTC) + timedelta(hours=1)
         await _dispatch(
             app,
             AssignRoleToSubjectCommand(
@@ -196,8 +198,8 @@ async def test_policy_authority_is_target_aware_and_rejects_partial_actions(
                 role_id=role_id,
                 scope_type=ScopeType.COMPANY,
                 scope_id=company_a,
-                valid_from=datetime.now(UTC) - timedelta(minutes=1),
-                valid_to=datetime.now(UTC) + timedelta(hours=1),
+                valid_from=assignment_start,
+                valid_to=assignment_end,
             ),
             context,
         )
@@ -340,8 +342,8 @@ async def test_policy_authority_is_target_aware_and_rejects_partial_actions(
                     role_id=role_id,
                     scope_type=ScopeType.COMPANY,
                     scope_id=company_a,
-                    valid_from=datetime.now(UTC) - timedelta(minutes=1),
-                    valid_to=datetime.now(UTC) + timedelta(hours=1),
+                    valid_from=assignment_start,
+                    valid_to=assignment_end,
                 ),
                 context,
             ),

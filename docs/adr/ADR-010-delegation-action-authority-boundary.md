@@ -1,10 +1,15 @@
 # ADR-010: Delegation Action Authority Boundary
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Pending acceptance
+Decision date: 2026-09-22
 Approving roles: Architecture Maintainer; Security Maintainer; Policy Maintainer; Organization Maintainer; SDK/Contract Maintainer
-Approval pull request or commit: Pending; this proposal is not approval evidence
+Approval pull request or commit: PR #16 (acceptance candidate; formal acceptance requires the accepted revision on `main`)
+Approved semantic proposal SHA: `374b74a37ddef2bc1ac24660962baf86f69c23ae`
+Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan` ([proposal attestation](https://github.com/sahinkhan/businessos/pull/16#issuecomment-5770971636))
+Independent human review: NOT PERFORMED
+Independent technical audit: bounded ADR review PASS; Critical 0; High 0
+Exact proposal CI: [BusinessOS run 35648670033](https://github.com/sahinkhan/businessos/actions/runs/35648670033) — PASS (`python-quality`, `windows-typing`, `web-quality`)
 Supersedes: None
 Superseded by: None
 
@@ -200,10 +205,9 @@ invalidates future resolution; stale handles cannot supply authority.
 
 ## Implementation and acceptance gates
 
-This `PROPOSED` record authorizes no runtime change. Before implementation,
-the accountable roles below must accept the exact ADR revision under
-`docs/governance/ADR-GOVERNANCE.md`, with decision date and traceable approval
-PR/commit recorded on `main`. CI and technical review alone do not accept it.
+This acceptance candidate authorizes no runtime change before the accepted
+revision is recorded on `main` under `docs/governance/ADR-GOVERNANCE.md`.
+CI and technical review alone do not accept an ADR.
 
 Implementation must prove with real PostgreSQL and supported public APIs:
 target-scope allow/deny, each action independently checked, multi-action

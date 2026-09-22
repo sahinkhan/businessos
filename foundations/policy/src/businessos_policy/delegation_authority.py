@@ -106,8 +106,10 @@ class PolicyDelegationActionAuthority:
         # Reacquiring the same xact lock is safe and proves the decision reads
         # cannot precede serialization, including calls by other consumers.
         await self.acquire(request.tenant_id, persistence)
-        first = max(request.evaluated_at, request.valid_from)
+        first = request.valid_from
         last = request.valid_until
+        # The same grant must authorize now and cover the full proposed
+        # interval; interval coverage alone would admit future-only authority.
 
         roles_result = await persistence.execute(
             select(ROLES).where(ROLES.c.tenant_id == request.tenant_id)
@@ -123,7 +125,8 @@ class PolicyDelegationActionAuthority:
         assignments = [
             SubjectRoleAssignmentRecord.model_validate(dict(row))
             for row in assignments_result.mappings()
-            if _covers(row["valid_from"], row["valid_to"], first, last)
+            if _active_at(row["valid_from"], row["valid_to"], request.evaluated_at)
+            and _covers(row["valid_from"], row["valid_to"], first, last)
         ]
         permissions_result = await persistence.execute(
             select(ROLE_PERMISSIONS).where(ROLE_PERMISSIONS.c.tenant_id == request.tenant_id)
@@ -143,7 +146,8 @@ class PolicyDelegationActionAuthority:
         delegations = [
             DelegationGrantRecord.model_validate(dict(row))
             for row in delegations_result.mappings()
-            if _covers(row["valid_from"], row["valid_to"], first, last)
+            if _active_at(row["valid_from"], row["valid_to"], request.evaluated_at)
+            and _covers(row["valid_from"], row["valid_to"], first, last)
         ]
         policies_result = await persistence.execute(
             select(RECORD_POLICIES).where(
@@ -162,7 +166,7 @@ class PolicyDelegationActionAuthority:
             operating_site_id=request.scope_id if scope is ScopeType.OPERATING_SITE else None,
             record_scope_type=scope,
             record_scope_id=request.scope_id,
-            timestamp=first.astimezone(UTC),
+            timestamp=request.evaluated_at.astimezone(UTC),
         )
         decision = self._evaluator.authorize(
             request.action,
@@ -179,3 +183,7 @@ class PolicyDelegationActionAuthority:
 
 def _covers(start: datetime | None, end: datetime | None, first: datetime, last: datetime) -> bool:
     return (start is None or start <= first) and (end is None or end >= last)
+
+
+def _active_at(start: datetime | None, end: datetime | None, instant: datetime) -> bool:
+    return (start is None or start <= instant) and (end is None or instant < end)

@@ -2,10 +2,11 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from datetime import UTC, datetime, timedelta, tzinfo
+from typing import Any, Self, cast
 from uuid import UUID, uuid4
 
+import businessos_organization.module as organization_module
 import pytest
 from businessos_identity import (
     CreateUser,
@@ -791,6 +792,341 @@ async def test_real_policy_root_revocation_and_assignment_loss_invalidate_descen
                 child_context,
             )
         assert assignment_revoked.value.code == "forbidden"
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("grant_start", "grant_end", "proposal_start", "allowed"),
+    (
+        ("future_window", "after_window", "future", False),
+        ("before_now", "before_end", "future", False),
+        ("before_now", "after_window", "future", True),
+        ("before_now", "at_end", "future", True),
+        ("at_now", "after_window", "future", True),
+        ("after_now", "after_window", "future", False),
+        ("before_now", "after_window", "past", False),
+    ),
+)
+async def test_policy_root_authority_is_current_and_covers_proposed_interval(
+    postgres_database: PostgreSQLTestDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+    grant_start: str,
+    grant_end: str,
+    proposal_start: str,
+    allowed: bool,
+) -> None:
+    (
+        app,
+        tenant_id,
+        _,
+        root_id,
+        middle_id,
+        _,
+        company_id,
+        _,
+        role_id,
+        owner_context,
+    ) = await _real_policy_setup(postgres_database)
+    instant = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=1)
+    proposed_start = (
+        instant + timedelta(days=1) if proposal_start == "future" else instant - timedelta(days=2)
+    )
+    proposed_end = instant + timedelta(days=8)
+    starts = {
+        "future_window": proposed_start,
+        "before_now": instant - timedelta(days=1),
+        "at_now": instant,
+        "after_now": instant + timedelta(microseconds=1),
+    }
+    ends = {
+        "before_end": proposed_end - timedelta(days=1),
+        "at_end": proposed_end,
+        "after_window": proposed_end + timedelta(days=1),
+    }
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            return cls.fromtimestamp(instant.timestamp(), tz)
+
+    try:
+        await _dispatch(
+            app,
+            AssignRoleToSubjectCommand(
+                tenant_id=tenant_id,
+                subject_id=root_id,
+                subject_type="user",
+                role_id=role_id,
+                scope_type=ScopeType.COMPANY,
+                scope_id=company_id,
+                valid_from=starts[grant_start],
+                valid_to=ends[grant_end],
+            ),
+            owner_context,
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(organization_module, "datetime", FixedDatetime)
+            delegation = _delegate(
+                tenant_id,
+                middle_id,
+                company_id,
+                start=proposed_start,
+                end=proposed_end,
+            )
+            if allowed:
+                result = cast(
+                    dict[str, UUID],
+                    await _dispatch(app, delegation, _context(tenant_id, root_id)),
+                )
+                assert result["delegation_id"] == delegation.id
+            else:
+                with pytest.raises(BusinessOSError) as denied:
+                    await _dispatch(app, delegation, _context(tenant_id, root_id))
+                assert denied.value.code == "forbidden"
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_future_only_action_denies_entire_multi_action_delegation(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    (
+        app,
+        tenant_id,
+        _,
+        root_id,
+        middle_id,
+        _,
+        company_id,
+        _,
+        role_id,
+        owner_context,
+    ) = await _real_policy_setup(postgres_database)
+    now = datetime.now(UTC)
+    start = now + timedelta(days=1)
+    end = start + timedelta(days=1)
+    try:
+        await _dispatch(
+            app,
+            AssignRoleToSubjectCommand(
+                tenant_id=tenant_id,
+                subject_id=root_id,
+                subject_type="user",
+                role_id=role_id,
+                scope_type=ScopeType.COMPANY,
+                scope_id=company_id,
+                valid_from=now - timedelta(days=1),
+                valid_to=end + timedelta(days=1),
+            ),
+            owner_context,
+        )
+        await _dispatch(
+            app,
+            RegisterPermissionCommand(
+                code="organization.manage", name="Manage organization", category="organization"
+            ),
+            owner_context,
+        )
+        future_role = cast(
+            RoleRecord,
+            await _dispatch(
+                app,
+                CreateRoleCommand(tenant_id=tenant_id, code="future", name="Future"),
+                owner_context,
+            ),
+        )
+        await _dispatch(
+            app,
+            AssignPermissionToRoleCommand(
+                tenant_id=tenant_id,
+                role_id=future_role.id,
+                permission_code="organization.manage",
+            ),
+            owner_context,
+        )
+        await _dispatch(
+            app,
+            AssignRoleToSubjectCommand(
+                tenant_id=tenant_id,
+                subject_id=root_id,
+                subject_type="user",
+                role_id=future_role.id,
+                scope_type=ScopeType.COMPANY,
+                scope_id=company_id,
+                valid_from=start,
+                valid_to=end + timedelta(days=1),
+            ),
+            owner_context,
+        )
+        delegation = _delegate(
+            tenant_id,
+            middle_id,
+            company_id,
+            actions=("organization.read", "organization.manage"),
+            start=start,
+            end=end,
+        )
+        with pytest.raises(BusinessOSError) as denied:
+            await _dispatch(app, delegation, _context(tenant_id, root_id))
+        assert denied.value.code == "forbidden"
+        snapshot = cast(
+            OrganizationSnapshot,
+            await _query(app, ReadOrganization(tenant_id=tenant_id), owner_context),
+        )
+        assert not snapshot.delegations
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_transitive_creation_denies_future_only_root_policy_authority(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    (
+        app,
+        tenant_id,
+        policy_owner,
+        root_id,
+        middle_id,
+        child_id,
+        company_id,
+        _,
+        role_id,
+        owner_context,
+    ) = await _real_policy_setup(postgres_database)
+    now = datetime.now(UTC)
+    start = now + timedelta(days=1)
+    end = start + timedelta(days=1)
+    try:
+        current_grant = cast(
+            DelegationGrantRecord,
+            await _dispatch(
+                app,
+                CreateDelegationCommand(
+                    tenant_id=tenant_id,
+                    delegator_id=policy_owner,
+                    delegator_type="user",
+                    delegatee_id=root_id,
+                    delegatee_type="user",
+                    role_id=role_id,
+                    scope_type=ScopeType.COMPANY,
+                    scope_id=company_id,
+                    valid_from=now - timedelta(days=1),
+                    valid_to=end + timedelta(days=1),
+                ),
+                owner_context,
+            ),
+        )
+        parent = cast(
+            dict[str, UUID],
+            await _dispatch(
+                app,
+                _delegate(
+                    tenant_id,
+                    middle_id,
+                    company_id,
+                    start=now - timedelta(minutes=1),
+                    end=end,
+                ),
+                _context(tenant_id, root_id),
+            ),
+        )
+        await _dispatch(
+            app,
+            RevokeDelegationCommand(
+                tenant_id=tenant_id,
+                delegation_id=current_grant.id,
+                reason="Replace current authority with future-only authority",
+            ),
+            owner_context,
+        )
+        await _dispatch(
+            app,
+            CreateDelegationCommand(
+                tenant_id=tenant_id,
+                delegator_id=policy_owner,
+                delegator_type="user",
+                delegatee_id=root_id,
+                delegatee_type="user",
+                role_id=role_id,
+                scope_type=ScopeType.COMPANY,
+                scope_id=company_id,
+                valid_from=start,
+                valid_to=end + timedelta(days=1),
+            ),
+            owner_context,
+        )
+        with pytest.raises(BusinessOSError) as denied:
+            await _dispatch(
+                app,
+                _delegate(tenant_id, child_id, company_id, start=start, end=end),
+                _selected(_context(tenant_id, middle_id), parent["delegation_id"]),
+            )
+        assert denied.value.code == "forbidden"
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_future_parent_cannot_create_child_before_parent_is_effective(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    (
+        app,
+        tenant_id,
+        _,
+        root_id,
+        middle_id,
+        child_id,
+        company_id,
+        _,
+        role_id,
+        owner_context,
+    ) = await _real_policy_setup(postgres_database)
+    now = datetime.now(UTC)
+    start = now + timedelta(days=1)
+    end = start + timedelta(days=1)
+    try:
+        await _dispatch(
+            app,
+            AssignRoleToSubjectCommand(
+                tenant_id=tenant_id,
+                subject_id=root_id,
+                subject_type="user",
+                role_id=role_id,
+                scope_type=ScopeType.COMPANY,
+                scope_id=company_id,
+                valid_from=now - timedelta(days=1),
+                valid_to=end + timedelta(days=1),
+            ),
+            owner_context,
+        )
+        parent = cast(
+            dict[str, UUID],
+            await _dispatch(
+                app,
+                _delegate(tenant_id, middle_id, company_id, start=start, end=end),
+                _context(tenant_id, root_id),
+            ),
+        )
+        with pytest.raises(BusinessOSError) as denied:
+            await _dispatch(
+                app,
+                _delegate(tenant_id, child_id, company_id, start=start, end=end),
+                _selected(_context(tenant_id, middle_id), parent["delegation_id"]),
+            )
+        assert denied.value.code == "forbidden"
     finally:
         await app.shutdown()
 

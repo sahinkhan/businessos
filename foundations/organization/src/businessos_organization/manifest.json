@@ -2,7 +2,7 @@
   "module_id": "foundation.organization",
   "name": "Organization",
   "publisher": "BusinessOS",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "platform": ">=0.1,<1",
   "sdk": ">=0.1,<1",
   "python": ">=3.13",
@@ -10,7 +10,7 @@
   "entry_point": "businessos_organization:OrganizationModule",
   "dependencies": [
     {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
-    {"module_id": "foundation.identity", "version": ">=0.2,<1"}
+    {"module_id": "foundation.identity", "version": ">=0.3,<1"}
   ],
   "capabilities": [],
   "permissions": ["foundation.organization.read", "foundation.organization.manage"],

@@ -11,6 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -82,6 +83,7 @@ SUBJECT_ROLE_ASSIGNMENTS = Table(
     Column("id", PG_UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("subject_id", PG_UUID(as_uuid=True), nullable=False),
+    Column("subject_type", String(30), nullable=True),
     Column(
         "role_id",
         PG_UUID(as_uuid=True),
@@ -93,6 +95,10 @@ SUBJECT_ROLE_ASSIGNMENTS = Table(
     Column("valid_from", DateTime(timezone=True), nullable=True),
     Column("valid_to", DateTime(timezone=True), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "subject_type IS NULL OR subject_type IN ('user','service_account','device')",
+        name="ck_subject_role_principal_type",
+    ),
     schema="platform_policy",
 )
 
@@ -177,7 +183,9 @@ DELEGATIONS = Table(
     Column("id", PG_UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("delegator_id", PG_UUID(as_uuid=True), nullable=False),
+    Column("delegator_type", String(30), nullable=True),
     Column("delegatee_id", PG_UUID(as_uuid=True), nullable=False),
+    Column("delegatee_type", String(30), nullable=True),
     Column(
         "role_id",
         PG_UUID(as_uuid=True),
@@ -191,6 +199,14 @@ DELEGATIONS = Table(
     Column("is_revoked", Boolean(), nullable=False, server_default="false"),
     Column("revocation_reason", Text(), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "delegator_type IS NULL OR delegator_type IN ('user','service_account','device')",
+        name="ck_delegation_delegator_type",
+    ),
+    CheckConstraint(
+        "delegatee_type IS NULL OR delegatee_type IN ('user','service_account','device')",
+        name="ck_delegation_delegatee_type",
+    ),
     schema="platform_policy",
 )
 
@@ -277,6 +293,7 @@ class SubjectRoleAssignmentRecord(BaseModel):
     id: UUID
     tenant_id: UUID
     subject_id: UUID
+    subject_type: str | None = None
     role_id: UUID
     scope_type: ScopeType = ScopeType.TENANT
     scope_id: UUID | None = None
@@ -346,7 +363,9 @@ class DelegationGrantRecord(BaseModel):
     id: UUID
     tenant_id: UUID
     delegator_id: UUID
+    delegator_type: str | None = None
     delegatee_id: UUID
+    delegatee_type: str | None = None
     role_id: UUID
     scope_type: ScopeType = ScopeType.TENANT
     scope_id: UUID | None = None
@@ -398,6 +417,7 @@ class AssignPermissionToRole(BaseModel):
 class AssignRoleToSubject(BaseModel):
     tenant_id: UUID
     subject_id: UUID
+    subject_type: str | None = None
     role_id: UUID
     scope_type: ScopeType = ScopeType.TENANT
     scope_id: UUID | None = None
@@ -447,7 +467,9 @@ class CreateSoDRule(BaseModel):
 class CreateDelegation(BaseModel):
     tenant_id: UUID
     delegator_id: UUID
+    delegator_type: str | None = None
     delegatee_id: UUID
+    delegatee_type: str | None = None
     role_id: UUID
     scope_type: ScopeType = ScopeType.TENANT
     scope_id: UUID | None = None

@@ -23,8 +23,9 @@ from businessos.sdk import (
     UnitOfWorkFactory,
 )
 
-from .contracts import AuthenticationStrength
+from .contracts import AuthenticationStrength, PrincipalIdentity
 from .models import EXTERNAL_IDENTITIES, MEMBERSHIPS, MFA_POLICIES, OIDC_PROVIDERS, USERS
+from .principal_binding import bind_authenticated_principal, clear_authenticated_principal
 
 
 class VerifiedOIDCClaims(BaseModel):
@@ -126,6 +127,7 @@ class OIDCContextResolver:
         self._tenant_access = tenant_access
 
     async def resolve(self, identity: RequestIdentity) -> RequestContext:
+        clear_authenticated_principal()
         authorization = identity.headers.get("authorization", "")
         scheme, separator, credential = authorization.partition(" ")
         if not separator or scheme.lower() != "bearer" or not credential.strip():
@@ -143,10 +145,10 @@ class OIDCContextResolver:
             )
         )
         claims = await verifier.verify(token)
-        principal_id, _scopes, policy = await self._authority(claims, hint, provider)
+        principal_id, scopes, policy = await self._authority(claims, hint, provider)
         strength = _authentication_strength(claims)
         _enforce_policy(strength, claims.amr, policy)
-        return RequestContext(
+        context = RequestContext(
             correlation_id=identity.correlation_id,
             trace_id=identity.trace_id,
             tenant=TenantContext(
@@ -157,6 +159,17 @@ class OIDCContextResolver:
                 credential_expires_at=datetime.fromtimestamp(claims.exp, UTC),
             ),
         )
+        bind_authenticated_principal(
+            context,
+            PrincipalIdentity(
+                tenant_id=claims.businessos_tenant_id,
+                principal_id=principal_id,
+                principal_type="user",
+                authentication_strength=strength,
+                scopes=scopes,
+            ),
+        )
+        return context
 
     async def _authority(
         self,

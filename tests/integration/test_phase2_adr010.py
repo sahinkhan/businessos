@@ -95,7 +95,7 @@ async def test_policy_authority_is_target_aware_and_rejects_partial_actions(
     await app.startup()
     tenant_id, grantor_id, recipient_id = uuid4(), uuid4(), uuid4()
     group_id, legal_id, company_a, company_b = uuid4(), uuid4(), uuid4(), uuid4()
-    _seed_tenant(postgres_database.migration_url, tenant_id, "adr010-authority")
+    _seed_tenant(postgres_database.migration_url, tenant_id, "adr010-authority", status="active")
     context = _context(tenant_id, grantor_id)
     try:
         for principal_id in (grantor_id, recipient_id):
@@ -192,6 +192,7 @@ async def test_policy_authority_is_target_aware_and_rejects_partial_actions(
             AssignRoleToSubjectCommand(
                 tenant_id=tenant_id,
                 subject_id=grantor_id,
+                subject_type="user",
                 role_id=role_id,
                 scope_type=ScopeType.COMPANY,
                 scope_id=company_a,
@@ -333,7 +334,9 @@ async def test_policy_authority_is_target_aware_and_rejects_partial_actions(
                 CreateDelegationCommand(
                     tenant_id=tenant_id,
                     delegator_id=grantor_id,
+                    delegator_type="user",
                     delegatee_id=recipient_id,
+                    delegatee_type="user",
                     role_id=role_id,
                     scope_type=ScopeType.COMPANY,
                     scope_id=company_a,
@@ -437,4 +440,6 @@ async def test_policy_authority_is_target_aware_and_rejects_partial_actions(
         assert unavailable.value.code == "configuration_error"
     finally:
         await app.shutdown()
-        app.runtime.migrations.downgrade(postgres_database.migration_url)
+        # This scenario writes typed authority and delegation provenance; the
+        # forward migrations correctly block a lossy downgrade. The disposable
+        # database fixture removes the database after the test.

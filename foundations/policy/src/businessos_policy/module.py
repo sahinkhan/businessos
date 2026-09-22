@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from importlib.resources import files
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from businessos_organization import DELEGATION_ACTION_AUTHORITY
@@ -97,6 +97,7 @@ class AssignPermissionToRoleCommand(Command):
 class AssignRoleToSubjectCommand(Command):
     tenant_id: UUID
     subject_id: UUID
+    subject_type: Literal["user", "service_account", "device"] | None = None
     role_id: UUID
     scope_type: ScopeType = ScopeType.TENANT
     scope_id: UUID | None = None
@@ -146,7 +147,9 @@ class CreateSoDRuleCommand(Command):
 class CreateDelegationCommand(Command):
     tenant_id: UUID
     delegator_id: UUID
+    delegator_type: Literal["user", "service_account", "device"] | None = None
     delegatee_id: UUID
+    delegatee_type: Literal["user", "service_account", "device"] | None = None
     role_id: UUID
     scope_type: ScopeType = ScopeType.TENANT
     scope_id: UUID | None = None
@@ -451,6 +454,7 @@ class PolicyModule:
             )
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == cmd.tenant_id)
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == cmd.subject_id)
+            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_type == cmd.subject_type)
         )
         new_permission_rows = await ctx.unit_of_work.persistence.execute(
             select(ROLE_PERMISSIONS.c.permission_code)
@@ -483,6 +487,7 @@ class PolicyModule:
             id=assignment_id,
             tenant_id=cmd.tenant_id,
             subject_id=cmd.subject_id,
+            subject_type=cmd.subject_type,
             role_id=cmd.role_id,
             scope_type=cmd.scope_type.value,
             scope_id=cmd.scope_id,
@@ -495,6 +500,7 @@ class PolicyModule:
             id=assignment_id,
             tenant_id=cmd.tenant_id,
             subject_id=cmd.subject_id,
+            subject_type=cmd.subject_type,
             role_id=cmd.role_id,
             scope_type=cmd.scope_type,
             scope_id=cmd.scope_id,
@@ -657,6 +663,7 @@ class PolicyModule:
             select(SUBJECT_ROLE_ASSIGNMENTS.c.id)
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == cmd.tenant_id)
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == cmd.delegator_id)
+            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_type == cmd.delegator_type)
             .where(SUBJECT_ROLE_ASSIGNMENTS.c.role_id == cmd.role_id)
         )
         if authority.first() is None:
@@ -671,7 +678,9 @@ class PolicyModule:
             id=del_id,
             tenant_id=cmd.tenant_id,
             delegator_id=cmd.delegator_id,
+            delegator_type=cmd.delegator_type,
             delegatee_id=cmd.delegatee_id,
+            delegatee_type=cmd.delegatee_type,
             role_id=cmd.role_id,
             scope_type=cmd.scope_type.value,
             scope_id=cmd.scope_id,
@@ -685,7 +694,9 @@ class PolicyModule:
             id=del_id,
             tenant_id=cmd.tenant_id,
             delegator_id=cmd.delegator_id,
+            delegator_type=cmd.delegator_type,
             delegatee_id=cmd.delegatee_id,
+            delegatee_type=cmd.delegatee_type,
             role_id=cmd.role_id,
             scope_type=cmd.scope_type,
             scope_id=cmd.scope_id,

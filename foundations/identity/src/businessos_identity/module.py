@@ -24,7 +24,9 @@ from businessos.sdk import (
     TenantContext,
 )
 
+from .authority import DatabaseMembershipAuthority
 from .contracts import (
+    MEMBERSHIP_AUTHORITY,
     AuthenticationSessionRecord,
     AuthenticationStrength,
     IdentityContract,
@@ -41,6 +43,7 @@ from .models import (
     SERVICE_ACCOUNTS,
     USERS,
 )
+from .principal_binding import AUTHENTICATED_PRINCIPAL, current_authenticated_principal
 
 
 class CreateUser(Command):
@@ -175,6 +178,10 @@ class IdentityModule:
         self.manifest = ModuleManifest.model_validate(data)
 
     async def register(self, registration: ModuleRegistration) -> None:
+        registration.dependency(MEMBERSHIP_AUTHORITY, lambda _: DatabaseMembershipAuthority())
+        registration.dependency(
+            AUTHENTICATED_PRINCIPAL, lambda _: current_authenticated_principal()
+        )
         for key, description in (
             ("foundation.identity.read", "Read tenant identity and membership"),
             ("foundation.identity.manage", "Manage tenant principals and federation"),

@@ -43,6 +43,7 @@ from businessos_organization import (
     CreateWarehouse,
     CreateWarehouseLocation,
     DelegateScope,
+    DelegationActionDecision,
     FinancialDimensionType,
     OrganizationModule,
     OrganizationScopeType,
@@ -120,6 +121,11 @@ class _ScopeTestAuthority:
     async def allows(self, request: object, persistence: TransactionalPersistence) -> bool:
         return True
 
+    async def evaluate(
+        self, request: object, persistence: TransactionalPersistence
+    ) -> DelegationActionDecision:
+        return DelegationActionDecision(True, "test.scope-authority")
+
 
 class _ScopeTestAuthorityModule:
     manifest = ModuleManifest(
@@ -166,34 +172,57 @@ def _context(tenant_id: UUID, principal_id: UUID | None = None) -> RequestContex
     )
 
 
+def _bind_test_principal(context: RequestContext, principal_type: str = "user") -> None:
+    from businessos_identity import PrincipalIdentity
+    from businessos_identity.principal_binding import bind_authenticated_principal
+
+    if context.tenant is None:
+        return
+    bind_authenticated_principal(
+        context,
+        PrincipalIdentity(
+            tenant_id=context.tenant.tenant_id,
+            principal_id=context.tenant.principal_id,
+            principal_type=principal_type,
+            authentication_strength="mfa",
+        ),
+    )
+
+
 def _raw(url: str) -> str:
     return url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
-def _seed_tenant(url: str, tenant_id: UUID, slug: str) -> None:
+def _seed_tenant(url: str, tenant_id: UUID, slug: str, *, status: str = "requested") -> None:
     with psycopg.connect(_raw(url)) as connection:
         connection.execute(
             "INSERT INTO platform_tenant.tenants "
             "(id, tenant_id, slug, name, status, deployment_mode, region) "
-            "VALUES (%s, %s, %s, %s, 'requested', 'shared_schema', 'global')",
-            (tenant_id, tenant_id, slug, slug.title()),
+            "VALUES (%s, %s, %s, %s, %s, 'shared_schema', 'global')",
+            (tenant_id, tenant_id, slug, slug.title(), status),
         )
         connection.execute(
             "INSERT INTO platform_tenant.tenant_status_history "
-            "(id, tenant_id, to_status, reason) VALUES (%s, %s, 'requested', 'test seed')",
-            (uuid4(), tenant_id),
+            "(id, tenant_id, to_status, reason) VALUES (%s, %s, %s, 'test seed')",
+            (uuid4(), tenant_id, status),
         )
         connection.commit()
 
 
-async def _dispatch(app: Any, message: object, context: RequestContext) -> object:
+async def _dispatch(
+    app: Any, message: object, context: RequestContext, *, principal_type: str = "user"
+) -> object:
     assert app.runtime is not None
+    _bind_test_principal(context, principal_type)
     async with app.container.request_scope() as dependencies:
         return await app.runtime.messages.command(message, context, dependencies)
 
 
-async def _query(app: Any, message: object, context: RequestContext) -> object:
+async def _query(
+    app: Any, message: object, context: RequestContext, *, principal_type: str = "user"
+) -> object:
     assert app.runtime is not None
+    _bind_test_principal(context, principal_type)
     async with app.container.request_scope() as dependencies:
         return await app.runtime.messages.query(message, context, dependencies)
 
@@ -426,6 +455,27 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
             principal_id=admin_id,
             principal_type="user",
             scopes=({"type": "tenant", "id": str(tenant_id)},),
+        ),
+        context,
+    )
+    delegate_id = uuid4()
+    delegate_context = _context(tenant_id, delegate_id)
+    await _dispatch(
+        app,
+        CreateUser(
+            user_id=delegate_id,
+            tenant_id=tenant_id,
+            email="delegate@example.test",
+            display_name="Regional Delegate",
+        ),
+        context,
+    )
+    await _dispatch(
+        app,
+        GrantMembership(
+            tenant_id=tenant_id,
+            principal_id=delegate_id,
+            principal_type="user",
         ),
         context,
     )
@@ -887,7 +937,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
             app,
             DelegateScope(
                 tenant_id=tenant_id,
-                recipient_principal_id=admin_id,
+                recipient_principal_id=delegate_id,
                 scope_type=OrganizationScopeType.OPERATING_SITE,
                 scope_id=site_id,
                 allowed_actions=("organization.read",),
@@ -903,7 +953,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         DelegateScope(
             id=delegation_id,
             tenant_id=tenant_id,
-            recipient_principal_id=admin_id,
+            recipient_principal_id=delegate_id,
             scope_type=OrganizationScopeType.OPERATING_SITE,
             scope_id=site_id,
             allowed_actions=("organization.read",),
@@ -918,7 +968,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         DelegateScope(
             id=group_delegation_id,
             tenant_id=tenant_id,
-            recipient_principal_id=admin_id,
+            recipient_principal_id=delegate_id,
             scope_type=OrganizationScopeType.ENTERPRISE_GROUP,
             scope_id=group_id,
             allowed_actions=("organization.read",),
@@ -973,7 +1023,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
             warehouse_id=warehouse_id,
             delegation_id=delegation_id,
         ),
-        context,
+        delegate_context,
     )
     with pytest.raises(BusinessOSError) as delegation_action_escape:
         await _dispatch(
@@ -984,7 +1034,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
                 delegation_id=delegation_id,
                 action="organization.manage",
             ),
-            context,
+            delegate_context,
         )
     assert delegation_action_escape.value.code == "forbidden"
     with pytest.raises(BusinessOSError) as narrow_delegation_broader_context:
@@ -996,7 +1046,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
                 operating_site_id=site_id,
                 delegation_id=delegation_id,
             ),
-            context,
+            delegate_context,
         )
     assert narrow_delegation_broader_context.value.code == "forbidden"
     for principal_id, principal_type in (
@@ -1011,6 +1061,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
                 company_id=company_us_id,
             ),
             _context(tenant_id, principal_id),
+            principal_type=principal_type,
         )
         assert isinstance(principal_selection, TenantContext)
         assert principal_selection.active_company_id == company_us_id
@@ -1196,7 +1247,7 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
                 company_id=other_company_id,
                 delegation_id=group_delegation_id,
             ),
-            context,
+            delegate_context,
         )
     assert delegation_escape.value.code == "forbidden"
     with pytest.raises(BusinessOSError) as unrelated_org_unit:
@@ -1431,6 +1482,12 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
         )
     )
     assert restored.tenant is not None
+    from businessos_identity.principal_binding import current_authenticated_principal
+
+    bound = current_authenticated_principal()
+    assert bound.request is restored
+    assert bound.principal.principal_type == "user"
+    assert bound.principal.principal_id == restored.tenant.principal_id
     await _dispatch(
         app,
         TransitionTenant(tenant_id=tenant_id, target=TenantStatus.SUSPENDED),
@@ -1465,9 +1522,13 @@ async def test_multinational_tenant_identity_and_organization_exit_criterion(
     } <= event_types
 
     await app.shutdown()
-    # The exit-criterion fixture includes typed service/device grants. Downgrade
-    # correctly refuses to erase them, so clear this disposable fixture explicitly.
+    # The disposable fixture includes verified delegations and typed nonhuman
+    # assignments. Both migrations correctly refuse to erase those records.
     with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "DELETE FROM platform_org.delegated_scopes WHERE tenant_id = %s",
+            (tenant_id,),
+        )
         connection.execute(
             "DELETE FROM platform_org.assignments WHERE tenant_id = %s "
             "AND principal_type <> 'user'",
@@ -1601,7 +1662,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
     app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
     assert app.runtime is not None
     plan = app.runtime.migrations.plan()
-    assert set(plan.heads) == {"organization_0002", "identity_0003", "tenant_0002"}
+    assert set(plan.heads) == {"organization_0003", "identity_0003", "tenant_0002"}
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     tenant_id = uuid4()
     _seed_tenant(postgres_database.migration_url, tenant_id, "constraint-tenant")
@@ -1635,7 +1696,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
                 "SELECT module_id FROM platform_module.installed_module_migrations"
             )
         }
-    assert heads == {"organization_0002", "identity_0003", "tenant_0002"}
+    assert heads == {"organization_0003", "identity_0003", "tenant_0002"}
     assert inventory == {
         "foundation.tenant",
         "foundation.identity",
@@ -1747,7 +1808,7 @@ def test_identity_migration_rejects_existing_cross_tenant_device_principal(
             "FROM platform_identity.devices WHERE id = %s",
             (device_id,),
         ).fetchone()
-    assert heads == {"organization_0002", "identity_0003", "tenant_0002"}
+    assert heads == {"organization_0003", "identity_0003", "tenant_0002"}
     assert migrated_device == (principal_tenant_id, principal_id, "user")
     migrations.downgrade(postgres_database.migration_url)
 
@@ -2301,6 +2362,12 @@ async def test_organization_grants_validate_lineage_typed_identity_and_uniquenes
             context,
         )
     assert inactive_delegation.value.code == "inactive_organization_scope"
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "UPDATE platform_org.enterprise_groups SET active = true WHERE id = %s",
+            (group_id,),
+        )
+        connection.commit()
 
     await _dispatch(
         app,
@@ -2321,12 +2388,12 @@ async def test_organization_grants_validate_lineage_typed_identity_and_uniquenes
         ),
         context,
     )
-    with pytest.raises(BusinessOSError) as ambiguous_grantor:
+    with pytest.raises(BusinessOSError) as mismatched_grantor:
         await _dispatch(
             app,
             DelegateScope(
                 tenant_id=tenant_id,
-                grantor_principal_type="user",
+                grantor_principal_type="service_account",
                 recipient_principal_id=principal_id,
                 recipient_principal_type="user",
                 scope_type=OrganizationScopeType.ENTERPRISE_GROUP,
@@ -2334,13 +2401,25 @@ async def test_organization_grants_validate_lineage_typed_identity_and_uniquenes
                 allowed_actions=("read",),
                 valid_from=valid_from,
                 valid_until=valid_from + timedelta(hours=1),
-                reason="ambiguous grantor",
+                reason="caller cannot substitute grantor type",
             ),
             context,
         )
-    assert ambiguous_grantor.value.code == "forbidden"
+    assert mismatched_grantor.value.code == "forbidden"
 
     await app.shutdown()
+    with pytest.raises(RuntimeError, match="Provenance-bearing grants"):
+        app.runtime.migrations.downgrade(postgres_database.migration_url)
+    with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM platform_org.delegated_scopes WHERE tenant_id = %s",
+            (tenant_id,),
+        ).fetchone() == (1,)
+        connection.execute(
+            "DELETE FROM platform_org.delegated_scopes WHERE tenant_id = %s",
+            (tenant_id,),
+        )
+        connection.commit()
     with pytest.raises(IntegrityError, match="downgrade has non-user assignment"):
         app.runtime.migrations.downgrade(postgres_database.migration_url)
     with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
@@ -2353,11 +2432,6 @@ async def test_organization_grants_validate_lineage_typed_identity_and_uniquenes
             "SELECT 1 FROM information_schema.columns WHERE table_schema = 'platform_org' "
             "AND table_name = 'assignments' AND column_name = 'principal_type'"
         ).fetchone() == (1,)
-        connection.execute(
-            "DELETE FROM platform_org.delegated_scopes WHERE tenant_id = %s "
-            "AND (recipient_principal_type <> 'user' OR grantor_principal_type <> 'user')",
-            (tenant_id,),
-        )
         connection.execute(
             "DELETE FROM platform_org.assignments WHERE tenant_id = %s "
             "AND principal_type <> 'user'",

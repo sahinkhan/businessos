@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "businessos-foundation-organization"
-version = "0.2.0"
+version = "0.3.0"
 description = "BusinessOS multinational organization foundation module"
 requires-python = ">=3.13"
 dependencies = [
   "businessos>=0.1,<1",
   "businessos-foundation-tenant>=0.2,<1",
-  "businessos-foundation-identity>=0.2,<1",
+  "businessos-foundation-identity>=0.3,<1",
   "pydantic>=2.10,<3",
   "sqlalchemy>=2.0.36,<3",
 ]

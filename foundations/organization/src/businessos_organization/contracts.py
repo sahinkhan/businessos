@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -49,6 +49,13 @@ class DelegationAuthorityRequest:
     evaluated_at: datetime
     valid_from: datetime
     valid_until: datetime
+    grantor_principal_type: Literal["user", "service_account", "device"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DelegationActionDecision:
+    allowed: bool
+    policy_reference: str | None = None
 
 
 class DelegationActionAuthority(Protocol):
@@ -59,6 +66,15 @@ class DelegationActionAuthority(Protocol):
     async def allows(
         self, request: DelegationAuthorityRequest, persistence: TransactionalPersistence
     ) -> bool: ...
+
+
+@runtime_checkable
+class DelegationDecisionAuthority(DelegationActionAuthority, Protocol):
+    """ADR-011's additive, provenance-bearing Policy decision capability."""
+
+    async def evaluate(
+        self, request: DelegationAuthorityRequest, persistence: TransactionalPersistence
+    ) -> DelegationActionDecision: ...
 
 
 DELEGATION_ACTION_AUTHORITY = DependencyKey[DelegationActionAuthority](
@@ -190,6 +206,13 @@ class DelegatedScopeRecord(BaseModel):
     valid_from: datetime
     valid_until: datetime
     reason: str
+    authority_source_kind: Literal["direct", "delegation"] | None = None
+    parent_delegation_id: UUID | None = None
+    revoked_at: datetime | None = None
+    revoked_by_principal_id: UUID | None = None
+    revoked_by_principal_type: Literal["user", "service_account", "device"] | None = None
+    revocation_reason: str | None = None
+    revocation_correlation_id: str | None = None
 
 
 class OrganizationSnapshot(BaseModel):
@@ -213,7 +236,7 @@ class OrganizationSnapshot(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class OrganizationContract:
-    version: str = "1.2"
+    version: str = "1.3"
     read_query: str = "businessos_organization.ReadOrganization"
     active_scope_command: str = "businessos_organization.SelectActiveScope"
     assignment_command: str = "businessos_organization.AssignPrincipal"

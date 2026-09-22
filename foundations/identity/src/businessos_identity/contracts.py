@@ -3,10 +3,39 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+from businessos.sdk import DependencyKey, TransactionalPersistence
+
+type PrincipalType = Literal["user", "service_account", "device"]
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class PrincipalReference:
+    principal_type: PrincipalType
+    principal_id: UUID
+
+
+class MembershipAuthority(Protocol):
+    """Validate and lock typed memberships in the caller's transaction."""
+
+    async def lock_many(
+        self,
+        persistence: TransactionalPersistence,
+        tenant_id: UUID,
+        principals: tuple[PrincipalReference, ...],
+        evaluated_at: datetime,
+        valid_from: datetime,
+        valid_until: datetime,
+    ) -> tuple["MembershipRecord", ...]: ...
+
+
+MEMBERSHIP_AUTHORITY = DependencyKey[MembershipAuthority](
+    "businessos.identity.membership_authority"
+)
 
 
 class MembershipStatus(StrEnum):
@@ -101,7 +130,7 @@ class ActiveScopeSelection(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class IdentityContract:
-    version: str = "1.1"
+    version: str = "1.2"
     membership_query: str = "businessos_identity.GetMembership"
     active_scope_contract: str = "businessos_identity.ActiveScopeSelection"
     oidc_resolver: str = "businessos_identity.OIDCContextResolver"

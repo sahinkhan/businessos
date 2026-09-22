@@ -8,7 +8,11 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 from uuid import UUID
 
-from businessos_organization import DelegationAuthorityRequest, OrganizationScopeType
+from businessos_organization import (
+    DelegationActionDecision,
+    DelegationAuthorityRequest,
+    OrganizationScopeType,
+)
 from sqlalchemy import select, text
 
 from businessos.sdk import TransactionalPersistence
@@ -76,10 +80,16 @@ class PolicyDelegationActionAuthority:
     async def allows(
         self, request: DelegationAuthorityRequest, persistence: TransactionalPersistence
     ) -> bool:
+        return (await self.evaluate(request, persistence)).allowed
+
+    async def evaluate(
+        self, request: DelegationAuthorityRequest, persistence: TransactionalPersistence
+    ) -> DelegationActionDecision:
         if (
             type(request.tenant_id) is not UUID
             or request.tenant_id.int == 0
             or type(request.grantor_principal_id) is not UUID
+            or request.grantor_principal_type not in {"user", "service_account", "device"}
             or request.grantor_principal_id.int == 0
             or request.evaluated_at.tzinfo is None
             or request.valid_from.tzinfo is None
@@ -87,11 +97,11 @@ class PolicyDelegationActionAuthority:
             or request.valid_until <= request.valid_from
             or request.valid_until <= request.evaluated_at
         ):
-            return False
+            return DelegationActionDecision(False)
         resource = self._resources.get(request.action)
         scope = _TARGET_TYPES.get(request.scope_type)
         if resource is None or scope is None or request.scope_id.int == 0:
-            return False
+            return DelegationActionDecision(False)
 
         # Reacquiring the same xact lock is safe and proves the decision reads
         # cannot precede serialization, including calls by other consumers.
@@ -107,6 +117,7 @@ class PolicyDelegationActionAuthority:
             select(SUBJECT_ROLE_ASSIGNMENTS).where(
                 SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == request.tenant_id,
                 SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == request.grantor_principal_id,
+                SUBJECT_ROLE_ASSIGNMENTS.c.subject_type == request.grantor_principal_type,
             )
         )
         assignments = [
@@ -124,6 +135,8 @@ class PolicyDelegationActionAuthority:
             select(DELEGATIONS).where(
                 DELEGATIONS.c.tenant_id == request.tenant_id,
                 DELEGATIONS.c.delegatee_id == request.grantor_principal_id,
+                DELEGATIONS.c.delegatee_type == request.grantor_principal_type,
+                DELEGATIONS.c.delegator_type.is_not(None),
                 DELEGATIONS.c.is_revoked.is_(False),
             )
         )
@@ -151,7 +164,7 @@ class PolicyDelegationActionAuthority:
             record_scope_id=request.scope_id,
             timestamp=first.astimezone(UTC),
         )
-        return self._evaluator.authorize(
+        decision = self._evaluator.authorize(
             request.action,
             resource,
             context,
@@ -160,7 +173,8 @@ class PolicyDelegationActionAuthority:
             assignments,
             delegations,
             policies,
-        ).allowed
+        )
+        return DelegationActionDecision(decision.allowed, decision.matched_policy)
 
 
 def _covers(start: datetime | None, end: datetime | None, first: datetime, last: datetime) -> bool:

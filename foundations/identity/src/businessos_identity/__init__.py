@@ -1,15 +1,19 @@
 """BusinessOS identity foundation public surface."""
 
-from .authority import lock_membership_for_authority
+from .authority import DatabaseMembershipAuthority, lock_membership_for_authority
 from .contracts import (
+    MEMBERSHIP_AUTHORITY,
     ActiveScopeSelection,
     AuthenticationSessionRecord,
     AuthenticationStrength,
     BreakGlassCredentialValidator,
     IdentityContract,
+    MembershipAuthority,
     MembershipRecord,
     MembershipStatus,
     PrincipalIdentity,
+    PrincipalReference,
+    PrincipalType,
     SAMLAssertionValidator,
 )
 from .module import (
@@ -40,9 +44,13 @@ from .oidc import (
     SigningKeyResolver,
     VerifiedOIDCClaims,
 )
+from .principal_binding import AUTHENTICATED_PRINCIPAL, AuthenticatedPrincipalBinding
 
 __all__ = [
+    "AUTHENTICATED_PRINCIPAL",
+    "MEMBERSHIP_AUTHORITY",
     "ActiveScopeSelection",
+    "AuthenticatedPrincipalBinding",
     "AuthenticationSessionRecord",
     "AuthenticationSessionRevoked",
     "AuthenticationSessionStarted",
@@ -50,12 +58,14 @@ __all__ = [
     "BreakGlassCredentialValidator",
     "ConfigureOIDCProvider",
     "CreateUser",
+    "DatabaseMembershipAuthority",
     "GetAuthenticationSession",
     "GetMembership",
     "GrantMembership",
     "IdentityContract",
     "IdentityModule",
     "MapExternalIdentity",
+    "MembershipAuthority",
     "MembershipGranted",
     "MembershipRecord",
     "MembershipRevoked",
@@ -64,6 +74,8 @@ __all__ = [
     "OIDCContextResolver",
     "OIDCTokenVerifier",
     "PrincipalIdentity",
+    "PrincipalReference",
+    "PrincipalType",
     "RegisterDevice",
     "RegisterServiceAccount",
     "RemoteJWKSetResolver",

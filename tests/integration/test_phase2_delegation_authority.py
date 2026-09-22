@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-import businessos_organization.module as organization_module
+import businessos_identity.authority as identity_authority
 import pytest
 from businessos_identity import (
     CreateUser,
@@ -54,7 +54,9 @@ async def _setup(
     await app.startup()
     tenant_id, grantor_id, recipient_id = uuid4(), uuid4(), uuid4()
     group_id, legal_id, company_a, company_b = uuid4(), uuid4(), uuid4(), uuid4()
-    _seed_tenant(postgres_database.migration_url, tenant_id, "delegation-authority")
+    _seed_tenant(
+        postgres_database.migration_url, tenant_id, "delegation-authority", status="active"
+    )
     context = _context(tenant_id, grantor_id)
     for principal_id, email in (
         (grantor_id, "grantor@example.test"),
@@ -238,7 +240,9 @@ async def test_delegation_rejects_scope_period_membership_and_action_escalation(
         assert widened_error.value.code == "forbidden"
 
         other_tenant, other_group, other_legal, other_company = (uuid4(), uuid4(), uuid4(), uuid4())
-        _seed_tenant(postgres_database.migration_url, other_tenant, "other-delegation")
+        _seed_tenant(
+            postgres_database.migration_url, other_tenant, "other-delegation", status="active"
+        )
         other_context = _context(other_tenant)
         await _dispatch(
             app,
@@ -282,7 +286,7 @@ async def test_delegation_rejects_scope_period_membership_and_action_escalation(
         )
         with pytest.raises(BusinessOSError) as inactive_recipient:
             await _dispatch(app, _delegate(tenant_id, recipient_id, company_a), context)
-        assert inactive_recipient.value.code == "inactive_membership"
+        assert inactive_recipient.value.code == "forbidden"
         await _dispatch(
             app,
             RevokeMembership(tenant_id=tenant_id, principal_id=grantor_id, principal_type="user"),
@@ -296,7 +300,8 @@ async def test_delegation_rejects_scope_period_membership_and_action_escalation(
             )
     finally:
         await app.shutdown()
-        app.runtime.migrations.downgrade(postgres_database.migration_url)
+        # Typed authority/provenance prevents a lossy downgrade; the fixture
+        # drops this isolated database after the test.
 
 
 @pytest.mark.integration
@@ -335,7 +340,7 @@ async def test_concurrent_revocation_invalidates_stored_delegation(
                 await release.wait()
             return result
 
-        monkeypatch.setattr(organization_module, "lock_membership_for_authority", paused_lock)
+        monkeypatch.setattr(identity_authority, "lock_membership_for_authority", paused_lock)
         creation = asyncio.create_task(
             _dispatch(app, _delegate(tenant_id, recipient_id, company_a), context)
         )
@@ -367,4 +372,5 @@ async def test_concurrent_revocation_invalidates_stored_delegation(
         assert rejected.value.code == "forbidden"
     finally:
         await app.shutdown()
-        app.runtime.migrations.downgrade(postgres_database.migration_url)
+        # Typed authority/provenance prevents a lossy downgrade; the fixture
+        # drops this isolated database after the test.

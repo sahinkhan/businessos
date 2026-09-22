@@ -4,6 +4,7 @@ Callers in another foundation can lock authority without reading Identity's
 private table themselves or opening a second Unit of Work.
 """
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -11,7 +12,7 @@ from sqlalchemy import select
 
 from businessos.sdk import BusinessOSError, TransactionalPersistence
 
-from .contracts import MembershipRecord
+from .contracts import MembershipRecord, PrincipalReference
 from .models import MEMBERSHIPS
 
 
@@ -44,3 +45,39 @@ async def lock_membership_for_authority(
         valid_until=row["valid_until"],
         scopes=tuple(row["scopes"]),
     )
+
+
+class DatabaseMembershipAuthority:
+    """Identity's bounded same-transaction membership authority port."""
+
+    async def lock_many(
+        self,
+        persistence: TransactionalPersistence,
+        tenant_id: UUID,
+        principals: tuple[PrincipalReference, ...],
+        evaluated_at: datetime,
+        valid_from: datetime,
+        valid_until: datetime,
+    ) -> tuple[MembershipRecord, ...]:
+        if valid_until <= valid_from or evaluated_at.tzinfo is None:
+            raise BusinessOSError("forbidden", "Invalid authority interval", status_code=403)
+        records: list[MembershipRecord] = []
+        for principal in sorted(set(principals)):
+            try:
+                record = await lock_membership_for_authority(
+                    persistence, tenant_id, principal.principal_id, principal.principal_type
+                )
+            except BusinessOSError as error:
+                if error.code == "not_found":
+                    raise BusinessOSError(
+                        "forbidden", "Active membership required", status_code=403
+                    ) from None
+                raise
+            if (
+                not record.is_effective(evaluated_at)
+                or (record.valid_from is not None and record.valid_from > valid_from)
+                or (record.valid_until is not None and record.valid_until < valid_until)
+            ):
+                raise BusinessOSError("forbidden", "Active membership required", status_code=403)
+            records.append(record)
+        return tuple(records)

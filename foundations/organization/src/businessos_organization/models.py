@@ -6,6 +6,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    ForeignKeyConstraint,
     MetaData,
     String,
     Table,
@@ -215,7 +216,26 @@ DELEGATED_SCOPES = Table(
     Column("valid_from", DateTime(timezone=True), nullable=False),
     Column("valid_until", DateTime(timezone=True), nullable=False),
     Column("reason", Text(), nullable=False),
+    Column("authority_source_kind", String(20)),
+    Column("parent_delegation_id", UUID(as_uuid=True)),
+    Column("revoked_at", DateTime(timezone=True)),
+    Column("revoked_by_principal_id", UUID(as_uuid=True)),
+    Column("revoked_by_principal_type", String(30)),
+    Column("revocation_reason", Text()),
+    Column("revocation_correlation_id", String(200)),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     CheckConstraint("valid_until > valid_from", name="delegated_scope_dates"),
+    CheckConstraint(
+        "authority_source_kind IS NULL OR "
+        "(authority_source_kind = 'direct' AND parent_delegation_id IS NULL) OR "
+        "(authority_source_kind = 'delegation' AND parent_delegation_id IS NOT NULL)",
+        name="delegated_scope_source",
+    ),
+    UniqueConstraint("tenant_id", "id", name="delegated_scope_tenant_id"),
+    ForeignKeyConstraint(
+        ["tenant_id", "parent_delegation_id"],
+        ["platform_org.delegated_scopes.tenant_id", "platform_org.delegated_scopes.id"],
+        name="delegated_scope_parent_tenant",
+    ),
     schema="platform_org",
 )

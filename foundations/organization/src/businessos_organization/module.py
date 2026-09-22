@@ -7,15 +7,27 @@ from importlib.resources import files
 from typing import ClassVar, Literal, cast
 from uuid import UUID, uuid4
 
-from businessos_identity import GetMembership, MembershipRecord, lock_membership_for_authority
-from businessos_tenant import effective_at, validate_effective_period
+from businessos_identity import (
+    AUTHENTICATED_PRINCIPAL,
+    MEMBERSHIP_AUTHORITY,
+    GetMembership,
+    MembershipRecord,
+    PrincipalReference,
+    PrincipalType,
+)
+from businessos_tenant import (
+    DatabaseTenantAccessValidator,
+    effective_at,
+    validate_effective_period,
+)
 from pydantic import Field
-from sqlalchemy import insert, select
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.sql.schema import Table
 
 from businessos.sdk import (
     MESSAGE_DISPATCHER,
+    UNIT_OF_WORK_FACTORY,
     BusinessOSError,
     Command,
     DomainEvent,
@@ -33,6 +45,7 @@ from .contracts import (
     CompanyRecord,
     DelegatedScopeRecord,
     DelegationAuthorityRequest,
+    DelegationDecisionAuthority,
     EffectiveAssignment,
     EnterpriseGroupRecord,
     FinancialDimensionRecord,
@@ -157,6 +170,12 @@ class AssignPrincipal(Command):
     valid_until: datetime | None = None
 
 
+class RevokePrincipalAssignment(Command):
+    tenant_id: UUID
+    assignment_id: UUID
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class DelegateScope(Command):
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
@@ -168,6 +187,12 @@ class DelegateScope(Command):
     allowed_actions: tuple[str, ...]
     valid_from: datetime
     valid_until: datetime
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class RevokeOrganizationDelegation(Command):
+    tenant_id: UUID
+    delegation_id: UUID
     reason: str = Field(min_length=1, max_length=1000)
 
 
@@ -216,6 +241,42 @@ class ActiveScopeSelected(DomainEvent):
     principal_type: str
     previous_scope: dict[str, str | None]
     selected_scope: dict[str, str | None]
+    action: str | None = None
+    authority_path: tuple[UUID, ...] = ()
+    root_assignment_ids: tuple[UUID, ...] = ()
+    policy_decision_references: tuple[str, ...] = ()
+
+
+class OrganizationDelegationRevoked(DomainEvent):
+    event_type: ClassVar[str] = "organization.delegation.revoked.v1"
+    delegation_id: UUID
+    actor_principal_id: UUID
+    actor_principal_type: str
+    reason: str
+
+
+class OrganizationDelegationGranted(DomainEvent):
+    event_type: ClassVar[str] = "organization.delegation.granted.v1"
+    delegation_id: UUID
+    actor_principal_id: UUID
+    actor_principal_type: str
+    root_principal_id: UUID
+    root_principal_type: str
+    root_assignment_id: UUID
+    parent_delegation_id: UUID | None
+    source_path: tuple[UUID, ...]
+    scope_type: str
+    scope_id: UUID
+    actions: tuple[str, ...]
+    policy_decision_references: tuple[str, ...]
+
+
+class PrincipalAssignmentRevoked(DomainEvent):
+    event_type: ClassVar[str] = "organization.assignment.revoked.v1"
+    assignment_id: UUID
+    actor_principal_id: UUID
+    actor_principal_type: str
+    reason: str
 
 
 _SCOPE_TABLES = {
@@ -297,7 +358,17 @@ class OrganizationModule:
             AssignPrincipal, self._assignment, permission="foundation.organization.manage"
         )
         registration.command(
+            RevokePrincipalAssignment,
+            self._revoke_assignment,
+            permission="foundation.organization.manage",
+        )
+        registration.command(
             DelegateScope, self._delegation, permission="foundation.organization.manage"
+        )
+        registration.command(
+            RevokeOrganizationDelegation,
+            self._revoke_delegation,
+            permission="foundation.organization.manage",
         )
         registration.query(ReadOrganization, self._read, permission="foundation.organization.read")
         registration.command(
@@ -517,34 +588,62 @@ class OrganizationModule:
         )
         return {"assignment_id": command.id}
 
+    async def _revoke_assignment(
+        self, command: RevokePrincipalAssignment, context: HandlingContext
+    ) -> object:
+        tenant = _tenant(context.request, command.tenant_id)
+        actor = await _trusted_principal(context, tenant)
+        authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+        await authority.acquire(tenant.tenant_id, context.unit_of_work.persistence)
+        await _verify_active_tenant(context, tenant)
+        result = await context.unit_of_work.persistence.execute(
+            delete(ASSIGNMENTS)
+            .where(
+                ASSIGNMENTS.c.tenant_id == tenant.tenant_id,
+                ASSIGNMENTS.c.id == command.assignment_id,
+            )
+            .returning(ASSIGNMENTS.c.id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise BusinessOSError("not_found", "Assignment not found", status_code=404)
+        await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+        context.emit(
+            PrincipalAssignmentRevoked(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                assignment_id=command.assignment_id,
+                actor_principal_id=actor.principal_id,
+                actor_principal_type=actor.principal_type,
+                reason=command.reason,
+            )
+        )
+        return {"assignment_id": command.assignment_id, "revoked": True}
+
     async def _delegation(self, command: DelegateScope, context: HandlingContext) -> object:
         tenant = _tenant(context.request, command.tenant_id)
+        actor = await _trusted_principal(context, tenant)
+        if actor.principal_type != command.grantor_principal_type:
+            raise BusinessOSError("forbidden", "Caller principal type mismatch", status_code=403)
         validate_effective_period(command.valid_from, command.valid_until)
-        if not command.allowed_actions:
-            raise BusinessOSError(
-                "invalid_delegation", "Delegation actions are required", status_code=422
-            )
         now = datetime.now(UTC)
         if command.valid_until <= now:
             raise BusinessOSError("invalid_delegation", "Delegation has expired", status_code=422)
-        # Policy's transaction lock precedes Organization membership and scope
-        # row locks. A missing or inactive provider is a hard configuration error.
-        authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
-        await authority.acquire(tenant.tenant_id, context.unit_of_work.persistence)
-        await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
-        await self._require_actor_membership(
-            tenant.principal_id, command.grantor_principal_type, context
+        recipient = PrincipalReference(
+            command.recipient_principal_type, command.recipient_principal_id
         )
-        recipient = await lock_membership_for_authority(
-            context.unit_of_work.persistence,
-            tenant.tenant_id,
-            command.recipient_principal_id,
-            command.recipient_principal_type,
+        proof = await _validate_delegation_path(
+            context,
+            tenant,
+            actor,
+            tenant.delegation_id,
+            command.scope_type,
+            command.scope_id,
+            frozenset(command.allowed_actions),
+            command.valid_from,
+            command.valid_until,
+            now,
+            new_recipient=recipient,
         )
-        if not _membership_covers(recipient, now, command.valid_from, command.valid_until):
-            raise BusinessOSError(
-                "inactive_membership", "Active membership is required", status_code=409
-            )
         target = await _require_effective_scope_lineage(
             context, command.scope_type, command.scope_id, tenant, now
         )
@@ -553,74 +652,76 @@ class OrganizationModule:
             raise BusinessOSError(
                 "forbidden", "Selected scope does not cover delegation", status_code=403
             )
-        authority_principal_id = tenant.principal_id
-        authority_principal_type = command.grantor_principal_type
-        visited: frozenset[UUID] = frozenset()
-        if tenant.delegation_id is not None:
-            selected_grant = await _require_owned(
-                context, DELEGATED_SCOPES, tenant.delegation_id, tenant, lock=True
-            )
-            if (
-                selected_grant["recipient_principal_id"] != tenant.principal_id
-                or selected_grant["recipient_principal_type"] != command.grantor_principal_type
-                or (selected_grant["scope_type"], selected_grant["scope_id"]) not in lineage
-                or not frozenset(command.allowed_actions).issubset(
-                    selected_grant["allowed_actions"]
-                )
-                or not _period_covers(
-                    selected_grant["valid_from"],
-                    selected_grant["valid_until"],
-                    command.valid_from,
-                    command.valid_until,
-                    now,
-                )
-            ):
-                raise BusinessOSError(
-                    "forbidden",
-                    "Selected delegation cannot grant requested authority",
-                    status_code=403,
-                )
-            authority_principal_id = selected_grant["grantor_principal_id"]
-            authority_principal_type = selected_grant["grantor_principal_type"]
-            visited = frozenset((selected_grant["id"],))
-        if not await _grantor_has_authority(
-            context,
-            tenant,
-            authority_principal_id,
-            authority_principal_type,
-            lineage,
-            frozenset(command.allowed_actions),
-            command.valid_from,
-            command.valid_until,
-            now,
-            visited,
-        ):
-            raise BusinessOSError("forbidden", "Grantor lacks delegated authority", status_code=403)
-        for action in command.allowed_actions:
-            authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
-            if not await authority.allows(
-                DelegationAuthorityRequest(
-                    tenant_id=tenant.tenant_id,
-                    grantor_principal_id=authority_principal_id,
-                    scope_type=command.scope_type,
-                    scope_id=command.scope_id,
-                    action=action,
-                    evaluated_at=now,
-                    valid_from=command.valid_from,
-                    valid_until=command.valid_until,
-                ),
-                context.unit_of_work.persistence,
-            ):
-                raise BusinessOSError(
-                    "forbidden", "Grantor lacks action authority", status_code=403
-                )
+        # Re-resolve the provider so a disabled generation cannot be held through
+        # the final insert after its last authority decision.
         await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
         await context.unit_of_work.persistence.execute(
             insert(DELEGATED_SCOPES).values(
-                **command.model_dump(), grantor_principal_id=tenant.principal_id
+                **command.model_dump(),
+                grantor_principal_id=actor.principal_id,
+                authority_source_kind="delegation" if tenant.delegation_id else "direct",
+                parent_delegation_id=tenant.delegation_id,
+            )
+        )
+        context.emit(
+            OrganizationDelegationGranted(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                delegation_id=command.id,
+                actor_principal_id=actor.principal_id,
+                actor_principal_type=actor.principal_type,
+                root_principal_id=proof.root.principal_id,
+                root_principal_type=proof.root.principal_type,
+                root_assignment_id=proof.assignment_id,
+                parent_delegation_id=tenant.delegation_id,
+                source_path=proof.path,
+                scope_type=command.scope_type.value,
+                scope_id=command.scope_id,
+                actions=command.allowed_actions,
+                policy_decision_references=proof.policy_references,
             )
         )
         return {"delegation_id": command.id}
+
+    async def _revoke_delegation(
+        self, command: RevokeOrganizationDelegation, context: HandlingContext
+    ) -> object:
+        tenant = _tenant(context.request, command.tenant_id)
+        actor = await _trusted_principal(context, tenant)
+        authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+        await authority.acquire(tenant.tenant_id, context.unit_of_work.persistence)
+        await _verify_active_tenant(context, tenant)
+        result = await context.unit_of_work.persistence.execute(
+            update(DELEGATED_SCOPES)
+            .where(
+                DELEGATED_SCOPES.c.tenant_id == tenant.tenant_id,
+                DELEGATED_SCOPES.c.id == command.delegation_id,
+                DELEGATED_SCOPES.c.authority_source_kind.is_not(None),
+                DELEGATED_SCOPES.c.revoked_at.is_(None),
+            )
+            .values(
+                revoked_at=datetime.now(UTC),
+                revoked_by_principal_id=actor.principal_id,
+                revoked_by_principal_type=actor.principal_type,
+                revocation_reason=command.reason,
+                revocation_correlation_id=context.request.correlation_id,
+            )
+            .returning(DELEGATED_SCOPES.c.id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise BusinessOSError("not_found", "Active delegation not found", status_code=404)
+        await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+        context.emit(
+            OrganizationDelegationRevoked(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                delegation_id=command.delegation_id,
+                actor_principal_id=actor.principal_id,
+                actor_principal_type=actor.principal_type,
+                reason=command.reason,
+            )
+        )
+        return {"delegation_id": command.delegation_id, "revoked": True}
 
     async def _membership(
         self,
@@ -754,12 +855,16 @@ class OrganizationModule:
 
     async def _select_scope(self, query: SelectActiveScope, context: HandlingContext) -> object:
         tenant = _tenant(context.request, query.tenant_id)
+        actor = await _trusted_principal(context, tenant)
+        if actor.principal_type != query.principal_type:
+            raise BusinessOSError("forbidden", "Caller principal type mismatch", status_code=403)
         if query.delegation_id is not None:
             # Consumption must observe Policy revocations as well as Organization
             # scope revocations. Keep the authority read in this same transaction.
             authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
             await authority.acquire(tenant.tenant_id, context.unit_of_work.persistence)
-        await self._require_actor_membership(tenant.principal_id, query.principal_type, context)
+        if query.delegation_id is None:
+            await self._require_actor_membership(tenant.principal_id, query.principal_type, context)
         checks = (
             ("enterprise_group", query.enterprise_group_id, ENTERPRISE_GROUPS),
             ("legal_entity", query.legal_entity_id, LEGAL_ENTITIES),
@@ -776,69 +881,66 @@ class OrganizationModule:
             ("project", query.project_id, FINANCIAL_DIMENSIONS),
         )
         resolved: dict[str, RowMapping] = {}
+        delegated_selection = query.delegation_id is not None
         for kind, identifier, table in checks:
             if identifier is not None:
                 row = await _require_effective_row(
-                    context, table, identifier, tenant, datetime.now(UTC), lock=True
+                    context,
+                    table,
+                    identifier,
+                    tenant,
+                    datetime.now(UTC),
+                    lock=not delegated_selection,
                 )
                 resolved[kind] = row
-        selection = await _canonical_scope_selection(context, tenant, resolved)
+        selection = await _canonical_scope_selection(
+            context, tenant, resolved, lock=not delegated_selection
+        )
         now = datetime.now(UTC)
         authorized_by_delegation = False
+        delegation_proofs: list[_DelegationProof] = []
         if query.delegation_id is not None:
-            delegation = await _require_owned(
-                context, DELEGATED_SCOPES, query.delegation_id, tenant, lock=True
-            )
-            if (
-                delegation["recipient_principal_id"] != tenant.principal_id
-                or delegation["recipient_principal_type"] != query.principal_type
-                or delegation["valid_from"] > now
-                or delegation["valid_until"] <= now
-                or query.action not in delegation["allowed_actions"]
-                or not selection.authorized_by((delegation["scope_type"], delegation["scope_id"]))
-            ):
-                raise BusinessOSError(
-                    "forbidden", "Delegation does not authorize the selected scope", status_code=403
+            if not selection.leaves:
+                raise BusinessOSError("forbidden", "Delegation needs a target", status_code=403)
+            for kind, identifier in sorted(selection.leaves):
+                try:
+                    target_type = OrganizationScopeType(kind)
+                except ValueError:
+                    raise BusinessOSError(
+                        "forbidden", "Unsupported delegation target", status_code=403
+                    ) from None
+                proof = await _validate_delegation_path(
+                    context,
+                    tenant,
+                    actor,
+                    query.delegation_id,
+                    target_type,
+                    identifier,
+                    frozenset((query.action,)),
+                    now,
+                    now + timedelta(microseconds=1),
+                    now,
                 )
-            source = await _require_effective_scope_lineage(
-                context,
-                OrganizationScopeType(delegation["scope_type"]),
-                delegation["scope_id"],
-                tenant,
-                now,
-            )
-            lineage = await _scope_lineage(context, tenant, delegation["scope_type"], source)
-            if not await _grantor_has_authority(
-                context,
-                tenant,
-                delegation["grantor_principal_id"],
-                delegation["grantor_principal_type"],
-                lineage,
-                frozenset((query.action,)),
-                now,
-                now + timedelta(microseconds=1),
-                now,
-                frozenset((delegation["id"],)),
-            ):
+                if proof.selected_scope is None or not selection.authorized_by(
+                    proof.selected_scope
+                ):
+                    raise BusinessOSError(
+                        "forbidden", "Delegation cannot widen selected scope", status_code=403
+                    )
+                delegation_proofs.append(proof)
+            # The initial hierarchy read took no row locks, preserving the
+            # ADR-011 membership -> assignment -> delegation lock order.
+            # Recheck the exact selection under locks before publishing it.
+            locked_rows: dict[str, RowMapping] = {}
+            for kind, identifier, table in checks:
+                if identifier is not None:
+                    locked_rows[kind] = await _require_effective_row(
+                        context, table, identifier, tenant, now, lock=True
+                    )
+            locked_selection = await _canonical_scope_selection(context, tenant, locked_rows)
+            if locked_selection.lineages != selection.lineages:
                 raise BusinessOSError(
-                    "forbidden", "Delegation source is no longer authorized", status_code=403
-                )
-            authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
-            if not await authority.allows(
-                DelegationAuthorityRequest(
-                    tenant_id=tenant.tenant_id,
-                    grantor_principal_id=delegation["grantor_principal_id"],
-                    scope_type=OrganizationScopeType(delegation["scope_type"]),
-                    scope_id=delegation["scope_id"],
-                    action=query.action,
-                    evaluated_at=now,
-                    valid_from=now,
-                    valid_until=now + timedelta(microseconds=1),
-                ),
-                context.unit_of_work.persistence,
-            ):
-                raise BusinessOSError(
-                    "forbidden", "Delegation source action is no longer authorized", status_code=403
+                    "forbidden", "Selected hierarchy changed during authorization", status_code=403
                 )
             await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
             authorized_by_delegation = True
@@ -871,7 +973,8 @@ class OrganizationModule:
                 raise BusinessOSError(
                     "forbidden", "Principal is not assigned to the selected scope", status_code=403
                 )
-        await self._require_actor_membership(tenant.principal_id, query.principal_type, context)
+        if not authorized_by_delegation:
+            await self._require_actor_membership(tenant.principal_id, query.principal_type, context)
         selected = replace(
             tenant,
             enterprise_group_id=query.enterprise_group_id,
@@ -897,6 +1000,23 @@ class OrganizationModule:
                 principal_type=query.principal_type,
                 previous_scope=_scope_projection(tenant),
                 selected_scope=_scope_projection(selected),
+                action=query.action if authorized_by_delegation else None,
+                authority_path=delegation_proofs[0].path if delegation_proofs else (),
+                root_assignment_ids=tuple(
+                    sorted(
+                        {proof.assignment_id for proof in delegation_proofs},
+                        key=lambda value: value.bytes,
+                    )
+                ),
+                policy_decision_references=tuple(
+                    sorted(
+                        {
+                            reference
+                            for proof in delegation_proofs
+                            for reference in proof.policy_references
+                        }
+                    )
+                ),
             )
         )
         return selected
@@ -918,11 +1038,13 @@ async def _canonical_scope_selection(
     context: HandlingContext,
     tenant: TenantContext,
     rows: dict[str, RowMapping],
+    *,
+    lock: bool = True,
 ) -> _ScopeSelection:
     lineages: dict[tuple[str, UUID], frozenset[tuple[str, UUID]]] = {}
     for kind, row in rows.items():
         pair = (_canonical_kind(kind), cast(UUID, row["id"]))
-        lineages[pair] = await _scope_lineage(context, tenant, kind, row)
+        lineages[pair] = await _scope_lineage(context, tenant, kind, row, lock=lock)
         if kind in {"business_unit", "division", "department", "team"}:
             if row["unit_type"] != kind:
                 raise _hierarchy_error()
@@ -983,16 +1105,18 @@ async def _scope_lineage(
     tenant: TenantContext,
     selected_kind: str,
     selected: RowMapping,
+    *,
+    lock: bool = True,
 ) -> frozenset[tuple[str, UUID]]:
     now = datetime.now(UTC)
     lineage: set[tuple[str, UUID]] = {(_canonical_kind(selected_kind), cast(UUID, selected["id"]))}
 
     async def company_lineage(company_id: UUID) -> None:
         company = await _require_effective_row(
-            context, COMPANIES, company_id, tenant, now, lock=True
+            context, COMPANIES, company_id, tenant, now, lock=lock
         )
         legal = await _require_effective_row(
-            context, LEGAL_ENTITIES, company["legal_entity_id"], tenant, now, lock=True
+            context, LEGAL_ENTITIES, company["legal_entity_id"], tenant, now, lock=lock
         )
         group = await _require_effective_row(
             context,
@@ -1000,7 +1124,7 @@ async def _scope_lineage(
             legal["enterprise_group_id"],
             tenant,
             now,
-            lock=True,
+            lock=lock,
         )
         lineage.update(
             {
@@ -1019,7 +1143,7 @@ async def _scope_lineage(
             selected["enterprise_group_id"],
             tenant,
             now,
-            lock=True,
+            lock=lock,
         )
         lineage.add((OrganizationScopeType.ENTERPRISE_GROUP.value, cast(UUID, group["id"])))
         return frozenset(lineage)
@@ -1031,21 +1155,33 @@ async def _scope_lineage(
     await company_lineage(company_id)
     if selected_kind in {"business_unit", "division", "department", "team"}:
         await _append_parent_chain(
-            context, tenant, ORG_UNITS, selected, OrganizationScopeType.ORG_UNIT.value, lineage
+            context,
+            tenant,
+            ORG_UNITS,
+            selected,
+            OrganizationScopeType.ORG_UNIT.value,
+            lineage,
+            lock=lock,
         )
     elif selected_kind == "region":
         await _append_parent_chain(
-            context, tenant, REGIONS, selected, OrganizationScopeType.REGION.value, lineage
+            context,
+            tenant,
+            REGIONS,
+            selected,
+            OrganizationScopeType.REGION.value,
+            lineage,
+            lock=lock,
         )
     elif selected_kind == "operating_site":
         site_type = await _require_owned(
-            context, SITE_TYPES, selected["site_type_id"], tenant, lock=True
+            context, SITE_TYPES, selected["site_type_id"], tenant, lock=lock
         )
         if not site_type["active"]:
             raise _hierarchy_error()
         if selected["region_id"] is not None:
             region = await _require_effective_row(
-                context, REGIONS, selected["region_id"], tenant, now, lock=True
+                context, REGIONS, selected["region_id"], tenant, now, lock=lock
             )
             if region["company_id"] != company_id:
                 raise _hierarchy_error()
@@ -1056,14 +1192,15 @@ async def _scope_lineage(
                 region,
                 OrganizationScopeType.REGION.value,
                 lineage,
+                lock=lock,
             )
     elif selected_kind == "warehouse" and selected["operating_site_id"] is not None:
         site = await _require_effective_row(
-            context, OPERATING_SITES, selected["operating_site_id"], tenant, now, lock=True
+            context, OPERATING_SITES, selected["operating_site_id"], tenant, now, lock=lock
         )
         if site["company_id"] != company_id:
             raise _hierarchy_error()
-        lineage.update(await _scope_lineage(context, tenant, "operating_site", site))
+        lineage.update(await _scope_lineage(context, tenant, "operating_site", site, lock=lock))
     return frozenset(lineage)
 
 
@@ -1074,6 +1211,8 @@ async def _append_parent_chain(
     first: RowMapping,
     scope_type: str,
     lineage: set[tuple[str, UUID]],
+    *,
+    lock: bool = True,
 ) -> None:
     current = first
     visited: set[UUID] = set()
@@ -1088,7 +1227,7 @@ async def _append_parent_chain(
         if parent_id is None:
             return
         current = await _require_effective_row(
-            context, table, parent_id, tenant, datetime.now(UTC), lock=True
+            context, table, parent_id, tenant, datetime.now(UTC), lock=lock
         )
         if current["company_id"] != company_id:
             raise _hierarchy_error()
@@ -1221,16 +1360,6 @@ async def _require_effective_scope_lineage(
     return row
 
 
-def _membership_covers(
-    membership: MembershipRecord, now: datetime, start: datetime, end: datetime
-) -> bool:
-    return (
-        membership.is_effective(now)
-        and (membership.valid_from is None or membership.valid_from <= start)
-        and (membership.valid_until is None or end <= membership.valid_until)
-    )
-
-
 def _period_covers(
     valid_from: datetime | None,
     valid_until: datetime | None,
@@ -1269,83 +1398,224 @@ def _selected_scope_covers(
     )
 
 
-async def _grantor_has_authority(
+@dataclass(frozen=True, slots=True)
+class _DelegationProof:
+    root: PrincipalReference
+    assignment_id: UUID
+    path: tuple[UUID, ...]
+    selected_scope: tuple[str, UUID] | None
+    policy_references: tuple[str, ...]
+
+
+async def _trusted_principal(context: HandlingContext, tenant: TenantContext) -> PrincipalReference:
+    binding = await context.dependencies.resolve(AUTHENTICATED_PRINCIPAL)
+    principal = binding.principal
+    if (
+        binding.request is not context.request
+        or principal.tenant_id != tenant.tenant_id
+        or principal.principal_id != tenant.principal_id
+        or principal.principal_type not in {"user", "service_account", "device"}
+    ):
+        raise BusinessOSError("forbidden", "Trusted principal mismatch", status_code=403)
+    return PrincipalReference(cast(PrincipalType, principal.principal_type), principal.principal_id)
+
+
+async def _verify_active_tenant(context: HandlingContext, tenant: TenantContext) -> None:
+    factory = await context.dependencies.resolve(UNIT_OF_WORK_FACTORY)
+    validator = DatabaseTenantAccessValidator(tenant.installation_id, factory)
+    await validator.require_active_in(tenant.tenant_id, context.unit_of_work.persistence, lock=True)
+
+
+async def _validate_delegation_path(
     context: HandlingContext,
     tenant: TenantContext,
-    principal_id: UUID,
-    principal_type: Literal["user", "service_account", "device"],
-    target_lineage: frozenset[tuple[str, UUID]],
+    consumer: PrincipalReference,
+    source_id: UUID | None,
+    target_type: OrganizationScopeType,
+    target_id: UUID,
     actions: frozenset[str],
     start: datetime,
     end: datetime,
     now: datetime,
-    visited: frozenset[UUID],
-) -> bool:
-    """Trace a locked authority chain to a current assignment in this transaction."""
-    if len(visited) >= 16:
-        return False
-    try:
-        membership = await lock_membership_for_authority(
-            context.unit_of_work.persistence, tenant.tenant_id, principal_id, principal_type
-        )
-    except BusinessOSError as error:
-        if error.code == "not_found":
-            return False
-        raise
-    if not _membership_covers(membership, now, start, end):
-        return False
+    *,
+    new_recipient: PrincipalReference | None = None,
+) -> _DelegationProof:
+    """One live, locked source path for both creation and consumption."""
+    authority = await context.dependencies.resolve(DELEGATION_ACTION_AUTHORITY)
+    if not isinstance(authority, DelegationDecisionAuthority):
+        raise BusinessOSError("forbidden", "Typed Policy decision unavailable", status_code=403)
+    await authority.acquire(tenant.tenant_id, context.unit_of_work.persistence)
+    await _verify_active_tenant(context, tenant)
+    if not actions or end <= start:
+        raise BusinessOSError("forbidden", "Invalid delegation authority", status_code=403)
 
-    assignments = await context.unit_of_work.persistence.execute(
-        select(ASSIGNMENTS)
+    # Discover immutable parent IDs before taking row locks. Re-read after the
+    # canonical lock sequence; no alternative parent is ever considered.
+    candidates: list[RowMapping] = []
+    seen_ids: set[UUID] = set()
+    current_id = source_id
+    while current_id is not None:
+        if current_id in seen_ids or len(candidates) >= 16:
+            raise BusinessOSError("forbidden", "Invalid delegation chain", status_code=403)
+        seen_ids.add(current_id)
+        result = await context.unit_of_work.persistence.execute(
+            select(DELEGATED_SCOPES).where(
+                DELEGATED_SCOPES.c.tenant_id == tenant.tenant_id,
+                DELEGATED_SCOPES.c.id == current_id,
+            )
+        )
+        row = result.mappings().one_or_none()
+        if row is None or row["authority_source_kind"] not in {"direct", "delegation"}:
+            raise BusinessOSError("forbidden", "Unverified delegation source", status_code=403)
+        candidates.append(row)
+        if row["authority_source_kind"] == "direct":
+            if row["parent_delegation_id"] is not None:
+                raise BusinessOSError("forbidden", "Invalid direct source", status_code=403)
+            current_id = None
+        else:
+            current_id = row["parent_delegation_id"]
+            if current_id is None:
+                raise BusinessOSError("forbidden", "Missing delegation parent", status_code=403)
+    path = list(reversed(candidates))
+    if new_recipient is not None and len(path) >= 16:
+        raise BusinessOSError("forbidden", "Delegation depth exceeded", status_code=403)
+
+    root = (
+        PrincipalReference(path[0]["grantor_principal_type"], path[0]["grantor_principal_id"])
+        if path
+        else consumer
+    )
+    principals = [root]
+    seen_principals = {root}
+    preceding = root
+    previous_id: UUID | None = None
+    for index, row in enumerate(path):
+        grantor = PrincipalReference(row["grantor_principal_type"], row["grantor_principal_id"])
+        recipient = PrincipalReference(
+            row["recipient_principal_type"], row["recipient_principal_id"]
+        )
+        if (
+            grantor != preceding
+            or recipient in seen_principals
+            or (index == 0 and row["authority_source_kind"] != "direct")
+            or (index > 0 and row["authority_source_kind"] != "delegation")
+            or row["parent_delegation_id"] != previous_id
+        ):
+            raise BusinessOSError("forbidden", "Invalid delegation chain", status_code=403)
+        principals.append(recipient)
+        seen_principals.add(recipient)
+        preceding = recipient
+        previous_id = row["id"]
+    if preceding != consumer or (new_recipient is not None and new_recipient in seen_principals):
+        raise BusinessOSError("forbidden", "Delegation principal cycle", status_code=403)
+    if new_recipient is not None:
+        principals.append(new_recipient)
+
+    memberships = await context.dependencies.resolve(MEMBERSHIP_AUTHORITY)
+    await memberships.lock_many(
+        context.unit_of_work.persistence,
+        tenant.tenant_id,
+        tuple(principals),
+        now,
+        start,
+        end,
+    )
+
+    assignment_ids = await context.unit_of_work.persistence.execute(
+        select(ASSIGNMENTS.c.id)
         .where(
             ASSIGNMENTS.c.tenant_id == tenant.tenant_id,
-            ASSIGNMENTS.c.principal_id == principal_id,
-            ASSIGNMENTS.c.principal_type == principal_type,
+            ASSIGNMENTS.c.principal_type == root.principal_type,
+            ASSIGNMENTS.c.principal_id == root.principal_id,
         )
-        .with_for_update(read=True)
+        .order_by(ASSIGNMENTS.c.id)
     )
-    for assignment in assignments.mappings():
-        if (assignment["scope_type"], assignment["scope_id"]) in target_lineage and _period_covers(
-            assignment["valid_from"], assignment["valid_until"], start, end, now
-        ):
-            # Assignments are the Phase 2 root organizational grant. Action-specific
-            # restrictions live on delegations and the framework permission check.
-            return True
-
-    delegations = await context.unit_of_work.persistence.execute(
-        select(DELEGATED_SCOPES)
-        .where(
-            DELEGATED_SCOPES.c.tenant_id == tenant.tenant_id,
-            DELEGATED_SCOPES.c.recipient_principal_id == principal_id,
-            DELEGATED_SCOPES.c.recipient_principal_type == principal_type,
+    assignments: list[RowMapping] = []
+    for assignment_id in assignment_ids.scalars():
+        result = await context.unit_of_work.persistence.execute(
+            select(ASSIGNMENTS)
+            .where(ASSIGNMENTS.c.tenant_id == tenant.tenant_id, ASSIGNMENTS.c.id == assignment_id)
+            .with_for_update(read=True)
         )
-        .with_for_update(read=True)
-    )
-    for delegation in delegations.mappings():
-        identifier = cast(UUID, delegation["id"])
-        if (
-            identifier in visited
-            or (delegation["scope_type"], delegation["scope_id"]) not in target_lineage
-            or not actions.issubset(delegation["allowed_actions"])
-            or not _period_covers(
-                delegation["valid_from"], delegation["valid_until"], start, end, now
+        row = result.mappings().one_or_none()
+        if row is not None:
+            assignments.append(row)
+    locked: dict[UUID, RowMapping] = {}
+    for identifier in sorted(seen_ids, key=lambda value: value.bytes):
+        result = await context.unit_of_work.persistence.execute(
+            select(DELEGATED_SCOPES)
+            .where(
+                DELEGATED_SCOPES.c.tenant_id == tenant.tenant_id,
+                DELEGATED_SCOPES.c.id == identifier,
             )
+            .with_for_update(read=True)
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            raise BusinessOSError("forbidden", "Delegation source changed", status_code=403)
+        locked[identifier] = row
+    for candidate in path:
+        current = locked[candidate["id"]]
+        if (
+            current["authority_source_kind"] != candidate["authority_source_kind"]
+            or current["parent_delegation_id"] != candidate["parent_delegation_id"]
+            or current["revoked_at"] is not None
+            or (current["grantor_principal_type"], current["grantor_principal_id"])
+            != (candidate["grantor_principal_type"], candidate["grantor_principal_id"])
+            or (current["recipient_principal_type"], current["recipient_principal_id"])
+            != (candidate["recipient_principal_type"], candidate["recipient_principal_id"])
         ):
-            continue
-        if await _grantor_has_authority(
-            context,
-            tenant,
-            delegation["grantor_principal_id"],
-            delegation["grantor_principal_type"],
-            target_lineage,
-            actions,
-            start,
-            end,
-            now,
-            visited | {identifier},
+            raise BusinessOSError("forbidden", "Delegation source changed", status_code=403)
+
+    target = await _require_effective_scope_lineage(context, target_type, target_id, tenant, now)
+    lineage = await _scope_lineage(context, tenant, target_type.value, target)
+    roots = [
+        row
+        for row in assignments
+        if (row["scope_type"], row["scope_id"]) in lineage
+        and _period_covers(row["valid_from"], row["valid_until"], start, end, now)
+    ]
+    if not roots:
+        raise BusinessOSError("forbidden", "Root assignment unavailable", status_code=403)
+    root_assignment = min(roots, key=lambda row: row["id"].bytes)
+    for candidate in path:
+        row = locked[candidate["id"]]
+        if (
+            (row["scope_type"], row["scope_id"]) not in lineage
+            or not actions.issubset(row["allowed_actions"])
+            or not _period_covers(row["valid_from"], row["valid_until"], start, end, now)
         ):
-            return True
-    return False
+            raise BusinessOSError("forbidden", "Delegation authority expired", status_code=403)
+    policy_references: list[str] = []
+    for action in sorted(actions):
+        decision = await authority.evaluate(
+            DelegationAuthorityRequest(
+                tenant_id=tenant.tenant_id,
+                grantor_principal_id=root.principal_id,
+                grantor_principal_type=root.principal_type,
+                scope_type=target_type,
+                scope_id=target_id,
+                action=action,
+                evaluated_at=now,
+                valid_from=start,
+                valid_until=end,
+            ),
+            context.unit_of_work.persistence,
+        )
+        if not decision.allowed or decision.policy_reference is None:
+            raise BusinessOSError("forbidden", "Root action authority denied", status_code=403)
+        policy_references.append(decision.policy_reference)
+    selected_scope = None
+    if path:
+        last = locked[path[-1]["id"]]
+        selected_scope = (last["scope_type"], last["scope_id"])
+    return _DelegationProof(
+        root,
+        root_assignment["id"],
+        tuple(row["id"] for row in path),
+        selected_scope,
+        tuple(policy_references),
+    )
 
 
 def _membership_is_current(membership: MembershipRecord) -> bool:

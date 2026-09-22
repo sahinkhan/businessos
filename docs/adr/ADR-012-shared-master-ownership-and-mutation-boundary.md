@@ -4,7 +4,7 @@ Status: PROPOSED
 
 Decision date: Not set; this proposal has not been accepted.
 
-Approving roles required: Architecture Maintainer; Security Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Geography Owning Domain Maintainer; Currency Owning Domain Maintainer; Release Maintainer
+Approving roles required: Architecture Maintainer; Security Maintainer; Policy Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Geography Owning Domain Maintainer; Currency Owning Domain Maintainer; Release Maintainer
 
 Approval pull request or commit: Pending proposal review.
 
@@ -146,6 +146,27 @@ required architecture and compatibility approval, not a claim of zero impact.
 permission-semantic change. Tenant-owned address creation remains available
 under that permission. Global read contracts remain available.
 
+`RegisterCountry` is also the sole publisher of the exported, versioned
+`geography.country.registered.v1` / `CountryRegistered` event. Its current
+payload carries a tenant ID despite the country being shared. Removing the
+tenant runtime command therefore stops new publication of that event. The
+event schema and historical outbox records remain readable for their
+supported retention and replay window; the event is deprecated, not
+reinterpreted as an installation-wide notification. The repository inventory
+finds no declared event consumer, but the owning module must verify external
+subscriptions before release, document the publication cutoff, and give any
+supported consumer a migration path to the global Country read contract plus
+versioned canonical-dataset release information. If a supported consumer
+requires an event stream, a separately reviewed global dataset-change
+contract and trusted publisher must coexist through the required support
+window. Tenant write access cannot be retained merely to emit the old event.
+Because continuing its current publisher would preserve the critical
+cross-tenant write risk, the proposal requests the security exception to the
+ordinary deprecation window in `RELEASES.md`. Security and Release Maintainers
+must approve the documented cutoff, affected consumers, notice, and safest
+available read-contract or trusted-event migration path. Without that
+approval and evidence, the publication cutoff cannot be certified.
+
 ### Country and Currency relationship
 
 `Country.currency_code`, when non-null, references the canonical Currency
@@ -196,6 +217,7 @@ business data, it must reject with recovery guidance rather than delete it.
 | --- | --- |
 | New `foundation.currency` module and typed read contracts | Additive pre-1.0 capability; package/manifest, contract, discovery, and consumer tests required. |
 | `RegisterCountry`, `RegisterSubdivision`, `RegisterCity` tenant-runtime retirement | Incompatible security correction to provisional public commands; consumer inventory, release note, ADR approval, and any required versioned coexistence plan. |
+| `geography.country.registered.v1` publication cutoff | Incompatible public event behavior; subscription inventory, deprecation/cutoff notice, historical replay support, and consumer migration or approved trusted replacement contract required. |
 | `foundation.geography.manage` narrowed to tenant addresses | Security-sensitive semantic tightening; authorization and compatibility tests required. |
 | Country-to-Currency FK | Compatibility-sensitive schema tightening; dirty-data preflight, same-lifecycle review, upgrade/replay, and recovery evidence required. |
 | Currency code/precision seed revisions | Canonical-data and protocol impact; stable identity, versioned source, deterministic replay, and operator change record required. |
@@ -244,18 +266,20 @@ customer installation needs a manual source edit to receive canonical data.
 
 Affected owners are Currency (new) and Geography. The affected public surfaces
 are Currency's new read contracts, the three Geography registration commands,
-`foundation.geography.manage`, global Geography reads, and the country
-currency reference. Migration graph, deployment seed artifacts, and
+`geography.country.registered.v1`, `foundation.geography.manage`, global
+Geography reads, and the country currency reference. Migration graph,
+deployment seed artifacts, and
 localization publishing are affected. The protected kernel, SDK, tenant
 identity model, Policy, and tenant-owned Reference Data are not changed by
 this proposal.
 
 The required approval union from `ADR-GOVERNANCE.md` and `MAINTAINERS.md` is:
-Architecture Maintainer; Security Maintainer; SDK/Contract Maintainer;
+Architecture Maintainer; Security Maintainer; Policy Maintainer; SDK/Contract Maintainer;
 Migration Safety Reviewer; Geography Owning Domain Maintainer; Currency
 Owning Domain Maintainer; Release Maintainer. The Release Maintainer is
 required because the decision governs retirement of a public pre-1.0
-command and its release compatibility path. `@sahinkhan` currently holds
+command and event and their release compatibility paths. The Policy Maintainer
+is required for the changed permission meaning. `@sahinkhan` currently holds
 these roles; authorship is not approval. Proposal review, exact-head CI,
 independent technical audit, and owner attestation are separate evidence.
 

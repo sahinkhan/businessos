@@ -1,6 +1,6 @@
 """BusinessOS module SDK, manifests, discovery, lifecycle and upgrades."""
 
-from businessos.modules.discovery import discover_modules
+from businessos.modules.discovery import discover_context_resolver_factory, discover_modules
 from businessos.modules.manifest import (
     ModuleContractDeclaration,
     ModuleDependency,
@@ -26,5 +26,6 @@ __all__ = [
     "ModuleRegistry",
     "ModuleState",
     "UpgradeCoordinator",
+    "discover_context_resolver_factory",
     "discover_modules",
 ]

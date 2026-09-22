@@ -1,9 +1,9 @@
 """Tenant-management module registration and application handlers."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from importlib.resources import files
-from typing import ClassVar
+from typing import ClassVar, Literal
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -14,6 +14,7 @@ from businessos.sdk import (
     BusinessOSError,
     Command,
     DomainEvent,
+    EventHandlingContext,
     HandlingContext,
     ModuleManifest,
     ModuleRegistration,
@@ -25,12 +26,21 @@ from businessos.sdk import (
 
 from .contracts import (
     DeploymentMode,
+    TenantEntitlementRecord,
     TenantLifecycleHooks,
     TenantManagementContract,
+    TenantQuotaRecord,
     TenantRecord,
     TenantStatus,
+    validate_effective_period,
 )
-from .models import TENANT_ENTITLEMENTS, TENANT_QUOTAS, TENANT_STATUS_HISTORY, TENANTS
+from .models import (
+    TENANT_ENTITLEMENTS,
+    TENANT_LIFECYCLE_OPERATIONS,
+    TENANT_QUOTAS,
+    TENANT_STATUS_HISTORY,
+    TENANTS,
+)
 
 
 class ProvisionTenant(Command):
@@ -69,6 +79,14 @@ class GetTenant(Query):
     tenant_id: UUID
 
 
+class GetTenantEntitlements(Query):
+    tenant_id: UUID
+
+
+class GetTenantQuotas(Query):
+    tenant_id: UUID
+
+
 class TenantCreated(DomainEvent):
     event_type: ClassVar[str] = "tenant.created.v1"
     slug: str
@@ -80,6 +98,13 @@ class TenantActivated(DomainEvent):
 
 class TenantSuspended(DomainEvent):
     event_type: ClassVar[str] = "tenant.suspended.v1"
+
+
+class TenantLifecycleWorkRequested(DomainEvent):
+    """Durable, retryable lifecycle work; event_id is the idempotency key."""
+
+    event_type: ClassVar[str] = "tenant.lifecycle.work-requested.v1"
+    operation: Literal["export", "delete", "restore"]
 
 
 _TRANSITIONS: dict[TenantStatus, frozenset[TenantStatus]] = {
@@ -125,6 +150,15 @@ class TenantModule:
         )
         registration.command(SetTenantQuota, self._set_quota, permission="foundation.tenant.manage")
         registration.query(GetTenant, self._get, permission="foundation.tenant.read")
+        registration.query(
+            GetTenantEntitlements, self._get_entitlements, permission="foundation.tenant.read"
+        )
+        registration.query(GetTenantQuotas, self._get_quotas, permission="foundation.tenant.read")
+        registration.event(
+            TenantLifecycleWorkRequested,
+            "lifecycle-hooks",
+            self._run_lifecycle_hooks,
+        )
 
     async def start(self) -> None:
         return None
@@ -169,24 +203,51 @@ class TenantModule:
     async def _transition(self, command: TransitionTenant, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
         current = await context.unit_of_work.persistence.execute(
-            select(TENANTS.c.status)
+            select(TENANTS.c.status, TENANTS.c.lifecycle_version)
             .where(TENANTS.c.tenant_id == tenant.tenant_id)
             .with_for_update()
         )
-        value = current.scalar_one_or_none()
-        if value is None:
+        row = current.one_or_none()
+        if row is None:
             raise BusinessOSError("not_found", "Tenant not found", status_code=404)
-        current_status = TenantStatus(value)
+        current_status = TenantStatus(row.status)
+        version = row.lifecycle_version + 1
         if command.target not in _TRANSITIONS[current_status]:
             raise BusinessOSError(
                 "invalid_transition",
                 "Tenant lifecycle transition is not allowed",
                 status_code=409,
             )
+        operation: Literal["export", "delete", "restore"] | None = None
+        if command.target is TenantStatus.TERMINATING:
+            operation = "export"
+        elif command.target is TenantStatus.DELETED:
+            operation = "delete"
+        elif (
+            current_status is TenantStatus.RETENTION_HOLD and command.target is TenantStatus.ACTIVE
+        ):
+            operation = "restore"
+        dependency: UUID | None = None
+        if operation == "delete":
+            previous = await context.unit_of_work.persistence.execute(
+                select(TENANT_LIFECYCLE_OPERATIONS.c.id, TENANT_LIFECYCLE_OPERATIONS.c.state).where(
+                    TENANT_LIFECYCLE_OPERATIONS.c.tenant_id == tenant.tenant_id,
+                    TENANT_LIFECYCLE_OPERATIONS.c.lifecycle_version == row.lifecycle_version,
+                    TENANT_LIFECYCLE_OPERATIONS.c.operation == "export",
+                )
+            )
+            export = previous.one_or_none()
+            if export is None or export.state != "completed":
+                raise BusinessOSError(
+                    "lifecycle_prerequisite_pending",
+                    "Tenant export must finish before deletion",
+                    status_code=409,
+                )
+            dependency = export.id
         await context.unit_of_work.persistence.execute(
             update(TENANTS)
             .where(TENANTS.c.tenant_id == tenant.tenant_id)
-            .values(status=command.target, updated_at=datetime.now().astimezone())
+            .values(status=command.target, lifecycle_version=version, updated_at=datetime.now(UTC))
         )
         await context.unit_of_work.persistence.execute(
             insert(TENANT_STATUS_HISTORY).values(
@@ -212,12 +273,87 @@ class TenantModule:
                     correlation_id=context.request.correlation_id,
                 )
             )
+        if operation is not None:
+            event = TenantLifecycleWorkRequested(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                operation=operation,
+            )
+            await context.unit_of_work.persistence.execute(
+                insert(TENANT_LIFECYCLE_OPERATIONS).values(
+                    id=event.event_id,
+                    tenant_id=tenant.tenant_id,
+                    lifecycle_version=version,
+                    operation=operation,
+                    state="pending",
+                    depends_on=dependency,
+                )
+            )
+            context.emit(event)
         return {"tenant_id": tenant.tenant_id, "status": command.target}
+
+    async def _run_lifecycle_hooks(
+        self,
+        event: TenantLifecycleWorkRequested,
+        context: EventHandlingContext,
+    ) -> None:
+        persistence = context.unit_of_work.persistence
+        tenant_result = await persistence.execute(
+            select(TENANTS.c.status, TENANTS.c.lifecycle_version)
+            .where(TENANTS.c.tenant_id == event.tenant_id)
+            .with_for_update()
+        )
+        tenant = tenant_result.one_or_none()
+        if tenant is None:
+            raise BusinessOSError("not_found", "Tenant not found", status_code=404)
+        operation_result = await persistence.execute(
+            select(TENANT_LIFECYCLE_OPERATIONS)
+            .where(
+                TENANT_LIFECYCLE_OPERATIONS.c.tenant_id == event.tenant_id,
+                TENANT_LIFECYCLE_OPERATIONS.c.id == event.event_id,
+            )
+            .with_for_update()
+        )
+        work = operation_result.mappings().one_or_none()
+        if work is None or work["operation"] != event.operation:
+            raise BusinessOSError(
+                "invalid_lifecycle_work", "Lifecycle work is unknown", status_code=409
+            )
+        if work["state"] != "pending":
+            return
+        if work["depends_on"] is not None:
+            predecessor = await persistence.execute(
+                select(TENANT_LIFECYCLE_OPERATIONS.c.state).where(
+                    TENANT_LIFECYCLE_OPERATIONS.c.tenant_id == event.tenant_id,
+                    TENANT_LIFECYCLE_OPERATIONS.c.id == work["depends_on"],
+                )
+            )
+            if predecessor.scalar_one_or_none() != "completed":
+                raise BusinessOSError(
+                    "lifecycle_prerequisite_pending",
+                    "Lifecycle prerequisite is pending",
+                    status_code=409,
+                )
+        expected = {
+            "restore": TenantStatus.ACTIVE,
+            "export": TenantStatus.TERMINATING,
+            "delete": TenantStatus.DELETED,
+        }[event.operation]
+        stale = tenant.lifecycle_version != work["lifecycle_version"] or tenant.status != expected
+        if not stale:
+            await getattr(self.lifecycle_hooks, event.operation)(event.tenant_id, event.event_id)
+        await persistence.execute(
+            update(TENANT_LIFECYCLE_OPERATIONS)
+            .where(TENANT_LIFECYCLE_OPERATIONS.c.id == event.event_id)
+            .values(state="skipped" if stale else "completed", completed_at=datetime.now(UTC))
+        )
 
     async def _set_entitlement(
         self, command: SetTenantEntitlement, context: HandlingContext
     ) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
+        validate_effective_period(command.effective_from, command.effective_until)
+        await self._require_existing(tenant.tenant_id, context)
         statement = (
             pg_insert(TENANT_ENTITLEMENTS)
             .values(
@@ -244,6 +380,7 @@ class TenantModule:
 
     async def _set_quota(self, command: SetTenantQuota, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
+        await self._require_existing(tenant.tenant_id, context)
         statement = (
             pg_insert(TENANT_QUOTAS)
             .values(
@@ -270,6 +407,35 @@ class TenantModule:
         if row is None:
             raise BusinessOSError("not_found", "Tenant not found", status_code=404)
         return TenantRecord.model_validate(dict(row))
+
+    async def _get_entitlements(
+        self, query: GetTenantEntitlements, context: HandlingContext
+    ) -> object:
+        _require_tenant(context.request, query.tenant_id)
+        await self._require_existing(query.tenant_id, context)
+        result = await context.unit_of_work.persistence.execute(
+            select(TENANT_ENTITLEMENTS)
+            .where(TENANT_ENTITLEMENTS.c.tenant_id == query.tenant_id)
+            .order_by(TENANT_ENTITLEMENTS.c.capability)
+        )
+        return tuple(TenantEntitlementRecord.model_validate(dict(row)) for row in result.mappings())
+
+    async def _get_quotas(self, query: GetTenantQuotas, context: HandlingContext) -> object:
+        _require_tenant(context.request, query.tenant_id)
+        await self._require_existing(query.tenant_id, context)
+        result = await context.unit_of_work.persistence.execute(
+            select(TENANT_QUOTAS)
+            .where(TENANT_QUOTAS.c.tenant_id == query.tenant_id)
+            .order_by(TENANT_QUOTAS.c.quota)
+        )
+        return tuple(TenantQuotaRecord.model_validate(dict(row)) for row in result.mappings())
+
+    async def _require_existing(self, tenant_id: UUID, context: HandlingContext) -> None:
+        result = await context.unit_of_work.persistence.execute(
+            select(TENANTS.c.tenant_id).where(TENANTS.c.tenant_id == tenant_id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise BusinessOSError("not_found", "Tenant not found", status_code=404)
 
 
 def _require_tenant(context: RequestContext, expected: UUID) -> TenantContext:

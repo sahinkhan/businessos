@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "businessos-foundation-identity"
-version = "0.2.0"
+version = "0.3.0"
 description = "BusinessOS identity and membership foundation module"
 requires-python = ">=3.13"
 dependencies = [
@@ -17,6 +17,9 @@ dependencies = [
 
 [project.entry-points."businessos.modules"]
 foundation-identity = "businessos_identity:IdentityModule"
+
+[project.entry-points."businessos.context_resolvers"]
+foundation-identity-oidc = "businessos_identity.oidc:create_context_resolver"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

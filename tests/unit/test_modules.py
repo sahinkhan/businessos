@@ -1,4 +1,5 @@
 import asyncio
+from importlib.metadata import EntryPoint
 from typing import Any, ClassVar, cast
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from businessos.modules import (
     ModuleRegistry,
     ModuleState,
     UpgradeCoordinator,
+    discover_context_resolver_factory,
 )
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence import UnitOfWork
@@ -141,6 +143,19 @@ def _settings() -> Settings:
         database_url="postgresql+psycopg://test:test@db/test",
         database_readiness_enabled=False,
     )
+
+
+def test_context_resolver_discovery_requires_one_callable_boundary() -> None:
+    entry = EntryPoint(
+        name="foundation-identity-oidc",
+        value="businessos_identity.oidc:create_context_resolver",
+        group="businessos.context_resolvers",
+    )
+    factory = discover_context_resolver_factory((entry,))
+    assert factory is not None
+    assert callable(factory)
+    with pytest.raises(RuntimeError, match="Exactly one"):
+        discover_context_resolver_factory((entry, entry))
 
 
 def test_manifest_preserves_versioned_contract_and_lifecycle_declarations() -> None:

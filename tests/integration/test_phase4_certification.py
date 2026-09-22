@@ -147,7 +147,15 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
                 "AND c.relkind = 'r' AND c.relrowsecurity "
                 "ORDER BY n.nspname, c.relname"
             ).fetchall()
-        assert heads == {"audit_0002", "gov_0002", "policy_0002", "proof_0003"}
+        assert heads == {
+            "audit_0002",
+            "gov_0002",
+            "identity_0003",
+            "organization_0003",
+            "policy_0003",
+            "proof_0003",
+            "tenant_0002",
+        }
         assert len(rls) == 14
         assert all(row[2] and row[3] for row in rls)
     finally:

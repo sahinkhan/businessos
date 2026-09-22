@@ -8,6 +8,7 @@ from uuid import UUID
 
 from businessos.context import RequestContext, TenantContext
 from businessos.errors import BusinessOSError
+from businessos.persistence import UnitOfWorkFactory
 
 
 class PrincipalType(StrEnum):
@@ -34,6 +35,12 @@ class RequestIdentity:
 
 class TrustedContextResolver(Protocol):
     async def resolve(self, identity: RequestIdentity) -> RequestContext: ...
+
+
+class ContextResolverFactory(Protocol):
+    def __call__(
+        self, installation_id: UUID, unit_of_work_factory: UnitOfWorkFactory
+    ) -> TrustedContextResolver: ...
 
 
 class AnonymousContextResolver:

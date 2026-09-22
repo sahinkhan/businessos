@@ -1,12 +1,13 @@
 """Identity and membership module registration and handlers."""
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from typing import ClassVar, Literal
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from businessos_tenant import validate_effective_period
+from pydantic import ConfigDict, Field
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -23,8 +24,17 @@ from businessos.sdk import (
     TenantContext,
 )
 
-from .contracts import IdentityContract, MembershipRecord, MembershipStatus
+from .authority import DatabaseMembershipAuthority
+from .contracts import (
+    MEMBERSHIP_AUTHORITY,
+    AuthenticationSessionRecord,
+    AuthenticationStrength,
+    IdentityContract,
+    MembershipRecord,
+    MembershipStatus,
+)
 from .models import (
+    AUTHENTICATION_SESSIONS,
     DEVICES,
     EXTERNAL_IDENTITIES,
     MEMBERSHIPS,
@@ -33,6 +43,7 @@ from .models import (
     SERVICE_ACCOUNTS,
     USERS,
 )
+from .principal_binding import AUTHENTICATED_PRINCIPAL, current_authenticated_principal
 
 
 class CreateUser(Command):
@@ -78,6 +89,7 @@ class RegisterDevice(Command):
     device_id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
     principal_id: UUID
+    principal_type: Literal["user", "service_account"] = "user"
     name: str = Field(min_length=1, max_length=200)
     device_type: str = Field(min_length=1, max_length=100)
     credential_secret_reference: str = Field(min_length=1, max_length=1000)
@@ -91,11 +103,12 @@ class ConfigureOIDCProvider(Command):
     algorithms: tuple[
         Literal["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"], ...
     ] = ("RS256",)
+    active: bool = True
 
 
 class SetMFAPolicy(Command):
     tenant_id: UUID
-    minimum_strength: str = Field(min_length=1, max_length=100)
+    minimum_strength: AuthenticationStrength
     required_methods: tuple[str, ...] = ()
     configuration: dict[str, object] = Field(default_factory=dict)
 
@@ -104,6 +117,29 @@ class GetMembership(Query):
     tenant_id: UUID
     principal_id: UUID
     principal_type: Literal["user", "service_account", "device"] = "user"
+
+
+class StartAuthenticationSession(Command):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_id: UUID = Field(default_factory=uuid4)
+    tenant_id: UUID
+    expires_at: datetime
+
+
+class RevokeAuthenticationSession(Command):
+    tenant_id: UUID
+    session_id: UUID
+
+
+class GetAuthenticationSession(Query):
+    tenant_id: UUID
+    session_id: UUID
+
+
+class ValidateAuthenticationSession(Query):
+    tenant_id: UUID
+    session_id: UUID
 
 
 class MembershipGranted(DomainEvent):
@@ -119,14 +155,33 @@ class MembershipRevoked(DomainEvent):
     principal_type: str
 
 
+class AuthenticationSessionStarted(DomainEvent):
+    event_type: ClassVar[str] = "identity.authentication_session.started.v1"
+    session_id: UUID
+    principal_id: UUID
+    principal_type: str
+
+
+class AuthenticationSessionRevoked(DomainEvent):
+    event_type: ClassVar[str] = "identity.authentication_session.revoked.v1"
+    session_id: UUID
+
+
 class IdentityModule:
-    def __init__(self) -> None:
+    def __init__(self, *, max_session_lifetime: timedelta = timedelta(hours=8)) -> None:
+        if max_session_lifetime <= timedelta(0):
+            raise ValueError("Maximum authentication session lifetime must be positive")
+        self.max_session_lifetime = max_session_lifetime
         data = json.loads(
             files("businessos_identity").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
 
     async def register(self, registration: ModuleRegistration) -> None:
+        registration.dependency(MEMBERSHIP_AUTHORITY, lambda _: DatabaseMembershipAuthority())
+        registration.dependency(
+            AUTHENTICATED_PRINCIPAL, lambda _: current_authenticated_principal()
+        )
         for key, description in (
             ("foundation.identity.read", "Read tenant identity and membership"),
             ("foundation.identity.manage", "Manage tenant principals and federation"),
@@ -160,8 +215,28 @@ class IdentityModule:
         registration.command(
             SetMFAPolicy, self._mfa_policy, permission="foundation.identity.manage"
         )
+        registration.command(
+            StartAuthenticationSession,
+            self._start_session,
+            permission="foundation.identity.read",
+        )
+        registration.command(
+            RevokeAuthenticationSession,
+            self._revoke_session,
+            permission="foundation.identity.manage",
+        )
         registration.query(
             GetMembership, self._get_membership, permission="foundation.identity.read"
+        )
+        registration.query(
+            GetAuthenticationSession,
+            self._get_session,
+            permission="foundation.identity.read",
+        )
+        registration.query(
+            ValidateAuthenticationSession,
+            self._validate_session,
+            permission="foundation.identity.read",
         )
 
     async def start(self) -> None:
@@ -193,12 +268,19 @@ class IdentityModule:
     async def _map_external(self, command: MapExternalIdentity, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
         exists = await context.unit_of_work.persistence.execute(
-            select(USERS.c.id).where(
+            select(USERS.c.id, USERS.c.is_break_glass).where(
                 USERS.c.tenant_id == tenant.tenant_id, USERS.c.id == command.user_id
             )
         )
-        if exists.scalar_one_or_none() is None:
+        user = exists.one_or_none()
+        if user is None:
             raise BusinessOSError("not_found", "User not found", status_code=404)
+        if user.is_break_glass:
+            raise BusinessOSError(
+                "invalid_break_glass",
+                "Break-glass identities cannot use federation",
+                status_code=422,
+            )
         await context.unit_of_work.persistence.execute(
             insert(EXTERNAL_IDENTITIES).values(
                 id=uuid4(),
@@ -212,10 +294,7 @@ class IdentityModule:
 
     async def _grant_membership(self, command: GrantMembership, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
-        if command.valid_from and command.valid_until and command.valid_until < command.valid_from:
-            raise BusinessOSError(
-                "invalid_effective_dates", "Membership dates are invalid", status_code=422
-            )
+        validate_effective_period(command.valid_from, command.valid_until)
         principal_table = {
             "user": USERS,
             "service_account": SERVICE_ACCOUNTS,
@@ -309,11 +388,25 @@ class IdentityModule:
 
     async def _device(self, command: RegisterDevice, context: HandlingContext) -> object:
         tenant = _require_tenant(context.request, command.tenant_id)
+        principal_table = {
+            "user": USERS,
+            "service_account": SERVICE_ACCOUNTS,
+        }[command.principal_type]
+        principal = await context.unit_of_work.persistence.execute(
+            select(principal_table.c.id).where(
+                principal_table.c.tenant_id == tenant.tenant_id,
+                principal_table.c.id == command.principal_id,
+                principal_table.c.active.is_(True),
+            )
+        )
+        if principal.scalar_one_or_none() is None:
+            raise BusinessOSError("not_found", "Active device principal not found", status_code=404)
         await context.unit_of_work.persistence.execute(
             insert(DEVICES).values(
                 id=command.device_id,
                 tenant_id=tenant.tenant_id,
                 principal_id=command.principal_id,
+                principal_type=command.principal_type,
                 name=command.name,
                 device_type=command.device_type,
                 credential_secret_reference=command.credential_secret_reference,
@@ -334,13 +427,14 @@ class IdentityModule:
                 audience=command.audience,
                 jwks_uri=command.jwks_uri,
                 algorithms=list(command.algorithms),
+                active=command.active,
             )
             .on_conflict_do_update(
                 constraint="oidc_provider_identity",
                 set_={
                     "jwks_uri": command.jwks_uri,
                     "algorithms": list(command.algorithms),
-                    "active": True,
+                    "active": command.active,
                 },
             )
         )
@@ -392,6 +486,188 @@ class IdentityModule:
             valid_until=row["valid_until"],
             scopes=tuple(row["scopes"]),
         )
+
+    async def _start_session(
+        self, command: StartAuthenticationSession, context: HandlingContext
+    ) -> object:
+        tenant = _require_tenant(context.request, command.tenant_id)
+        now = datetime.now(UTC)
+        if (
+            command.expires_at.tzinfo is None
+            or command.expires_at.utcoffset() is None
+            or command.expires_at <= now
+            or command.expires_at > now + self.max_session_lifetime
+            or (
+                tenant.credential_expires_at is not None
+                and (
+                    tenant.credential_expires_at.tzinfo is None
+                    or tenant.credential_expires_at.utcoffset() is None
+                    or command.expires_at > tenant.credential_expires_at
+                )
+            )
+        ):
+            raise BusinessOSError(
+                "invalid_session_expiry",
+                "Session expiry exceeds the permitted credential or session lifetime",
+                status_code=422,
+            )
+        membership = await context.unit_of_work.persistence.execute(
+            select(MEMBERSHIPS.c.id, MEMBERSHIPS.c.principal_type).where(
+                MEMBERSHIPS.c.tenant_id == tenant.tenant_id,
+                MEMBERSHIPS.c.principal_id == tenant.principal_id,
+                MEMBERSHIPS.c.status == MembershipStatus.ACTIVE,
+                (MEMBERSHIPS.c.valid_from.is_(None) | (MEMBERSHIPS.c.valid_from <= now)),
+                (MEMBERSHIPS.c.valid_until.is_(None) | (MEMBERSHIPS.c.valid_until > now)),
+            )
+        )
+        memberships = tuple(membership)
+        if len(memberships) != 1:
+            raise BusinessOSError(
+                "invalid_membership", "Active tenant membership is required", status_code=403
+            )
+        principal_type = memberships[0].principal_type
+        principal_table = {
+            "user": USERS,
+            "service_account": SERVICE_ACCOUNTS,
+            "device": DEVICES,
+        }.get(principal_type)
+        if principal_table is None:
+            raise BusinessOSError(
+                "invalid_principal", "Active principal is required", status_code=403
+            )
+        principal = await context.unit_of_work.persistence.execute(
+            select(principal_table.c.id).where(
+                principal_table.c.tenant_id == tenant.tenant_id,
+                principal_table.c.id == tenant.principal_id,
+                principal_table.c.active.is_(True),
+            )
+        )
+        if principal.scalar_one_or_none() is None:
+            raise BusinessOSError(
+                "invalid_principal", "Active principal is required", status_code=403
+            )
+        await context.unit_of_work.persistence.execute(
+            insert(AUTHENTICATION_SESSIONS).values(
+                id=command.session_id,
+                tenant_id=tenant.tenant_id,
+                principal_id=tenant.principal_id,
+                principal_type=principal_type,
+                authentication_strength=tenant.authentication_strength,
+                expires_at=command.expires_at,
+            )
+        )
+        context.emit(
+            AuthenticationSessionStarted(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                session_id=command.session_id,
+                principal_id=tenant.principal_id,
+                principal_type=principal_type,
+            )
+        )
+        return {"session_id": command.session_id}
+
+    async def _revoke_session(
+        self, command: RevokeAuthenticationSession, context: HandlingContext
+    ) -> object:
+        tenant = _require_tenant(context.request, command.tenant_id)
+        revoked_at = datetime.now(UTC)
+        result = await context.unit_of_work.persistence.execute(
+            update(AUTHENTICATION_SESSIONS)
+            .where(
+                AUTHENTICATION_SESSIONS.c.tenant_id == tenant.tenant_id,
+                AUTHENTICATION_SESSIONS.c.id == command.session_id,
+            )
+            .values(revoked_at=revoked_at)
+            .returning(AUTHENTICATION_SESSIONS.c.id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise BusinessOSError("not_found", "Authentication session not found", status_code=404)
+        context.emit(
+            AuthenticationSessionRevoked(
+                tenant_id=tenant.tenant_id,
+                correlation_id=context.request.correlation_id,
+                session_id=command.session_id,
+            )
+        )
+        return {"session_id": command.session_id, "revoked_at": revoked_at}
+
+    async def _get_session(
+        self, query: GetAuthenticationSession, context: HandlingContext
+    ) -> object:
+        _require_tenant(context.request, query.tenant_id)
+        result = await context.unit_of_work.persistence.execute(
+            select(AUTHENTICATION_SESSIONS).where(
+                AUTHENTICATION_SESSIONS.c.tenant_id == query.tenant_id,
+                AUTHENTICATION_SESSIONS.c.id == query.session_id,
+            )
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            raise BusinessOSError("not_found", "Authentication session not found", status_code=404)
+        return AuthenticationSessionRecord(
+            session_id=row["id"],
+            tenant_id=row["tenant_id"],
+            principal_id=row["principal_id"],
+            principal_type=row["principal_type"],
+            authentication_strength=row["authentication_strength"],
+            started_at=row["started_at"],
+            expires_at=row["expires_at"],
+            revoked_at=row["revoked_at"],
+        )
+
+    async def _validate_session(
+        self, query: ValidateAuthenticationSession, context: HandlingContext
+    ) -> object:
+        record = await self._get_session(
+            GetAuthenticationSession(tenant_id=query.tenant_id, session_id=query.session_id),
+            context,
+        )
+        if not isinstance(record, AuthenticationSessionRecord) or not record.is_active():
+            raise BusinessOSError(
+                "invalid_session", "Authentication session is not active", status_code=401
+            )
+        membership = await context.unit_of_work.persistence.execute(
+            select(MEMBERSHIPS.c.id).where(
+                MEMBERSHIPS.c.tenant_id == record.tenant_id,
+                MEMBERSHIPS.c.principal_id == record.principal_id,
+                MEMBERSHIPS.c.principal_type == record.principal_type,
+                MEMBERSHIPS.c.status == MembershipStatus.ACTIVE,
+                (
+                    MEMBERSHIPS.c.valid_from.is_(None)
+                    | (MEMBERSHIPS.c.valid_from <= datetime.now(UTC))
+                ),
+                (
+                    MEMBERSHIPS.c.valid_until.is_(None)
+                    | (MEMBERSHIPS.c.valid_until > datetime.now(UTC))
+                ),
+            )
+        )
+        if membership.scalar_one_or_none() is None:
+            raise BusinessOSError(
+                "invalid_session", "Authentication session is not active", status_code=401
+            )
+        principal_table = {
+            "user": USERS,
+            "service_account": SERVICE_ACCOUNTS,
+            "device": DEVICES,
+        }.get(record.principal_type)
+        if principal_table is None:
+            raise BusinessOSError(
+                "invalid_session", "Authentication session is not active", status_code=401
+            )
+        principal = await context.unit_of_work.persistence.execute(
+            select(principal_table.c.id).where(
+                principal_table.c.tenant_id == record.tenant_id,
+                principal_table.c.id == record.principal_id,
+                principal_table.c.active.is_(True),
+            )
+        )
+        if principal.scalar_one_or_none() is None:
+            raise BusinessOSError(
+                "invalid_session", "Authentication session is not active", status_code=401
+            )
+        return record
 
 
 def _require_tenant(context: RequestContext, expected: UUID) -> TenantContext:

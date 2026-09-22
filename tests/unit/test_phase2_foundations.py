@@ -8,12 +8,27 @@ import pytest
 from businessos_identity import (
     ConfigureOIDCProvider,
     CreateUser,
+    IdentityModule,
+    MembershipRecord,
+    MembershipStatus,
     OIDCConfiguration,
     OIDCTokenVerifier,
+    SetMFAPolicy,
+    StartAuthenticationSession,
 )
-from businessos_organization import CreateLegalEntity
-from businessos_tenant import DeploymentMode, ProvisionTenant, TenantLifecycleHooks
+from businessos_organization import (
+    CreateLegalEntity,
+    OrganizationNode,
+    OrganizationSnapshot,
+)
+from businessos_tenant import (
+    DeploymentMode,
+    ProvisionTenant,
+    TenantLifecycleHooks,
+    validate_effective_period,
+)
 from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.exceptions import PyJWKClientError
 from pydantic import ValidationError
 
 from businessos.errors import BusinessOSError
@@ -25,6 +40,11 @@ class StaticKeyResolver:
 
     async def resolve(self, token: str) -> object:
         return self.key
+
+
+class UnknownKeyResolver:
+    async def resolve(self, token: str) -> object:
+        raise PyJWKClientError("No matching kid in provider key set")
 
 
 @pytest.mark.asyncio
@@ -69,6 +89,34 @@ def test_oidc_configuration_rejects_unsafe_transport_and_algorithms() -> None:
             audience="businessos",
             jwks_uri="https://identity.example.test/jwks",
         )
+
+
+@pytest.mark.asyncio
+async def test_unknown_oidc_kid_is_normalized_to_safe_invalid_token() -> None:
+    verifier = OIDCTokenVerifier(
+        OIDCConfiguration(
+            issuer="https://identity.example.test",
+            audience="businessos",
+            jwks_uri="https://identity.example.test/jwks",
+        ),
+        UnknownKeyResolver(),
+    )
+    with pytest.raises(BusinessOSError) as failure:
+        await verifier.verify("header.payload.signature")
+    assert failure.value.code == "invalid_token"
+    assert failure.value.status_code == 401
+    assert "kid" not in str(failure.value).casefold()
+
+
+def test_phase2_temporal_validation_is_strict_and_timezone_safe() -> None:
+    aware = datetime.now(UTC)
+    with pytest.raises(BusinessOSError, match="end after start"):
+        validate_effective_period(aware, aware)
+    with pytest.raises(BusinessOSError):
+        validate_effective_period(aware, aware - timedelta(seconds=1))
+    with pytest.raises(BusinessOSError):
+        validate_effective_period(aware, datetime.now())
+    validate_effective_period(aware, aware + timedelta(seconds=1))
     with pytest.raises(ValueError, match="asymmetric"):
         OIDCConfiguration(
             issuer="https://identity.example.test",
@@ -86,13 +134,13 @@ async def test_tenant_lifecycle_hooks_are_ordered() -> None:
         def __init__(self, name: str) -> None:
             self.name = name
 
-        async def export(self, tenant_id: object) -> None:
+        async def export(self, tenant_id: object, operation_id: object) -> None:
             calls.append(f"export:{self.name}")
 
-        async def delete(self, tenant_id: object) -> None:
+        async def delete(self, tenant_id: object, operation_id: object) -> None:
             calls.append(f"delete:{self.name}")
 
-        async def restore(self, tenant_id: object) -> None:
+        async def restore(self, tenant_id: object, operation_id: object) -> None:
             calls.append(f"restore:{self.name}")
 
     hooks = TenantLifecycleHooks()
@@ -102,9 +150,10 @@ async def test_tenant_lifecycle_hooks_are_ordered() -> None:
         hooks.register("a.module", Hook("duplicate"))
 
     tenant_id = uuid4()
-    await hooks.export(tenant_id)
-    await hooks.delete(tenant_id)
-    await hooks.restore(tenant_id)
+    operation_id = uuid4()
+    await hooks.export(tenant_id, operation_id)
+    await hooks.delete(tenant_id, operation_id)
+    await hooks.restore(tenant_id, operation_id)
     assert calls == ["export:a", "export:z", "delete:z", "delete:a", "restore:a", "restore:z"]
 
 
@@ -134,3 +183,50 @@ def test_phase2_boundary_models_reject_invalid_identity_and_organization_values(
             enterprise_group_id=uuid4(),
             country_code="usa",
         )
+
+
+def test_phase2_v1_public_contracts_preserve_legacy_construction_and_boundary_semantics() -> None:
+    tenant_id = uuid4()
+    principal_id = uuid4()
+    boundary = datetime.now(UTC)
+    membership = MembershipRecord(
+        membership_id=uuid4(),
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+        principal_type="user",
+        status=MembershipStatus.ACTIVE,
+        valid_until=boundary,
+    )
+    assert not membership.is_effective(boundary)
+    assert membership.is_effective(boundary - timedelta(microseconds=1))
+    assert IdentityModule(max_session_lifetime=timedelta(minutes=30)).max_session_lifetime == (
+        timedelta(minutes=30)
+    )
+    with pytest.raises(ValueError, match="positive"):
+        IdentityModule(max_session_lifetime=timedelta(0))
+
+    with pytest.raises(ValidationError):
+        SetMFAPolicy(
+            tenant_id=tenant_id,
+            minimum_strength="custom_strength",
+        )
+    with pytest.raises(ValidationError):
+        StartAuthenticationSession.model_validate(
+            {
+                "tenant_id": tenant_id,
+                "principal_id": principal_id,
+                "principal_type": "user",
+                "authentication_strength": "mfa",
+                "expires_at": datetime.now(UTC) + timedelta(hours=1),
+            }
+        )
+
+    company = OrganizationNode(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        kind="company",
+        code="COMPANY",
+        name="Legacy Company",
+    )
+    snapshot = OrganizationSnapshot(tenant_id=tenant_id, companies=(company,))
+    assert snapshot.companies == (company,)

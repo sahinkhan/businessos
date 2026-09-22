@@ -1,5 +1,13 @@
 import ast
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
+
+from businessos_organization import (
+    DelegationAuthorityRequest,
+    DelegationDecisionAuthority,
+    OrganizationScopeType,
+)
 
 from businessos.modules import discover_modules
 
@@ -21,6 +29,30 @@ def test_phase2_modules_discover_in_dependency_order() -> None:
         "foundation.tenant",
         "foundation.identity",
     ]
+
+
+def test_adr011_policy_port_preserves_adr010_request_construction() -> None:
+    now = datetime.now(UTC)
+    old_request = DelegationAuthorityRequest(
+        uuid4(),
+        uuid4(),
+        OrganizationScopeType.COMPANY,
+        uuid4(),
+        "organization.read",
+        now,
+        now,
+        now + timedelta(minutes=1),
+    )
+    assert old_request.grantor_principal_type is None
+
+    class LegacyAuthority:
+        async def acquire(self, tenant_id: object, persistence: object) -> None:
+            pass
+
+        async def allows(self, request: object, persistence: object) -> bool:
+            return True
+
+    assert not isinstance(LegacyAuthority(), DelegationDecisionAuthority)
 
 
 def test_phase2_production_code_uses_only_public_platform_sdk() -> None:

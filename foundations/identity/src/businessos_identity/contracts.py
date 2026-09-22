@@ -3,10 +3,39 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+from businessos.sdk import DependencyKey, TransactionalPersistence
+
+type PrincipalType = Literal["user", "service_account", "device"]
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class PrincipalReference:
+    principal_type: PrincipalType
+    principal_id: UUID
+
+
+class MembershipAuthority(Protocol):
+    """Validate and lock typed memberships in the caller's transaction."""
+
+    async def lock_many(
+        self,
+        persistence: TransactionalPersistence,
+        tenant_id: UUID,
+        principals: tuple[PrincipalReference, ...],
+        evaluated_at: datetime,
+        valid_from: datetime,
+        valid_until: datetime,
+    ) -> tuple["MembershipRecord", ...]: ...
+
+
+MEMBERSHIP_AUTHORITY = DependencyKey[MembershipAuthority](
+    "businessos.identity.membership_authority"
+)
 
 
 class MembershipStatus(StrEnum):
@@ -32,6 +61,25 @@ class PrincipalIdentity(BaseModel):
     principal_type: str
     authentication_strength: AuthenticationStrength | str
     scopes: tuple[dict[str, str], ...] = ()
+
+
+class AuthenticationSessionRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    session_id: UUID
+    tenant_id: UUID
+    principal_id: UUID
+    principal_type: str
+    authentication_strength: AuthenticationStrength | str
+    started_at: datetime
+    expires_at: datetime
+    revoked_at: datetime | None = None
+
+    def is_active(self, at: datetime | None = None) -> bool:
+        from datetime import UTC
+
+        instant = at or datetime.now(UTC)
+        return self.revoked_at is None and self.started_at <= instant < self.expires_at
 
 
 class SAMLAssertionValidator(Protocol):
@@ -65,7 +113,7 @@ class MembershipRecord(BaseModel):
         return (
             self.status is MembershipStatus.ACTIVE
             and (self.valid_from is None or self.valid_from <= instant)
-            and (self.valid_until is None or self.valid_until >= instant)
+            and (self.valid_until is None or instant < self.valid_until)
         )
 
 
@@ -82,8 +130,12 @@ class ActiveScopeSelection(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class IdentityContract:
-    version: str = "1.0"
+    version: str = "1.2"
     membership_query: str = "businessos_identity.GetMembership"
     active_scope_contract: str = "businessos_identity.ActiveScopeSelection"
     oidc_resolver: str = "businessos_identity.OIDCContextResolver"
     saml_adapter: str = "businessos_identity.SAMLAssertionValidator"
+    session_start_command: str = "businessos_identity.StartAuthenticationSession"
+    session_revoke_command: str = "businessos_identity.RevokeAuthenticationSession"
+    session_query: str = "businessos_identity.GetAuthenticationSession"
+    session_validation_query: str = "businessos_identity.ValidateAuthenticationSession"

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from typing import Literal, Self
+from uuid import UUID
 
 from pydantic import Field, field_serializer, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, ge=1, le=65535)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     app_version: str | None = None
+    installation_id: UUID = UUID("00000000-0000-0000-0000-000000000001")
     database_url: str = Field(
         default=(
             "postgresql+psycopg://businessos_app:businessos-application@localhost:5432/businessos"

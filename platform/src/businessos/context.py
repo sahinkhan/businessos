@@ -2,6 +2,7 @@
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from datetime import datetime
 from types import TracebackType
 from uuid import UUID, uuid4
 
@@ -28,6 +29,7 @@ class TenantContext:
     profit_center_id: UUID | None = None
     project_id: UUID | None = None
     delegation_id: UUID | None = None
+    credential_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

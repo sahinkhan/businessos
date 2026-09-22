@@ -1,12 +1,26 @@
 # ADR-012: Shared Master Ownership and Mutation Boundary
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Not set; this proposal has not been accepted.
+Decision date: 2026-09-22
 
 Approving roles required: Architecture Maintainer; Security Maintainer; Policy Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Geography Owning Domain Maintainer; Currency Owning Domain Maintainer; Release Maintainer
 
-Approval pull request or commit: Pending proposal review.
+Approval pull request or commit: [PR #20](https://github.com/sahinkhan/businessos/pull/20) — acceptance candidate; final exact-SHA owner attestation and main merge pending.
+
+Approved semantic proposal SHA: `6c62bf0934900e696dc5407563184e545dcd76ac`
+
+Proposal owner attestation: [@sahinkhan on PR #20](https://github.com/sahinkhan/businessos/pull/20#issuecomment-5780908979)
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION
+
+Accountable roles exercised: Architecture Maintainer; Security Maintainer; Policy Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Geography Owning Domain Maintainer; Currency Owning Domain Maintainer; Release Maintainer
+
+Independent human review: NOT PERFORMED
+
+Independent bounded technical review: PASS; Critical 0; High 0
+
+Exact proposal CI: [BusinessOS run 35758610550](https://github.com/sahinkhan/businessos/actions/runs/35758610550) — PASS
 
 Supersedes: None
 

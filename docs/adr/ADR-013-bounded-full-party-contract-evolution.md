@@ -1,12 +1,30 @@
 # ADR-013: Bounded Complete FullParty Contract Evolution
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Pending acceptance
+Decision date: 2026-09-23 — acceptance candidate; formal decision authority remains pending final exact-SHA owner acceptance and main merge
 
 Approving roles required: Architecture Maintainer; SDK/Contract Maintainer; Party Owning Domain Maintainer; Policy Maintainer; Security Maintainer; Release Maintainer
 
-Approval pull request or commit: Pending proposal PR and formal acceptance evidence
+Approval pull request or commit: [PR #21](https://github.com/sahinkhan/businessos/pull/21) — acceptance candidate; final exact-SHA owner attestation and main merge pending
+
+Approved semantic proposal SHA: `b8e56520a6e4a008258e4a0511a88c6919110092`
+
+Proposal owner attestation: [@sahinkhan on PR #21](https://github.com/sahinkhan/businessos/pull/21#issuecomment-5791092098)
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION
+
+Accountable roles exercised in proposal review: Architecture Maintainer; SDK/Contract Maintainer; Party Owning Domain Maintainer; Policy Maintainer; Security Maintainer; Release Maintainer
+
+Independent human review: NOT PERFORMED
+
+Independent bounded ADR proposal review: PASS; Critical 0; High 0
+
+Exact proposal CI: [BusinessOS run 35831434714](https://github.com/sahinkhan/businessos/actions/runs/35831434714) — PASS
+
+Acceptance candidate SHA: recorded on PR #21 after this commit is created; final owner acceptance remains pending
+
+Exception approval checkpoint: Proposal attestation did not grant an exception. Final exact-SHA owner acceptance must explicitly approve (a) bounded replacement of unlimited FullParty reads, (b) removal/redaction of historically exposed sensitive fields from general-read v1, (c) the bounded/redacted v1 shim and migration/coexistence path, (d) the support window and earliest-removal plan, and (e) the tenant-controlled resource-exhaustion and sensitive-disclosure reasons for the Security/Policy/Release exception. The Security Maintainer, Policy Maintainer, and Release Maintainer responsibilities must be exercised explicitly. No Phase 3 implementation or PR merge is authorized by this candidate alone.
 
 Supersedes: None
 

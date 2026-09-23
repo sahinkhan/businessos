@@ -4,7 +4,7 @@ Status: PROPOSED
 
 Decision date: Pending acceptance
 
-Approving roles required: Architecture Maintainer; SDK/Contract Maintainer; Party Owning Domain Maintainer; Security Maintainer; Release Maintainer
+Approving roles required: Architecture Maintainer; SDK/Contract Maintainer; Party Owning Domain Maintainer; Policy Maintainer; Security Maintainer; Release Maintainer
 
 Approval pull request or commit: Pending proposal PR and formal acceptance evidence
 
@@ -34,6 +34,22 @@ An SQL hard limit with explicit overflow preserves the meaning of successful
 responses, but narrows the contract: a large request that previously succeeded
 will fail. [RELEASES.md](../governance/RELEASES.md) classifies this as an
 incompatible public-contract change even before 1.0.
+
+The historical `v0.3.0-phase3` implementation returned date of birth, tax
+identifier, registration number, contact values, and *all* external identifiers
+through `GetFullParty` under general `foundation.party.read`. The Phase 3
+remediation candidate removes those values from the general projection and
+adds `GetSensitiveFullParty` behind `foundation.party.sensitive.read`. That
+is a **separate incompatible security correction** to the v1 projection,
+independent of the proposed aggregate bound. It may break callers that used
+general read to obtain those values, but continuing that access would violate
+the accepted sensitive-data boundary. This ADR does not reauthorize the
+historical disclosure. Callers needing classified fields must obtain the
+explicit sensitive-read permission and use the sensitive query or its v2
+successor; callers without that permission receive only the redacted
+projection. Security, Policy, SDK/Contract, Party, and Release review must
+cover this transition and its notice. The security exception below covers
+both the immediate redaction and the retirement of unlimited reads.
 
 The repository-wide source search found no Phase 4 Policy, later business
 module, or example application caller of `GetFullParty`, `GetSensitiveFullParty`,
@@ -70,14 +86,22 @@ the v2 marker does not version unrelated sensitive Party operations.
 The existing `GetFullParty`, `GetSensitiveFullParty`, and `FullPartyRecord`
 names are the v1 surface and are deprecated on v2 availability. The v2
 query types, marker, and result type make the contract-major change explicit.
+The first proposed distribution carrying this contract is
+`businessos-foundation-party 0.4.0`, with manifest version `0.4.0` and
+published compatibility metadata naming the v1 and v2 query ranges. The
+historical `0.3.0` artifact and tags are immutable; neither may be rebuilt
+or retargeted. Before publication, Release Maintainer must verify `0.4.0`
+is unused in the artifact registry and choose the next unused `0.MINOR`
+identifier if it is not. The new release identifier and compatibility ranges
+must be recorded in the implementation PR and release notes.
 
 For each child collection actually included in the caller's authorized
 projection, the owning Party handler executes an SQL query scoped to the
 trusted tenant and Party, ordered by a stable unique key, with `LIMIT 101`.
 It may fetch all rows from that bounded SQL result. If any result has 101
 rows, the handler returns **no** `FullPartyRecordV2`; it raises a controlled
-`BusinessOSError` with code `full_party_aggregate_too_large`, an application
-error status suitable for an oversized bounded read, and guidance to use the
+`BusinessOSError` with code `full_party_aggregate_too_large`, HTTP status
+`409` at the existing application boundary, and guidance to use the
 paginated Party child queries. The message includes no values, raw SQL,
 exact child counts, sensitive collection identity, or information from
 another tenant. Exactly 100 visible rows in any collection succeeds. The
@@ -121,50 +145,67 @@ exception to the ordinary v1 behavior/deprecation window: when v2 and the
 child-list contracts become available, the existing v1 query names remain
 as deprecated compatibility shims, but their reads also use the same
 complete-or-overflow SQL bound. Successful small v1 responses retain their
-current shape and authorized content. Large v1 calls receive the same
+current candidate shape and authorized redacted content; this does not
+restore sensitive fields disclosed by the historical tag. Large v1 calls receive the same
 controlled overflow error and migration guidance. No unlimited v1 execution
 path survives certification. This is **incompatible v1 narrowing**, not an
 additive change or a claim that absence of known callers proves compatibility.
+The historical-to-candidate redaction is a second incompatible security
+narrowing of v1 and is part of the explicit exception request.
 
-The normal deprecation rule retains the v1 names through at least the next
-stable platform minor release after v2 becomes available, unless a separately
-approved removal exception shortens that period. This ADR requests an
-exception only for **unlimited v1 read behavior**, not for the v1 symbol's
-support duration. The earliest ordinary removal of the deprecated v1 names
-is after that next stable minor support checkpoint, documented consumer
-migration, downstream regression evidence, and owning Party,
-SDK/Contract, Architecture, and Release approval. No removal is authorized by
-this proposal. If a later release needs earlier removal, it requires its own
-explicit Security and Release exception with an expiry and notice.
+The first proposed deprecation checkpoint is the coordinated
+`v0.5.0-phase3-fullparty` release carrying Party distribution `0.4.0` and
+v2. The earliest proposed removal checkpoint for the deprecated v1 names is
+`v0.6.0`, **only if** it is the next Stable platform minor after that first
+release. If the first release or `v0.6.0` is not Stable, the support window
+extends through the actual next Stable platform minor; removal moves later.
+These identifiers are proposed release targets, not claims that a release is
+scheduled or approved. Release Maintainer must verify both identifiers are
+unused and record the actual identifiers in release metadata before rollout;
+if they differ, an ADR revision and review must preserve the same minimum
+window. Removal also requires documented consumer migration, downstream
+regression evidence, and owning Party, SDK/Contract, Architecture, and
+Release approval. No removal is authorized by this proposal. This ADR
+requests an exception only for **historically sensitive v1 projection and
+unlimited v1 read behavior**, not for the v1 symbol's support duration. If a
+later release needs earlier removal, it requires its own explicit Security
+and Release exception with an expiry and notice.
 
 The requested immediate behavior exception is justified by tenant-controlled
 resource-exhaustion exposure and a release-blocking bounded-query violation.
 Affected users are callers with more than 100 authorized children in any
-FullParty collection. They must switch to v2 for bounded complete reads or
-combine `GetParty` with the paginated child queries for larger collections.
-The mitigation is additive child access, explicit deterministic overflow,
-release notice, and preservation of all smaller complete responses. The
-exception expires when the last unlimited v1 handler is replaced before
-Phase 3 freeze. It is **not granted by PROPOSED status**: Security Maintainer
-and Release Maintainer must explicitly approve this exception at ADR
-acceptance. If they do not, no implementation may claim Phase 3 certification
-while an unbounded v1 endpoint remains.
+FullParty collection **and** callers who used general Party read for the
+historically exposed sensitive fields. Large-aggregate callers must combine
+`GetParty` with paginated child queries. Sensitive-data callers must obtain
+the existing explicit sensitive-read permission and use the authorized
+sensitive aggregate or child query; general-read callers cannot retain that
+access. The mitigations are additive child access, explicit deterministic
+overflow, sensitive-query migration, release notice, and preservation of
+smaller complete *authorized* responses. The exception expires when the last
+unlimited and historically unredacted v1 handler is replaced before Phase 3
+freeze. It is **not granted by PROPOSED status**: Security Maintainer,
+Policy Maintainer, and Release Maintainer must explicitly approve both parts
+of this exception at ADR acceptance. If they do not, no implementation may
+claim Phase 3 certification while an unbounded or unredacted general-read
+v1 endpoint remains.
 
 ### Compatibility and implementation gates
 
 The v2 queries and child-list operations are additive. Replacing unlimited
-v1 execution with complete-or-overflow behavior is an incompatible public
-contract narrowing. The v1 names are deprecated, not silently reinterpreted
+v1 execution with complete-or-overflow behavior and removing historically
+exposed sensitive fields from general v1 reads are two distinct incompatible
+public-contract security corrections. The v1 names are deprecated, not silently reinterpreted
 as pages. The independent query major and controlled v1 transition are the
 version/coexistence plan required by RELEASES.md. Existing v1 users must be
 notified of the fixed bound, error code, migration path, and support window.
-Release notes must identify the exact rollout checkpoint and any known
-consumer. The immutable historical tags and artifacts are not retargeted.
+Release notes must identify the exact rollout checkpoint, both v1 behavior
+changes, the sensitive permission path, and any known consumer. The immutable
+historical tags and artifacts are not retargeted.
 
 Implementation begins only after this ADR is formally `ACCEPTED`. The
 remediation branch must then reconcile the accepted decision without changing
 frozen Phase 0/1/2 behavior or ADR-012 semantics. The implementation adds
-Party-owned v2 types and marker, the bounded v1 compatibility shims,
+Party-owned v2 types and marker, the bounded redacted v1 compatibility shims,
 paginated child queries, and conformance and PostgreSQL tests. It must prove
 both v1 and v2 aggregate SQL have a limit and unique ordering, exactly-100
 success, 101-row fail-closed behavior, no partial object, no sensitive
@@ -194,9 +235,11 @@ Affected public surfaces are the Party v1 aggregate queries and result,
 their v2 successors, the new child-list queries, `ListPartyRelationships`,
 the existing sensitive-read marker and permission, and release notices.
 Affected accountable roles are Architecture Maintainer, SDK/Contract
-Maintainer, Party Owning Domain Maintainer, Security Maintainer, and Release
-Maintainer. Security and Release are required for the requested shortened
-unlimited-v1 behavior window and resource-exhaustion review. No migration
+Maintainer, Party Owning Domain Maintainer, Policy Maintainer, Security
+Maintainer, and Release Maintainer. Policy and Security review the sensitive
+authorization and historical projection correction; Security and Release
+approve the shortened unlimited-v1 behavior window and resource-exhaustion
+response. No migration
 safety approval is required absent a later schema or data-lifecycle change.
 
 ## Alternatives considered
@@ -218,8 +261,9 @@ safety approval is required absent a later schema or data-lifecycle change.
 
 This is a proposal, not an implementation authorization or an accepted
 exception. Formal acceptance requires the accountable-role approval union,
-explicit Security and Release approval of the unlimited-v1 behavior
-exception, exact-head CI, independent read-only technical review with zero
+explicit Security, Policy, and Release approval of the historical sensitive
+projection and unlimited-v1 behavior exceptions, exact-head CI, independent
+read-only technical review with zero
 Critical/High findings, and the governance evidence required by
 [ADR-GOVERNANCE.md](../governance/ADR-GOVERNANCE.md). The owner attestation,
 if the Solo Maintainer Exception remains eligible, must identify every role

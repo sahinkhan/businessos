@@ -118,3 +118,41 @@ class FullPartyRecord(BaseModel):
     identifiers: list[ExternalIdentifierRecord] = Field(
         default_factory=lambda: list[ExternalIdentifierRecord]()
     )
+
+
+class DuplicatePartyCandidate(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    party_id: UUID
+    confidence: str
+    reasons: tuple[str, ...]
+
+
+class DuplicateMatchResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    source_party_id: UUID
+    candidates: tuple[DuplicatePartyCandidate, ...] = ()
+
+
+# Public classification for query authors and reviewers. General reads redact these
+# values; the sensitive projection requires foundation.party.sensitive.read.
+PARTY_SENSITIVE_FIELDS: tuple[str, ...] = (
+    "person_profile.date_of_birth",
+    "organization_profile.tax_identifier",
+    "organization_profile.registration_number",
+    "contact.value",
+    "external_identifier.identifier_value when is_sensitive",
+)
+
+
+class PartySensitiveReadContract:
+    """Versioned marker for sensitive Party projection and lookup queries."""
+
+    version: str = "1.0"
+
+
+class PartyDuplicateMatchContract:
+    """Versioned marker for advisory, tenant-scoped duplicate matching."""
+
+    version: str = "1.0"

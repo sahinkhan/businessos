@@ -1,8 +1,9 @@
 """Geography and address foundation module registration and handlers."""
 
 import json
+import re
 from importlib.resources import files
-from typing import ClassVar
+from typing import ClassVar, cast
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -24,6 +25,9 @@ from businessos.sdk import (
 from .contracts import (
     AddressFormatProviderContract,
     AddressRecord,
+    AddressValidationError,
+    AddressValidationProviderContract,
+    AddressValidationResult,
     CityRecord,
     CountryRecord,
     SubdivisionRecord,
@@ -88,6 +92,14 @@ class GetAddress(Query):
     address_id: UUID
 
 
+class ValidateAddress(Query):
+    country_code: str = Field(min_length=2, max_length=2)
+    subdivision_code: str | None = Field(default=None, max_length=10)
+    city: str = Field(min_length=1, max_length=200)
+    postal_code: str | None = Field(default=None, max_length=30)
+    street_line1: str | None = Field(default=None, max_length=300)
+
+
 class CountryRegistered(DomainEvent):
     event_type: ClassVar[str] = "geography.country.registered.v1"
     country_code: str
@@ -108,6 +120,7 @@ class GeographyModule:
         )
         self.manifest = ModuleManifest.model_validate(data)
         self.address_formatter = AddressFormatProviderContract()
+        self.address_validator = AddressValidationProviderContract()
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.permission(
@@ -118,22 +131,11 @@ class GeographyModule:
         registration.permission(
             PermissionDeclaration(
                 key="foundation.geography.manage",
-                description="Manage geography records and addresses",
+                description="Manage tenant-owned addresses",
             )
         )
         registration.contract("foundation.geography.address-formatter.v1", self.address_formatter)
-
-        registration.command(
-            RegisterCountry, self._register_country, permission="foundation.geography.manage"
-        )
-        registration.command(
-            RegisterSubdivision,
-            self._register_subdivision,
-            permission="foundation.geography.manage",
-        )
-        registration.command(
-            RegisterCity, self._register_city, permission="foundation.geography.manage"
-        )
+        registration.contract("foundation.geography.address-validator.v1", self.address_validator)
         registration.command(
             CreateAddress, self._create_address, permission="foundation.geography.manage"
         )
@@ -149,6 +151,9 @@ class GeographyModule:
             ListSubdivisions, self._list_subdivisions, permission="foundation.geography.read"
         )
         registration.query(GetAddress, self._get_address, permission="foundation.geography.read")
+        registration.query(
+            ValidateAddress, self._validate_address, permission="foundation.geography.read"
+        )
 
     async def start(self) -> None:
         return None
@@ -258,41 +263,18 @@ class GeographyModule:
         self, command: CreateAddress, context: HandlingContext
     ) -> AddressRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
-        country = await self._get_country(GetCountry(code=command.country_code), context)
-        if country is None:
-            raise BusinessOSError("not_found", "Country not found", status_code=404)
-        subdivision_id = None
-        if command.subdivision_code is not None:
-            subdivision = (
-                await context.unit_of_work.persistence.execute(
-                    select(SUBDIVISIONS.c.id).where(
-                        SUBDIVISIONS.c.country_code == command.country_code,
-                        SUBDIVISIONS.c.code == command.subdivision_code,
-                    )
-                )
-            ).first()
-            if subdivision is None:
-                raise BusinessOSError(
-                    "invalid_subdivision", "Subdivision does not belong to country", status_code=400
-                )
-            subdivision_id = subdivision.id
-        city = (
-            await context.unit_of_work.persistence.execute(
-                select(CITIES.c.id).where(
-                    CITIES.c.country_code == command.country_code,
-                    CITIES.c.name == command.city,
-                    *(
-                        (CITIES.c.subdivision_id == subdivision_id,)
-                        if subdivision_id is not None
-                        else ()
-                    ),
-                )
-            )
-        ).first()
-        if city is None:
-            raise BusinessOSError(
-                "invalid_city", "City does not belong to address parent", status_code=400
-            )
+        validation = await self._validate_address(
+            ValidateAddress(
+                country_code=command.country_code,
+                subdivision_code=command.subdivision_code,
+                city=command.city,
+                postal_code=command.postal_code,
+                street_line1=command.street_line1,
+            ),
+            context,
+        )
+        if not validation.valid:
+            raise BusinessOSError("invalid_address", "Address validation failed", status_code=400)
         formatted = self.address_formatter.format(
             street_line1=command.street_line1,
             street_line2=command.street_line2,
@@ -346,6 +328,105 @@ class GeographyModule:
             coordinates=command.coordinates,
             metadata=command.metadata,
             created_at=created_at,
+        )
+
+    async def _validate_address(
+        self, query: ValidateAddress, context: HandlingContext
+    ) -> AddressValidationResult:
+        country_code = query.country_code.strip().upper()
+        subdivision_code = (
+            query.subdivision_code.strip().upper() if query.subdivision_code else None
+        )
+        city_name = query.city.strip()
+        postal_code = query.postal_code.strip() if query.postal_code else None
+        errors: list[AddressValidationError] = []
+        country = (
+            await context.unit_of_work.persistence.execute(
+                select(COUNTRIES.c.address_format).where(
+                    COUNTRIES.c.code == country_code, COUNTRIES.c.is_active.is_(True)
+                )
+            )
+        ).first()
+        if country is None:
+            errors.append(
+                AddressValidationError(
+                    code="unknown_country", field="country_code", message="Country is not active"
+                )
+            )
+        subdivision_id = None
+        if subdivision_code is not None:
+            subdivision = (
+                await context.unit_of_work.persistence.execute(
+                    select(SUBDIVISIONS.c.id).where(
+                        SUBDIVISIONS.c.country_code == country_code,
+                        SUBDIVISIONS.c.code == subdivision_code,
+                        SUBDIVISIONS.c.is_active.is_(True),
+                    )
+                )
+            ).first()
+            if subdivision is None:
+                errors.append(
+                    AddressValidationError(
+                        code="invalid_subdivision",
+                        field="subdivision_code",
+                        message="Subdivision does not belong to country",
+                    )
+                )
+            else:
+                subdivision_id = subdivision.id
+        city = (
+            await context.unit_of_work.persistence.execute(
+                select(CITIES.c.postal_code_pattern).where(
+                    CITIES.c.country_code == country_code,
+                    CITIES.c.name == city_name,
+                    CITIES.c.is_active.is_(True),
+                    *((CITIES.c.subdivision_id == subdivision_id,) if subdivision_id else ()),
+                )
+            )
+        ).first()
+        if city is None:
+            errors.append(
+                AddressValidationError(
+                    code="invalid_city",
+                    field="city",
+                    message="City does not belong to address parent",
+                )
+            )
+        elif city.postal_code_pattern and (
+            postal_code is None or re.fullmatch(city.postal_code_pattern, postal_code) is None
+        ):
+            errors.append(
+                AddressValidationError(
+                    code="invalid_postal_code",
+                    field="postal_code",
+                    message="Postal code does not match the locality format",
+                )
+            )
+        if country is not None:
+            required = country.address_format.get("required_fields", [])
+            supplied = {
+                "street_line1": query.street_line1,
+                "subdivision_code": subdivision_code,
+                "postal_code": postal_code,
+                "city": city_name,
+            }
+            if isinstance(required, list):
+                for field in cast(list[object], required):
+                    if isinstance(field, str) and field in supplied and not supplied[field]:
+                        errors.append(
+                            AddressValidationError(
+                                code="required_field",
+                                field=field,
+                                message="Required by country address format",
+                            )
+                        )
+        return AddressValidationResult(
+            valid=not errors,
+            normalized_country_code=country_code,
+            normalized_subdivision_code=subdivision_code,
+            normalized_city=city_name,
+            normalized_postal_code=postal_code,
+            errors=tuple(errors),
         )
 
     async def _get_country(

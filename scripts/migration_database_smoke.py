@@ -33,6 +33,7 @@ REQUIRED_OWNERS = {
     "foundation.tenant",
     "foundation.identity",
     "foundation.organization",
+    "foundation.currency",
     "foundation.geography",
     "foundation.reference_data",
     "foundation.uom",

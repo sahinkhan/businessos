@@ -65,6 +65,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert {source.owner for source in plan.sources} == smoke.REQUIRED_OWNERS
     assert plan.heads == (
         "audit_0002",
+        "geography_0003",
         "gov_0002",
         "identity_0003",
         "organization_0003",
@@ -87,6 +88,8 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["organization_0003"] == ("organization_0002",)
     assert parents["geography_0001"] == ("organization_0001",)
     assert parents["geography_0002"] == ("geography_0001",)
+    assert parents["currency_0001"] == ("0005_durable_event_subscribers",)
+    assert parents["geography_0003"] == ("geography_0002", "currency_0001")
     assert parents["reference_0001"] == ("geography_0001",)
     assert parents["reference_0002"] == ("reference_0001", "geography_0002")
     assert parents["uom_0001"] == ("reference_0001",)

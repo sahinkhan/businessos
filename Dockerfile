@@ -24,6 +24,7 @@ RUN python -m pip wheel --no-deps --wheel-dir /wheels . \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/tenant \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/identity \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/organization \
+    && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/currency \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/geography \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/reference_data \
     && python -m pip wheel --no-deps --wheel-dir /wheels ./foundations/uom \
@@ -47,6 +48,7 @@ RUN python -m pip install --no-cache-dir \
     -e foundations/tenant \
     -e foundations/identity \
     -e foundations/organization \
+    -e foundations/currency \
     -e foundations/geography \
     -e foundations/reference_data \
     -e foundations/uom \
@@ -72,6 +74,7 @@ RUN python -m pip install --no-cache-dir \
     /tmp/wheels/businessos_foundation_tenant-*.whl \
     /tmp/wheels/businessos_foundation_identity-*.whl \
     /tmp/wheels/businessos_foundation_organization-*.whl \
+    /tmp/wheels/businessos_foundation_currency-*.whl \
     /tmp/wheels/businessos_foundation_geography-*.whl \
     /tmp/wheels/businessos_foundation_reference_data-*.whl \
     /tmp/wheels/businessos_foundation_uom-*.whl \

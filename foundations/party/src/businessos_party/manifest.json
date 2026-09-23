@@ -18,6 +18,7 @@
   "capabilities": [],
   "permissions": [
     "foundation.party.read",
+    "foundation.party.sensitive.read",
     "foundation.party.manage"
   ],
   "migrations": ["python://businessos_party/migrations/versions"],

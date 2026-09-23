@@ -109,6 +109,10 @@ def upgrade() -> None:
         CREATE FUNCTION platform_geo.protect_address_city() RETURNS trigger
         LANGUAGE plpgsql AS $$
         BEGIN
+          -- Serialize trusted city maintenance with tenant address writes. A
+          -- plain RLS-visible scan alone can miss an uncommitted address that
+          -- validated against the previous city version.
+          LOCK TABLE platform_geo.addresses IN SHARE ROW EXCLUSIVE MODE;
           IF EXISTS (
             SELECT 1 FROM platform_geo.addresses address
             WHERE address.country_code = OLD.country_code AND address.city = OLD.name

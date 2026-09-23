@@ -164,12 +164,15 @@ def _run_installed(
 ) -> str:
     result = subprocess.run(
         (executable, *arguments),
-        check=True,
         cwd=workdir,
         env=environment,
-        stdout=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
+    if result.returncode:
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, output=result.stdout, stderr=result.stderr
+        )
     print(result.stdout, end="")
     return result.stdout
 
@@ -193,8 +196,16 @@ def _run_image(
         command.extend(("-e", name))
     command.extend((image, "businessos", *arguments))
     result = subprocess.run(
-        command, check=True, cwd=workdir, env=environment, stdout=subprocess.PIPE, text=True
+        command,
+        cwd=workdir,
+        env=environment,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode:
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, output=result.stdout, stderr=result.stderr
+        )
     print(result.stdout, end="")
     return result.stdout
 
@@ -208,6 +219,40 @@ def _verify(database_url: str, plan: MigrationPlan) -> None:
             "FROM platform_module.installed_module_migrations"
         ).fetchall()
     _verify_state(heads, inventory, plan)
+
+
+def _currency_rows(database_url: str) -> list[tuple[object, ...]]:
+    with psycopg.connect(database_url) as connection:
+        return connection.execute(
+            "SELECT id, code, numeric_code, name, minor_unit, is_active, source, source_version "
+            "FROM platform_currency.currencies ORDER BY code"
+        ).fetchall()
+
+
+def _verify_global_geography_read_only(database_url: str) -> None:
+    with psycopg.connect(database_url) as connection:
+        for table in ("countries", "subdivisions", "cities"):
+            privileges = connection.execute(
+                "SELECT has_table_privilege(current_user, %s, 'SELECT'), "
+                "has_table_privilege(current_user, %s, 'INSERT'), "
+                "has_table_privilege(current_user, %s, 'UPDATE'), "
+                "has_table_privilege(current_user, %s, 'DELETE'), "
+                "has_table_privilege(current_user, %s, 'TRUNCATE')",
+                (f"platform_geo.{table}",) * 5,
+            ).fetchone()
+            if privileges != (True, False, False, False, False):
+                raise RuntimeError(f"unsafe runtime privileges on global Geography {table}")
+
+
+def _expect_safe_currency_downgrade_refusal(run: Callable[[Sequence[str]], str]) -> None:
+    try:
+        run(("migrate", "downgrade", "base"))
+    except subprocess.CalledProcessError as exc:
+        if "currency_0001 downgrade refused" not in (exc.stderr or ""):
+            raise RuntimeError("migration downgrade failed for an unexpected reason") from exc
+        print("canonical Currency downgrade safely refused")
+    else:
+        raise RuntimeError("destructive Currency downgrade unexpectedly succeeded")
 
 
 def main() -> None:
@@ -230,6 +275,7 @@ def main() -> None:
 
     administrator_base = _required("BOS_TEST_DATABASE_ADMIN_URL")
     migration_base = _required("BOS_TEST_DATABASE_MIGRATION_URL")
+    runtime_base = _required("BOS_TEST_DATABASE_RUNTIME_URL")
     database_name = f"businessos_artifact_smoke_{uuid4().hex}"
     host_admin_url = _url(administrator_base, database_name, sqlalchemy=False)
     host_migration_url = _url(migration_base, database_name, sqlalchemy=True)
@@ -294,9 +340,20 @@ def main() -> None:
             run(("migrate", "upgrade", "heads"))
             _verify_installed_plan(run(("migrate", "plan", "--check-database")), plan)
             _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
-            run(("migrate", "downgrade", "base"))
+            run(("migrate", "downgrade", "geography_0002"))
+            _verify_global_geography_read_only(_url(runtime_base, database_name, sqlalchemy=False))
             run(("migrate", "upgrade", "heads"))
             _verify_installed_plan(run(("migrate", "plan", "--check-database")), plan)
+            _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
+            before_currency = _currency_rows(_url(migration_base, database_name, sqlalchemy=False))
+            _expect_safe_currency_downgrade_refusal(run)
+            _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
+            if (
+                _currency_rows(_url(migration_base, database_name, sqlalchemy=False))
+                != before_currency
+            ):
+                raise RuntimeError("canonical Currency rows changed after downgrade refusal")
+            run(("migrate", "upgrade", "heads"))
             _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
     finally:
         with psycopg.connect(administrator_base, autocommit=True) as connection:

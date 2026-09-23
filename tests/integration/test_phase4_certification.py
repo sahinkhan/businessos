@@ -161,7 +161,8 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
         assert len(rls) == 14
         assert all(row[2] and row[3] for row in rls)
     finally:
-        app.runtime.migrations.downgrade(postgres_database.migration_url)
+        with pytest.raises(Exception, match="currency_0001 downgrade refused"):
+            app.runtime.migrations.downgrade(postgres_database.migration_url)
 
 
 @pytest.mark.integration
@@ -303,4 +304,5 @@ async def test_governance_retention_legal_hold_and_consent_lifecycle(
         assert not revoked_consent.has_consent
     finally:
         await app.shutdown()
-        app.runtime.migrations.downgrade(postgres_database.migration_url)
+        with pytest.raises(Exception, match="currency_0001 downgrade refused"):
+            app.runtime.migrations.downgrade(postgres_database.migration_url)

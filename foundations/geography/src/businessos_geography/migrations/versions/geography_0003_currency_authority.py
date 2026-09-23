@@ -73,27 +73,9 @@ def downgrade() -> None:
     op.drop_constraint(
         "fk_country_currency", "countries", schema="platform_geo", type_="foreignkey"
     )
+    # The Currency FK can be reversed, but ADR-012's canonical-master privilege
+    # boundary cannot. Keep the read-only address trigger as well: the older
+    # FOR SHARE variant requires global UPDATE privilege for tenant address writes.
     for table in ("countries", "subdivisions", "cities"):
-        op.execute(
-            f"GRANT SELECT, INSERT, UPDATE, DELETE ON platform_geo.{table} TO businessos_app"
-        )
-    op.execute(
-        """
-        CREATE OR REPLACE FUNCTION platform_geo.check_address_city() RETURNS trigger
-        LANGUAGE plpgsql AS $$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM platform_geo.cities city
-            LEFT JOIN platform_geo.subdivisions sub ON sub.id = city.subdivision_id
-            WHERE city.country_code = NEW.country_code AND city.name = NEW.city
-              AND (NEW.subdivision_code IS NULL OR
-                   (sub.country_code = NEW.country_code AND sub.code = NEW.subdivision_code))
-            FOR SHARE OF city
-          ) THEN
-            RAISE EXCEPTION 'Address city does not belong to supplied country/subdivision'
-              USING ERRCODE = '23503';
-          END IF;
-          RETURN NEW;
-        END $$
-        """
-    )
+        op.execute(f"REVOKE ALL PRIVILEGES ON platform_geo.{table} FROM businessos_app")
+        op.execute(f"GRANT SELECT ON platform_geo.{table} TO businessos_app")

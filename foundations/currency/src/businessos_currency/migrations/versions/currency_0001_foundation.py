@@ -113,5 +113,20 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        """
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM platform_currency.currencies LIMIT 1) THEN
+            RAISE EXCEPTION
+              'currency_0001 downgrade refused: canonical Currency data exists. '
+              'Retain the schema and perform forward repair, or restore an appropriate '
+              'pre-Currency backup; use a governed data-retirement process before '
+              'any future destructive removal.'
+              USING ERRCODE = '23514';
+          END IF;
+        END $$
+        """
+    )
     op.drop_table("currencies", schema=SCHEMA)
     op.execute(f"DROP SCHEMA IF EXISTS {SCHEMA}")

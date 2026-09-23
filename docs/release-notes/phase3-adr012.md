@@ -71,9 +71,14 @@ query; callers receive typed field errors and normalized locality values.
 ## Rollback and replay
 
 The forward migrations preserve existing rows. `geography_0003` can be
-downgraded to its predecessor after removing the Currency FK and restoring the
-old runtime grants, but doing so reopens the tenant global mutation risk and
-must not be used as a production security rollback. Restore the pre-upgrade
-database backup or apply a reviewed forward repair if canonical data has
-changed. Fresh upgrade and replay require the same packaged seed and migration
-inventory; they do not depend on customer-authored SQL.
+downgraded to its predecessor by removing the Currency FK, but the ADR-012
+runtime security boundary is intentionally not reversed. The application role
+retains SELECT-only access to global countries, subdivisions, and cities, and
+the address validation trigger retains its read-only implementation so tenant
+address writes still work. `currency_0001` refuses a destructive downgrade
+while canonical Currency rows exist. Keep the current schema and use a reviewed
+forward repair, or restore an appropriate pre-Currency backup; any future data
+retirement requires separate governance. An empty Currency table can be removed
+only after its dependent revisions have been downgraded. Fresh upgrade and
+replay require the same packaged seed and migration inventory; they do not
+depend on customer-authored SQL.

@@ -24,6 +24,7 @@ from businessos.sdk import (
 )
 
 from .contracts import (
+    MAX_UOM_DECIMAL_PLACES,
     ConvertedAmountRecord,
     MeasurementCategoryRecord,
     RoundingMode,
@@ -50,7 +51,7 @@ class CreateUnitOfMeasure(Command):
     is_base_unit: bool = False
     conversion_ratio: Decimal = Field(default=Decimal("1.0"), gt=0)
     conversion_offset: Decimal = Field(default=Decimal("0.0"))
-    precision: int = Field(default=2, ge=0)
+    precision: int = Field(default=2, ge=0, le=MAX_UOM_DECIMAL_PLACES)
     rounding_mode: RoundingMode = "ROUND_HALF_UP"
 
 

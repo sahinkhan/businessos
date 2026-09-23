@@ -55,6 +55,15 @@ def upgrade() -> None:
               'uom_0002: category % in tenant % lacks its base unit. Correct before retry',
               bad.code, bad.tenant_id USING ERRCODE = '23514';
           END IF;
+          SELECT u.id, u.precision INTO bad
+          FROM platform_uom.units_of_measure u
+          WHERE u.precision > 100 LIMIT 1;
+          IF FOUND THEN
+            RAISE EXCEPTION
+              'uom_0002: unit % has precision % above the supported 100 decimal places. '
+              'Review and normalize the unit before retry',
+              bad.id, bad.precision USING ERRCODE = '23514';
+          END IF;
           SELECT u.id, u.rounding_mode INTO bad
           FROM platform_uom.units_of_measure u
           WHERE u.rounding_mode NOT IN (
@@ -68,6 +77,12 @@ def upgrade() -> None:
           END IF;
         END $$
         """
+    )
+    op.create_check_constraint(
+        "ck_uom_precision_supported",
+        "units_of_measure",
+        "precision <= 100",
+        schema="platform_uom",
     )
     op.create_check_constraint(
         "ck_uom_rounding_mode_supported",
@@ -190,6 +205,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_constraint(
+        "ck_uom_precision_supported", "units_of_measure", schema="platform_uom", type_="check"
+    )
     op.execute("DROP TRIGGER category_base_integrity ON platform_uom.measurement_categories")
     op.execute("DROP FUNCTION platform_uom.protect_base_category()")
     op.execute("DROP TRIGGER units_base_delete ON platform_uom.units_of_measure")

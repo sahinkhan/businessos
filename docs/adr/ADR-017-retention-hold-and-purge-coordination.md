@@ -71,14 +71,18 @@ retryable and must not falsely claim full erasure.
 
 ### Legal-hold serialization
 
-For every tenant/resource category/record locator, hold placement/release
-and purge first acquire the same deterministic tenant-scoped transaction
-advisory lock, then lock relevant policy/hold rows in a fixed order, then
-read facts and decide. This key exists even when no hold row exists, so a
-phantom hold insert cannot race a purge. Hold placement may require an
-owner-record lock to avoid placing a hold on a record already purged; all
-participating paths use the same order: coordination key, policy/hold rows,
-then owner record. If hold commits first, purge waits and denies. If purge
+Policy creation/change, entity-wide hold placement/release, record hold
+placement/release, and purge all acquire a deterministic tenant/resource/
+category **scope** transaction advisory lock. Record-specific operations
+then acquire a tenant/resource/category/record lock. They lock relevant
+policy/hold rows and finally the owner record in that order. Both advisory
+keys exist even when no policy or hold row exists, so a phantom policy or
+hold insert cannot race a purge. The scope lock deliberately serializes
+destructive decisions with policy changes and entity-wide holds; throughput
+must be measured, and a finer protocol needs another reviewed decision.
+Hold placement checks the owner record under the same transaction so it
+cannot claim to protect a record already purged. If hold commits first,
+purge waits and denies. If purge
 commits first, hold waits and must reject or explicitly record a post-purge
 nonprotective outcome; it cannot claim a hold protected a deleted record.
 Rollback releases all locks. A tenant is part of every lock key, predicate,

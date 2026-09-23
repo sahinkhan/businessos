@@ -106,6 +106,8 @@ class ExternalIdentifierRecord(BaseModel):
 
 
 class FullPartyRecord(BaseModel):
+    """Deprecated v1 complete-or-overflow aggregate response."""
+
     model_config = ConfigDict(frozen=True)
 
     party: PartyRecord
@@ -118,6 +120,10 @@ class FullPartyRecord(BaseModel):
     identifiers: list[ExternalIdentifierRecord] = Field(
         default_factory=lambda: list[ExternalIdentifierRecord]()
     )
+
+
+class FullPartyRecordV2(FullPartyRecord):
+    """Complete authorized aggregate under the bounded v2 public contract."""
 
 
 class DuplicatePartyCandidate(BaseModel):
@@ -150,6 +156,12 @@ class PartySensitiveReadContract:
     """Versioned marker for sensitive Party projection and lookup queries."""
 
     version: str = "1.0"
+
+
+class PartyFullReadV2Contract:
+    """Versioned marker for complete-or-overflow Party aggregate queries."""
+
+    version: str = "2.0"
 
 
 class PartyDuplicateMatchContract:

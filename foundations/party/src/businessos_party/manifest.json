@@ -2,7 +2,7 @@
   "module_id": "foundation.party",
   "name": "Party and Contacts",
   "publisher": "BusinessOS",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "platform": ">=0.1,<1",
   "sdk": ">=0.1,<1",
   "python": ">=3.13",
@@ -20,6 +20,20 @@
     "foundation.party.read",
     "foundation.party.sensitive.read",
     "foundation.party.manage"
+  ],
+  "api_contracts": [
+    {"contract_id": "foundation.party.query.get-full-party.v1", "version": "1.0.0"},
+    {"contract_id": "foundation.party.query.get-sensitive-full-party.v1", "version": "1.0.0"},
+    {"contract_id": "foundation.party.query.get-full-party.v2", "version": "2.0.0"},
+    {"contract_id": "foundation.party.query.get-sensitive-full-party.v2", "version": "2.0.0"},
+    {"contract_id": "foundation.party.query.list-contacts.v1", "version": "1.0.0"},
+    {"contract_id": "foundation.party.query.list-addresses.v1", "version": "1.0.0"},
+    {"contract_id": "foundation.party.query.list-identifiers.v1", "version": "1.0.0"},
+    {"contract_id": "foundation.party.query.list-sensitive-identifiers.v1", "version": "1.0.0"}
+  ],
+  "public_contracts": [
+    {"contract_id": "foundation.party.sensitive-read.v1", "version": "1.0.0"},
+    {"contract_id": "foundation.party.full-read.v2", "version": "2.0.0"}
   ],
   "migrations": ["python://businessos_party/migrations/versions"],
   "migration_namespace": "foundation_party",

@@ -34,6 +34,10 @@ from pydantic import ValidationError
         ("ListMeasurementCategories", {"tenant_id": uuid4()}),
         ("ListUnitsOfMeasure", {"tenant_id": uuid4()}),
         ("ListPartyRelationships", {"tenant_id": uuid4(), "party_id": uuid4()}),
+        ("ListPartyContacts", {"tenant_id": uuid4(), "party_id": uuid4()}),
+        ("ListPartyAddresses", {"tenant_id": uuid4(), "party_id": uuid4()}),
+        ("ListPartyIdentifiers", {"tenant_id": uuid4(), "party_id": uuid4()}),
+        ("ListSensitivePartyIdentifiers", {"tenant_id": uuid4(), "party_id": uuid4()}),
     ),
 )
 def test_phase3_collection_query_bounds(query_type: str, arguments: dict[str, object]) -> None:

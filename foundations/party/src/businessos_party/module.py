@@ -4,12 +4,14 @@ import json
 from collections.abc import Sequence
 from datetime import date, datetime
 from importlib.resources import files
+from secrets import token_hex
 from typing import Any, ClassVar, TypeVar
 from uuid import UUID, uuid4
 
 from businessos_geography import AddressRecord, GetAddress
 from pydantic import Field
 from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from businessos.sdk import (
     MESSAGE_DISPATCHER,
@@ -229,6 +231,7 @@ class PartyRelationshipCreated(DomainEvent):
 _FullPartyRecordType = TypeVar("_FullPartyRecordType", bound=FullPartyRecord)
 _FULL_PARTY_MAX_CHILDREN = 100
 _FULL_PARTY_OVERFLOW_LIMIT = _FULL_PARTY_MAX_CHILDREN + 1
+_PARTY_NUMBER_ATTEMPTS = 5
 
 
 class PartyModule:
@@ -342,27 +345,18 @@ class PartyModule:
     ) -> PartyRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         party_id = uuid4()
-        party_num = f"PRT-{party_id.hex[:8].upper()}"
         display_name = f"{command.first_name} {command.last_name}"
-
-        res = await context.unit_of_work.persistence.execute(
-            insert(PARTIES)
-            .values(
-                id=party_id,
-                tenant_id=tenant.tenant_id,
-                party_number=party_num,
-                party_type="person",
-                display_name=display_name,
-                preferred_locale=command.preferred_locale,
-                preferred_timezone=command.preferred_timezone,
-                preferred_currency=command.preferred_currency,
-                is_active=True,
-            )
-            .returning(PARTIES.c.created_at, PARTIES.c.updated_at)
+        party_num, created_at, updated_at = await _insert_party_with_number(
+            context,
+            id=party_id,
+            tenant_id=tenant.tenant_id,
+            party_type="person",
+            display_name=display_name,
+            preferred_locale=command.preferred_locale,
+            preferred_timezone=command.preferred_timezone,
+            preferred_currency=command.preferred_currency,
+            is_active=True,
         )
-        row = res.first()
-        created_at = row[0] if row else datetime.now()
-        updated_at = row[1] if row else datetime.now()
 
         profile_id = uuid4()
         await context.unit_of_work.persistence.execute(
@@ -408,27 +402,18 @@ class PartyModule:
     ) -> PartyRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         party_id = uuid4()
-        party_num = f"PRT-{party_id.hex[:8].upper()}"
         display_name = command.legal_name
-
-        res = await context.unit_of_work.persistence.execute(
-            insert(PARTIES)
-            .values(
-                id=party_id,
-                tenant_id=tenant.tenant_id,
-                party_number=party_num,
-                party_type="organization",
-                display_name=display_name,
-                preferred_locale=command.preferred_locale,
-                preferred_timezone=command.preferred_timezone,
-                preferred_currency=command.preferred_currency,
-                is_active=True,
-            )
-            .returning(PARTIES.c.created_at, PARTIES.c.updated_at)
+        party_num, created_at, updated_at = await _insert_party_with_number(
+            context,
+            id=party_id,
+            tenant_id=tenant.tenant_id,
+            party_type="organization",
+            display_name=display_name,
+            preferred_locale=command.preferred_locale,
+            preferred_timezone=command.preferred_timezone,
+            preferred_currency=command.preferred_currency,
+            is_active=True,
         )
-        row = res.first()
-        created_at = row[0] if row else datetime.now()
-        updated_at = row[1] if row else datetime.now()
 
         profile_id = uuid4()
         await context.unit_of_work.persistence.execute(
@@ -1219,6 +1204,32 @@ def _identifier_record(row: Any) -> ExternalIdentifierRecord:
         identifier_value=row.identifier_value,
         is_sensitive=row.is_sensitive,
         created_at=row.created_at,
+    )
+
+
+def _new_party_number() -> str:
+    # Keep the established PRT-hex shape while increasing entropy from 32 to 64 bits.
+    return f"PRT-{token_hex(8).upper()}"
+
+
+async def _insert_party_with_number(
+    context: HandlingContext, **values: object
+) -> tuple[str, datetime, datetime]:
+    for _ in range(_PARTY_NUMBER_ATTEMPTS):
+        candidate = _new_party_number()
+        result = await context.unit_of_work.persistence.execute(
+            pg_insert(PARTIES)
+            .values(**values, party_number=candidate)
+            .on_conflict_do_nothing(constraint="uq_party_tenant_number")
+            .returning(PARTIES.c.created_at, PARTIES.c.updated_at)
+        )
+        row = result.first()
+        if row is not None:
+            return candidate, row.created_at, row.updated_at
+    raise BusinessOSError(
+        "party_number_allocation_exhausted",
+        "Party number allocation could not complete; retry the request",
+        status_code=409,
     )
 
 

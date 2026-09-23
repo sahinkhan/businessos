@@ -278,6 +278,12 @@ class GeographyModule:
             context,
         )
         if not validation.valid:
+            if any(error.code == "ambiguous_city" for error in validation.errors):
+                raise BusinessOSError(
+                    "ambiguous_city",
+                    "Locality is ambiguous; provide a subdivision or more specific address context",
+                    status_code=400,
+                )
             raise BusinessOSError("invalid_address", "Address validation failed", status_code=400)
         country_code = validation.normalized_country_code
         subdivision_code = validation.normalized_subdivision_code
@@ -406,17 +412,20 @@ class GeographyModule:
                 )
             else:
                 subdivision_id = subdivision.id
-        city = (
+        city_candidates = (
             await context.unit_of_work.persistence.execute(
-                select(CITIES.c.postal_code_pattern).where(
+                select(CITIES.c.postal_code_pattern)
+                .where(
                     CITIES.c.country_code == country_code,
                     CITIES.c.name == city_name,
                     CITIES.c.is_active.is_(True),
                     *((CITIES.c.subdivision_id == subdivision_id,) if subdivision_id else ()),
                 )
+                .order_by(CITIES.c.country_code, CITIES.c.subdivision_id, CITIES.c.id)
+                .limit(2)
             )
-        ).first()
-        if city is None:
+        ).fetchall()
+        if not city_candidates:
             errors.append(
                 AddressValidationError(
                     code="invalid_city",
@@ -424,8 +433,20 @@ class GeographyModule:
                     message="City does not belong to address parent",
                 )
             )
-        elif city.postal_code_pattern and (
-            postal_code is None or re.fullmatch(city.postal_code_pattern, postal_code) is None
+        elif len(city_candidates) > 1:
+            errors.append(
+                AddressValidationError(
+                    code="ambiguous_city",
+                    field="city",
+                    message=(
+                        "Locality is ambiguous; provide a subdivision or more specific "
+                        "address context"
+                    ),
+                )
+            )
+        elif city_candidates[0].postal_code_pattern and (
+            postal_code is None
+            or re.fullmatch(city_candidates[0].postal_code_pattern, postal_code) is None
         ):
             errors.append(
                 AddressValidationError(

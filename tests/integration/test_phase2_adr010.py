@@ -81,6 +81,7 @@ async def test_policy_authority_is_target_aware_and_rejects_partial_actions(
                 "foundation.tenant",
                 "foundation.identity",
                 "foundation.organization",
+                "foundation.currency",
                 "foundation.geography",
                 "foundation.reference_data",
                 "foundation.uom",

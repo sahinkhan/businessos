@@ -24,8 +24,10 @@ from businessos.sdk import (
 )
 
 from .contracts import (
+    MAX_UOM_DECIMAL_PLACES,
     ConvertedAmountRecord,
     MeasurementCategoryRecord,
+    RoundingMode,
     UnitOfMeasureRecord,
     UomConversionService,
 )
@@ -49,8 +51,8 @@ class CreateUnitOfMeasure(Command):
     is_base_unit: bool = False
     conversion_ratio: Decimal = Field(default=Decimal("1.0"), gt=0)
     conversion_offset: Decimal = Field(default=Decimal("0.0"))
-    precision: int = Field(default=2, ge=0)
-    rounding_mode: str = Field(default="ROUND_HALF_UP")
+    precision: int = Field(default=2, ge=0, le=MAX_UOM_DECIMAL_PLACES)
+    rounding_mode: RoundingMode = "ROUND_HALF_UP"
 
 
 class ConvertQuantity(Command):
@@ -67,6 +69,8 @@ class GetMeasurementCategory(Query):
 
 class ListMeasurementCategories(Query):
     tenant_id: UUID
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class GetUnitOfMeasure(Query):
@@ -77,6 +81,8 @@ class GetUnitOfMeasure(Query):
 class ListUnitsOfMeasure(Query):
     tenant_id: UUID
     category_code: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class UomCategoryCreated(DomainEvent):
@@ -174,6 +180,31 @@ class UomModule:
         self, command: CreateUnitOfMeasure, context: HandlingContext
     ) -> UnitOfMeasureRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        category = await self._get_category(
+            GetMeasurementCategory(tenant_id=tenant.tenant_id, code=command.category_code),
+            context,
+        )
+        if category is None:
+            raise BusinessOSError("not_found", "Measurement category not found", status_code=404)
+        if command.is_base_unit != (command.code == category.base_unit_code):
+            raise BusinessOSError(
+                "invalid_base_unit", "Unit conflicts with category base unit", status_code=400
+            )
+        if command.is_base_unit and (
+            command.conversion_ratio != Decimal("1") or command.conversion_offset != Decimal("0")
+        ):
+            raise BusinessOSError(
+                "invalid_base_unit", "Base unit must use identity conversion", status_code=400
+            )
+        if not command.is_base_unit:
+            base = await self._get_unit(
+                GetUnitOfMeasure(tenant_id=tenant.tenant_id, code=category.base_unit_code),
+                context,
+            )
+            if base is None or base.category_code != category.code or not base.is_base_unit:
+                raise BusinessOSError(
+                    "invalid_base_unit", "Category base unit must be created first", status_code=400
+                )
         unit_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(UNITS_OF_MEASURE)
@@ -271,8 +302,12 @@ class UomModule:
         self, query: ListMeasurementCategories, context: HandlingContext
     ) -> list[MeasurementCategoryRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
-        stmt = select(MEASUREMENT_CATEGORIES).where(
-            MEASUREMENT_CATEGORIES.c.tenant_id == tenant.tenant_id
+        stmt = (
+            select(MEASUREMENT_CATEGORIES)
+            .where(MEASUREMENT_CATEGORIES.c.tenant_id == tenant.tenant_id)
+            .order_by(MEASUREMENT_CATEGORIES.c.code, MEASUREMENT_CATEGORIES.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
         )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
@@ -323,6 +358,11 @@ class UomModule:
         stmt = select(UNITS_OF_MEASURE).where(UNITS_OF_MEASURE.c.tenant_id == tenant.tenant_id)
         if query.category_code:
             stmt = stmt.where(UNITS_OF_MEASURE.c.category_code == query.category_code)
+        stmt = (
+            stmt.order_by(UNITS_OF_MEASURE.c.code, UNITS_OF_MEASURE.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             UnitOfMeasureRecord(

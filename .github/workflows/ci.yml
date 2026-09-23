@@ -20,6 +20,7 @@ jobs:
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/tenant
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/identity
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/organization
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/currency
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/geography
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/reference_data
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/uom
@@ -68,6 +69,7 @@ jobs:
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/tenant
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/identity
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/organization
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/currency
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/geography
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/reference_data
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/uom

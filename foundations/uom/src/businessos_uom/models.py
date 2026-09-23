@@ -52,5 +52,6 @@ UNITS_OF_MEASURE = Table(
     UniqueConstraint("tenant_id", "code", name="uq_uom_tenant_code"),
     CheckConstraint("conversion_ratio > 0", name="ck_uom_conversion_ratio_positive"),
     CheckConstraint("precision >= 0", name="ck_uom_precision_nonnegative"),
+    CheckConstraint("precision <= 100", name="ck_uom_precision_supported"),
     schema="platform_uom",
 )

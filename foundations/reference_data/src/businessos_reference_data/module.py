@@ -79,6 +79,8 @@ class GetReferenceSet(Query):
 class ListReferenceSets(Query):
     tenant_id: UUID
     owning_module: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class GetReferenceValue(Query):
@@ -91,6 +93,8 @@ class ListReferenceValues(Query):
     tenant_id: UUID
     set_code: str
     active_only: bool = True
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class ResolveReferenceValueByExternalId(Query):
@@ -214,6 +218,23 @@ class ReferenceDataModule:
         self, command: CreateReferenceValue, context: HandlingContext
     ) -> ReferenceValueRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        reference_set = await self._get_set(
+            GetReferenceSet(tenant_id=tenant.tenant_id, code=command.set_code), context
+        )
+        if reference_set is None:
+            raise BusinessOSError("not_found", "Reference set not found", status_code=404)
+        if command.external_id is not None:
+            existing = await context.unit_of_work.persistence.execute(
+                select(REFERENCE_VALUES.c.id).where(
+                    REFERENCE_VALUES.c.tenant_id == tenant.tenant_id,
+                    REFERENCE_VALUES.c.set_code == command.set_code,
+                    REFERENCE_VALUES.c.external_id == command.external_id,
+                )
+            )
+            if existing.first() is not None:
+                raise BusinessOSError(
+                    "duplicate_external_id", "Reference external ID already exists", status_code=409
+                )
         val_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(REFERENCE_VALUES)
@@ -414,6 +435,11 @@ class ReferenceDataModule:
         stmt = select(REFERENCE_SETS).where(REFERENCE_SETS.c.tenant_id == tenant.tenant_id)
         if query.owning_module:
             stmt = stmt.where(REFERENCE_SETS.c.owning_module == query.owning_module)
+        stmt = (
+            stmt.order_by(REFERENCE_SETS.c.code, REFERENCE_SETS.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             ReferenceSetRecord(
@@ -471,7 +497,13 @@ class ReferenceDataModule:
         )
         if query.active_only:
             stmt = stmt.where(REFERENCE_VALUES.c.is_active.is_(True))
-        stmt = stmt.order_by(REFERENCE_VALUES.c.sort_order, REFERENCE_VALUES.c.code)
+        stmt = (
+            stmt.order_by(
+                REFERENCE_VALUES.c.sort_order, REFERENCE_VALUES.c.code, REFERENCE_VALUES.c.id
+            )
+            .limit(query.limit)
+            .offset(query.offset)
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             ReferenceValueRecord(
@@ -503,7 +535,12 @@ class ReferenceDataModule:
             REFERENCE_VALUES.c.set_code == query.set_code,
             REFERENCE_VALUES.c.external_id == query.external_id,
         )
-        row = (await context.unit_of_work.persistence.execute(stmt)).first()
+        rows = (await context.unit_of_work.persistence.execute(stmt.limit(2))).fetchall()
+        if len(rows) > 1:
+            raise BusinessOSError(
+                "ambiguous_external_id", "Reference external ID is ambiguous", status_code=409
+            )
+        row = rows[0] if rows else None
         if not row:
             return None
         return ReferenceValueRecord(

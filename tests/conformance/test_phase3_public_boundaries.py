@@ -10,7 +10,8 @@ PHASE2_DEPENDENCIES = {
 }
 
 PHASE3_DEPENDENCIES = {
-    "foundation.geography": ["foundation.tenant", "foundation.organization"],
+    "foundation.currency": ["foundation.tenant"],
+    "foundation.geography": ["foundation.tenant", "foundation.organization", "foundation.currency"],
     "foundation.reference_data": ["foundation.tenant", "foundation.geography"],
     "foundation.uom": ["foundation.tenant", "foundation.reference_data"],
     "foundation.party": [
@@ -23,7 +24,8 @@ PHASE3_DEPENDENCIES = {
 }
 
 PHASE3_DISTRIBUTIONS = {
-    "geography": "businessos-foundation-organization>=0.2,<1",
+    "currency": "businessos-foundation-tenant>=0.2,<1",
+    "geography": "businessos-foundation-currency>=0.3,<1",
     "reference_data": "businessos-foundation-geography>=0.3,<1",
     "uom": "businessos-foundation-reference-data>=0.3,<1",
     "party": "businessos-foundation-uom>=0.3,<1",

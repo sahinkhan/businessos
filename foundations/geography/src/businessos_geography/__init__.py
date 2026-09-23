@@ -3,6 +3,9 @@
 from .contracts import (
     AddressFormatProviderContract,
     AddressRecord,
+    AddressValidationError,
+    AddressValidationProviderContract,
+    AddressValidationResult,
     CityRecord,
     CountryRecord,
     SubdivisionRecord,
@@ -20,6 +23,7 @@ from .module import (
     RegisterCity,
     RegisterCountry,
     RegisterSubdivision,
+    ValidateAddress,
 )
 from .module import (
     CountryRegistered as CountryRegistered,
@@ -33,6 +37,9 @@ __all__ = [
     "AddressCreated",
     "AddressFormatProviderContract",
     "AddressRecord",
+    "AddressValidationError",
+    "AddressValidationProviderContract",
+    "AddressValidationResult",
     "CityRecord",
     "CountryRecord",
     "CreateAddress",
@@ -46,5 +53,6 @@ __all__ = [
     "RegisterCountry",
     "RegisterSubdivision",
     "SubdivisionRecord",
+    "ValidateAddress",
     "metadata",
 ]

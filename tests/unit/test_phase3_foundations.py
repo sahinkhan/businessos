@@ -17,10 +17,50 @@ from businessos_reference_data import (
     RegisterReferenceSet,
 )
 from businessos_uom import (
+    CreateUnitOfMeasure,
     UnitOfMeasureRecord,
     UomConversionService,
 )
 from pydantic import ValidationError
+
+
+@pytest.mark.parametrize(
+    ("query_type", "arguments"),
+    (
+        ("ListCountries", {}),
+        ("ListSubdivisions", {"country_code": "US"}),
+        ("ListReferenceSets", {"tenant_id": uuid4()}),
+        ("ListReferenceValues", {"tenant_id": uuid4(), "set_code": "colors"}),
+        ("ListMeasurementCategories", {"tenant_id": uuid4()}),
+        ("ListUnitsOfMeasure", {"tenant_id": uuid4()}),
+        ("ListPartyRelationships", {"tenant_id": uuid4(), "party_id": uuid4()}),
+        ("ListPartyContacts", {"tenant_id": uuid4(), "party_id": uuid4()}),
+        ("ListPartyAddresses", {"tenant_id": uuid4(), "party_id": uuid4()}),
+        ("ListPartyIdentifiers", {"tenant_id": uuid4(), "party_id": uuid4()}),
+        ("ListSensitivePartyIdentifiers", {"tenant_id": uuid4(), "party_id": uuid4()}),
+    ),
+)
+def test_phase3_collection_query_bounds(query_type: str, arguments: dict[str, object]) -> None:
+    import businessos_geography
+    import businessos_party
+    import businessos_reference_data
+    import businessos_uom
+
+    query_class = next(
+        getattr(module, query_type)
+        for module in (
+            businessos_geography,
+            businessos_reference_data,
+            businessos_uom,
+            businessos_party,
+        )
+        if hasattr(module, query_type)
+    )
+    assert query_class(**arguments).limit == 50
+    assert query_class(**arguments, limit=100, offset=100).offset == 100
+    for extra in ({"limit": 0}, {"limit": 101}, {"offset": -1}):
+        with pytest.raises(ValidationError):
+            query_class(**arguments, **extra)
 
 
 def test_uom_conversion_service_exact_arithmetic_and_round_trip() -> None:
@@ -67,6 +107,8 @@ def test_uom_conversion_service_exact_arithmetic_and_round_trip() -> None:
     # Round trip: 1.5 km to meters = 1500 m
     round_trip = service.convert(result.converted_amount, km, m)
     assert round_trip.converted_amount == Decimal("1500.0000")
+    with pytest.raises(ValueError, match="different tenants"):
+        service.convert(Decimal("1"), m, km.model_copy(update={"tenant_id": uuid4()}))
 
 
 def test_uom_rounding_modes() -> None:
@@ -136,6 +178,31 @@ def test_uom_rounding_modes() -> None:
     assert service.convert(Decimal("2.5"), base, half_up_unit).converted_amount == Decimal("3")
     assert service.convert(Decimal("2.5"), base, floor_unit).converted_amount == Decimal("2")
     assert service.convert(Decimal("2.1"), base, ceil_unit).converted_amount == Decimal("3")
+
+    for mode, amount, expected in (
+        ("ROUND_HALF_UP", "2.5", "3"),
+        ("ROUND_HALF_EVEN", "2.5", "2"),
+        ("ROUND_FLOOR", "-2.1", "-3"),
+        ("ROUND_CEILING", "2.1", "3"),
+        ("ROUND_UP", "-2.1", "-3"),
+        ("ROUND_DOWN", "-2.9", "-2"),
+    ):
+        target = half_up_unit.model_copy(update={"rounding_mode": mode})
+        assert service.convert(Decimal(amount), base, target).converted_amount == Decimal(expected)
+
+    with pytest.raises(ValidationError):
+        UnitOfMeasureRecord.model_validate(half_up_unit.model_dump() | {"rounding_mode": "BAD"})
+    with pytest.raises(ValidationError):
+        CreateUnitOfMeasure.model_validate(
+            {
+                "tenant_id": tenant_id,
+                "category_code": "length",
+                "code": "bad",
+                "name": "Bad",
+                "symbol": "b",
+                "rounding_mode": "BAD",
+            }
+        )
 
 
 def test_uom_rejects_cross_category_conversion() -> None:

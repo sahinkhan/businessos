@@ -59,6 +59,31 @@ class AddressRecord(BaseModel):
     created_at: datetime
 
 
+class AddressValidationError(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    code: str
+    field: str
+    message: str
+
+
+class AddressValidationResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    valid: bool
+    normalized_country_code: str
+    normalized_subdivision_code: str | None = None
+    normalized_city: str
+    normalized_postal_code: str | None = None
+    errors: tuple[AddressValidationError, ...] = ()
+
+
+class AddressValidationProviderContract:
+    """Public contract marker for canonical hierarchy and postal validation."""
+
+    version: str = "1.0"
+
+
 class AddressFormatProviderContract:
     """Format an address based on country-specific rules."""
 

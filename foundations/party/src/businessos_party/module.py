@@ -1,15 +1,20 @@
 """Party, contacts, and relationship foundation module registration and handlers."""
 
 import json
+from collections.abc import Sequence
 from datetime import date, datetime
 from importlib.resources import files
-from typing import ClassVar
+from secrets import token_hex
+from typing import Any, ClassVar, TypeVar
 from uuid import UUID, uuid4
 
+from businessos_geography import AddressRecord, GetAddress
 from pydantic import Field
-from sqlalchemy import insert, or_, select, update
+from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from businessos.sdk import (
+    MESSAGE_DISPATCHER,
     BusinessOSError,
     Command,
     DomainEvent,
@@ -24,12 +29,18 @@ from businessos.sdk import (
 
 from .contracts import (
     ContactPointRecord,
+    DuplicateMatchResult,
+    DuplicatePartyCandidate,
     ExternalIdentifierRecord,
     FullPartyRecord,
+    FullPartyRecordV2,
     OrganizationProfileRecord,
     PartyAddressAssignmentRecord,
+    PartyDuplicateMatchContract,
+    PartyFullReadV2Contract,
     PartyRecord,
     PartyRelationshipRecord,
+    PartySensitiveReadContract,
     PersonProfileRecord,
 )
 from .models import (
@@ -120,14 +131,56 @@ class GetParty(Query):
 
 
 class GetFullParty(Query):
+    """Deprecated v1 aggregate query; bounded and redacted by ADR-013."""
+
     tenant_id: UUID
     party_id: UUID
+
+
+class GetSensitiveFullParty(GetFullParty):
+    """Deprecated v1 aggregate query requiring sensitive-read authority."""
+
+
+class GetFullPartyV2(Query):
+    tenant_id: UUID
+    party_id: UUID
+
+
+class GetSensitiveFullPartyV2(GetFullPartyV2):
+    pass
+
+
+class ListPartyContacts(Query):
+    tenant_id: UUID
+    party_id: UUID
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+
+class ListPartyAddresses(Query):
+    tenant_id: UUID
+    party_id: UUID
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+
+class ListPartyIdentifiers(Query):
+    tenant_id: UUID
+    party_id: UUID
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+
+
+class ListSensitivePartyIdentifiers(ListPartyIdentifiers):
+    pass
 
 
 class SearchParties(Query):
     tenant_id: UUID
     query: str = Field(min_length=1, max_length=100)
     party_type: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class ResolvePartyByExternalId(Query):
@@ -136,9 +189,21 @@ class ResolvePartyByExternalId(Query):
     identifier_value: str
 
 
+class ResolvePartyBySensitiveExternalId(ResolvePartyByExternalId):
+    pass
+
+
+class MatchPartyDuplicates(Query):
+    tenant_id: UUID
+    party_id: UUID
+    limit: int = Field(default=25, ge=1, le=50)
+
+
 class ListPartyRelationships(Query):
     tenant_id: UUID
     party_id: UUID
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class PartyCreated(DomainEvent):
@@ -163,17 +228,35 @@ class PartyRelationshipCreated(DomainEvent):
     relationship_type: str
 
 
+_FullPartyRecordType = TypeVar("_FullPartyRecordType", bound=FullPartyRecord)
+_FULL_PARTY_MAX_CHILDREN = 100
+_FULL_PARTY_OVERFLOW_LIMIT = _FULL_PARTY_MAX_CHILDREN + 1
+_PARTY_NUMBER_ATTEMPTS = 5
+
+
 class PartyModule:
     def __init__(self) -> None:
         data = json.loads(
             files("businessos_party").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
+        self.sensitive_read_contract = PartySensitiveReadContract()
+        self.full_read_v2_contract = PartyFullReadV2Contract()
+        self.duplicate_match_contract = PartyDuplicateMatchContract()
 
     async def register(self, registration: ModuleRegistration) -> None:
+        registration.contract("foundation.party.sensitive-read.v1", self.sensitive_read_contract)
+        registration.contract("foundation.party.full-read.v2", self.full_read_v2_contract)
+        registration.contract("foundation.party.duplicate-match.v1", self.duplicate_match_contract)
         registration.permission(
             PermissionDeclaration(
                 key="foundation.party.read", description="Read party and profile records"
+            )
+        )
+        registration.permission(
+            PermissionDeclaration(
+                key="foundation.party.sensitive.read",
+                description="Read classified sensitive party fields",
             )
         )
         registration.permission(
@@ -204,11 +287,48 @@ class PartyModule:
 
         registration.query(GetParty, self._get_party, permission="foundation.party.read")
         registration.query(GetFullParty, self._get_full_party, permission="foundation.party.read")
+        registration.query(
+            GetFullPartyV2, self._get_full_party_v2, permission="foundation.party.read"
+        )
+        registration.query(
+            GetSensitiveFullParty,
+            self._get_sensitive_full_party,
+            permission="foundation.party.sensitive.read",
+        )
+        registration.query(
+            GetSensitiveFullPartyV2,
+            self._get_sensitive_full_party_v2,
+            permission="foundation.party.sensitive.read",
+        )
+        registration.query(
+            ListPartyContacts, self._list_contacts, permission="foundation.party.sensitive.read"
+        )
+        registration.query(
+            ListPartyAddresses, self._list_addresses, permission="foundation.party.read"
+        )
+        registration.query(
+            ListPartyIdentifiers, self._list_identifiers, permission="foundation.party.read"
+        )
+        registration.query(
+            ListSensitivePartyIdentifiers,
+            self._list_sensitive_identifiers,
+            permission="foundation.party.sensitive.read",
+        )
         registration.query(SearchParties, self._search_parties, permission="foundation.party.read")
         registration.query(
             ResolvePartyByExternalId,
             self._resolve_by_external_id,
             permission="foundation.party.read",
+        )
+        registration.query(
+            ResolvePartyBySensitiveExternalId,
+            self._resolve_by_sensitive_external_id,
+            permission="foundation.party.sensitive.read",
+        )
+        registration.query(
+            MatchPartyDuplicates,
+            self._match_duplicates,
+            permission="foundation.party.sensitive.read",
         )
         registration.query(
             ListPartyRelationships, self._list_relationships, permission="foundation.party.read"
@@ -225,27 +345,18 @@ class PartyModule:
     ) -> PartyRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         party_id = uuid4()
-        party_num = f"PRT-{party_id.hex[:8].upper()}"
         display_name = f"{command.first_name} {command.last_name}"
-
-        res = await context.unit_of_work.persistence.execute(
-            insert(PARTIES)
-            .values(
-                id=party_id,
-                tenant_id=tenant.tenant_id,
-                party_number=party_num,
-                party_type="person",
-                display_name=display_name,
-                preferred_locale=command.preferred_locale,
-                preferred_timezone=command.preferred_timezone,
-                preferred_currency=command.preferred_currency,
-                is_active=True,
-            )
-            .returning(PARTIES.c.created_at, PARTIES.c.updated_at)
+        party_num, created_at, updated_at = await _insert_party_with_number(
+            context,
+            id=party_id,
+            tenant_id=tenant.tenant_id,
+            party_type="person",
+            display_name=display_name,
+            preferred_locale=command.preferred_locale,
+            preferred_timezone=command.preferred_timezone,
+            preferred_currency=command.preferred_currency,
+            is_active=True,
         )
-        row = res.first()
-        created_at = row[0] if row else datetime.now()
-        updated_at = row[1] if row else datetime.now()
 
         profile_id = uuid4()
         await context.unit_of_work.persistence.execute(
@@ -291,27 +402,18 @@ class PartyModule:
     ) -> PartyRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
         party_id = uuid4()
-        party_num = f"PRT-{party_id.hex[:8].upper()}"
         display_name = command.legal_name
-
-        res = await context.unit_of_work.persistence.execute(
-            insert(PARTIES)
-            .values(
-                id=party_id,
-                tenant_id=tenant.tenant_id,
-                party_number=party_num,
-                party_type="organization",
-                display_name=display_name,
-                preferred_locale=command.preferred_locale,
-                preferred_timezone=command.preferred_timezone,
-                preferred_currency=command.preferred_currency,
-                is_active=True,
-            )
-            .returning(PARTIES.c.created_at, PARTIES.c.updated_at)
+        party_num, created_at, updated_at = await _insert_party_with_number(
+            context,
+            id=party_id,
+            tenant_id=tenant.tenant_id,
+            party_type="organization",
+            display_name=display_name,
+            preferred_locale=command.preferred_locale,
+            preferred_timezone=command.preferred_timezone,
+            preferred_currency=command.preferred_currency,
+            is_active=True,
         )
-        row = res.first()
-        created_at = row[0] if row else datetime.now()
-        updated_at = row[1] if row else datetime.now()
 
         profile_id = uuid4()
         await context.unit_of_work.persistence.execute(
@@ -454,6 +556,7 @@ class PartyModule:
         self, command: AddContactPoint, context: HandlingContext
     ) -> ContactPointRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, command.party_id, context)
         cid = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(CONTACT_POINTS)
@@ -487,6 +590,13 @@ class PartyModule:
         self, command: AssignPartyAddress, context: HandlingContext
     ) -> PartyAddressAssignmentRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, command.party_id, context)
+        dispatcher = await context.dependencies.resolve(MESSAGE_DISPATCHER)
+        address = await dispatcher.query(
+            GetAddress(address_id=command.address_id), context.request, context.dependencies
+        )
+        if not isinstance(address, AddressRecord) or address.tenant_id != tenant.tenant_id:
+            raise BusinessOSError("not_found", "Address not found", status_code=404)
         aid = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(PARTY_ADDRESS_ASSIGNMENTS)
@@ -518,6 +628,7 @@ class PartyModule:
         self, command: AddExternalIdentifier, context: HandlingContext
     ) -> ExternalIdentifierRecord:
         tenant = _require_tenant(context.request, command.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, command.party_id, context)
         eid = uuid4()
         res = await context.unit_of_work.persistence.execute(
             insert(EXTERNAL_IDENTIFIERS)
@@ -542,6 +653,13 @@ class PartyModule:
             is_sensitive=command.is_sensitive,
             created_at=created_at,
         )
+
+    async def _require_party_parent(
+        self, tenant_id: UUID, party_id: UUID, context: HandlingContext
+    ) -> None:
+        party = await self._get_party(GetParty(tenant_id=tenant_id, party_id=party_id), context)
+        if party is None:
+            raise BusinessOSError("not_found", "Party not found", status_code=404)
 
     async def _get_party(self, query: GetParty, context: HandlingContext) -> PartyRecord | None:
         tenant = _require_tenant(context.request, query.tenant_id)
@@ -569,6 +687,39 @@ class PartyModule:
     async def _get_full_party(
         self, query: GetFullParty, context: HandlingContext
     ) -> FullPartyRecord | None:
+        return await self._load_full_party(
+            query, context, include_sensitive=False, record_type=FullPartyRecord
+        )
+
+    async def _get_sensitive_full_party(
+        self, query: GetSensitiveFullParty, context: HandlingContext
+    ) -> FullPartyRecord | None:
+        return await self._load_full_party(
+            query, context, include_sensitive=True, record_type=FullPartyRecord
+        )
+
+    async def _get_full_party_v2(
+        self, query: GetFullPartyV2, context: HandlingContext
+    ) -> FullPartyRecordV2 | None:
+        return await self._load_full_party(
+            query, context, include_sensitive=False, record_type=FullPartyRecordV2
+        )
+
+    async def _get_sensitive_full_party_v2(
+        self, query: GetSensitiveFullPartyV2, context: HandlingContext
+    ) -> FullPartyRecordV2 | None:
+        return await self._load_full_party(
+            query, context, include_sensitive=True, record_type=FullPartyRecordV2
+        )
+
+    async def _load_full_party(
+        self,
+        query: GetFullParty | GetFullPartyV2,
+        context: HandlingContext,
+        *,
+        include_sensitive: bool,
+        record_type: type[_FullPartyRecordType],
+    ) -> _FullPartyRecordType | None:
         party = await self._get_party(
             GetParty(tenant_id=query.tenant_id, party_id=query.party_id), context
         )
@@ -594,7 +745,7 @@ class PartyModule:
                     middle_name=p_row.middle_name,
                     last_name=p_row.last_name,
                     title=p_row.title,
-                    date_of_birth=p_row.date_of_birth,
+                    date_of_birth=p_row.date_of_birth if include_sensitive else None,
                     gender=p_row.gender,
                     created_at=p_row.created_at,
                 )
@@ -613,73 +764,55 @@ class PartyModule:
                     party_id=o_row.party_id,
                     legal_name=o_row.legal_name,
                     trade_name=o_row.trade_name,
-                    tax_identifier=o_row.tax_identifier,
-                    registration_number=o_row.registration_number,
+                    tax_identifier=o_row.tax_identifier if include_sensitive else None,
+                    registration_number=o_row.registration_number if include_sensitive else None,
                     website=o_row.website,
                     created_at=o_row.created_at,
                 )
 
         # Contacts
-        c_stmt = select(CONTACT_POINTS).where(
-            CONTACT_POINTS.c.tenant_id == tenant.tenant_id,
-            CONTACT_POINTS.c.party_id == party.id,
-        )
-        c_rows = (await context.unit_of_work.persistence.execute(c_stmt)).fetchall()
-        contacts = [
-            ContactPointRecord(
-                id=r.id,
-                tenant_id=r.tenant_id,
-                party_id=r.party_id,
-                channel_type=r.channel_type,
-                value=r.value,
-                purpose=r.purpose,
-                is_primary=r.is_primary,
-                is_verified=r.is_verified,
-                created_at=r.created_at,
+        contacts: list[ContactPointRecord] = []
+        if include_sensitive:
+            c_stmt = (
+                select(CONTACT_POINTS)
+                .where(
+                    CONTACT_POINTS.c.tenant_id == tenant.tenant_id,
+                    CONTACT_POINTS.c.party_id == party.id,
+                )
+                .order_by(CONTACT_POINTS.c.id)
+                .limit(_FULL_PARTY_OVERFLOW_LIMIT)
             )
-            for r in c_rows
-        ]
+            c_rows = (await context.unit_of_work.persistence.execute(c_stmt)).fetchall()
+            _reject_full_party_overflow(c_rows)
+            contacts = [_contact_record(row) for row in c_rows]
 
         # Addresses
-        a_stmt = select(PARTY_ADDRESS_ASSIGNMENTS).where(
-            PARTY_ADDRESS_ASSIGNMENTS.c.tenant_id == tenant.tenant_id,
-            PARTY_ADDRESS_ASSIGNMENTS.c.party_id == party.id,
+        a_stmt = (
+            select(PARTY_ADDRESS_ASSIGNMENTS)
+            .where(
+                PARTY_ADDRESS_ASSIGNMENTS.c.tenant_id == tenant.tenant_id,
+                PARTY_ADDRESS_ASSIGNMENTS.c.party_id == party.id,
+            )
+            .order_by(PARTY_ADDRESS_ASSIGNMENTS.c.id)
+            .limit(_FULL_PARTY_OVERFLOW_LIMIT)
         )
         a_rows = (await context.unit_of_work.persistence.execute(a_stmt)).fetchall()
-        addresses = [
-            PartyAddressAssignmentRecord(
-                id=r.id,
-                tenant_id=r.tenant_id,
-                party_id=r.party_id,
-                address_id=r.address_id,
-                purpose=r.purpose,
-                is_primary=r.is_primary,
-                is_active=r.is_active,
-                created_at=r.created_at,
-            )
-            for r in a_rows
-        ]
+        _reject_full_party_overflow(a_rows)
+        addresses = [_address_assignment_record(row) for row in a_rows]
 
         # Identifiers
         i_stmt = select(EXTERNAL_IDENTIFIERS).where(
             EXTERNAL_IDENTIFIERS.c.tenant_id == tenant.tenant_id,
             EXTERNAL_IDENTIFIERS.c.party_id == party.id,
         )
+        if not include_sensitive:
+            i_stmt = i_stmt.where(EXTERNAL_IDENTIFIERS.c.is_sensitive.is_(False))
+        i_stmt = i_stmt.order_by(EXTERNAL_IDENTIFIERS.c.id).limit(_FULL_PARTY_OVERFLOW_LIMIT)
         i_rows = (await context.unit_of_work.persistence.execute(i_stmt)).fetchall()
-        identifiers = [
-            ExternalIdentifierRecord(
-                id=r.id,
-                tenant_id=r.tenant_id,
-                party_id=r.party_id,
-                provider=r.provider,
-                identifier_value=r.identifier_value,
-                is_sensitive=r.is_sensitive,
-                created_at=r.created_at,
-            )
-            for r in i_rows
-        ]
+        _reject_full_party_overflow(i_rows)
+        identifiers = [_identifier_record(row) for row in i_rows]
 
-        return FullPartyRecord(
+        return record_type(
             party=party,
             person_profile=person_prof,
             organization_profile=org_prof,
@@ -687,6 +820,71 @@ class PartyModule:
             addresses=addresses,
             identifiers=identifiers,
         )
+
+    async def _list_contacts(
+        self, query: ListPartyContacts, context: HandlingContext
+    ) -> list[ContactPointRecord]:
+        tenant = _require_tenant(context.request, query.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, query.party_id, context)
+        stmt = (
+            select(CONTACT_POINTS)
+            .where(
+                CONTACT_POINTS.c.tenant_id == tenant.tenant_id,
+                CONTACT_POINTS.c.party_id == query.party_id,
+            )
+            .order_by(CONTACT_POINTS.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
+        )
+        rows = (await context.unit_of_work.persistence.execute(stmt)).fetchall()
+        return [_contact_record(row) for row in rows]
+
+    async def _list_addresses(
+        self, query: ListPartyAddresses, context: HandlingContext
+    ) -> list[PartyAddressAssignmentRecord]:
+        tenant = _require_tenant(context.request, query.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, query.party_id, context)
+        stmt = (
+            select(PARTY_ADDRESS_ASSIGNMENTS)
+            .where(
+                PARTY_ADDRESS_ASSIGNMENTS.c.tenant_id == tenant.tenant_id,
+                PARTY_ADDRESS_ASSIGNMENTS.c.party_id == query.party_id,
+            )
+            .order_by(PARTY_ADDRESS_ASSIGNMENTS.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
+        )
+        rows = (await context.unit_of_work.persistence.execute(stmt)).fetchall()
+        return [_address_assignment_record(row) for row in rows]
+
+    async def _list_identifiers(
+        self, query: ListPartyIdentifiers, context: HandlingContext
+    ) -> list[ExternalIdentifierRecord]:
+        return await self._load_identifiers(query, context, include_sensitive=False)
+
+    async def _list_sensitive_identifiers(
+        self, query: ListSensitivePartyIdentifiers, context: HandlingContext
+    ) -> list[ExternalIdentifierRecord]:
+        return await self._load_identifiers(query, context, include_sensitive=True)
+
+    async def _load_identifiers(
+        self,
+        query: ListPartyIdentifiers,
+        context: HandlingContext,
+        *,
+        include_sensitive: bool,
+    ) -> list[ExternalIdentifierRecord]:
+        tenant = _require_tenant(context.request, query.tenant_id)
+        await self._require_party_parent(tenant.tenant_id, query.party_id, context)
+        stmt = select(EXTERNAL_IDENTIFIERS).where(
+            EXTERNAL_IDENTIFIERS.c.tenant_id == tenant.tenant_id,
+            EXTERNAL_IDENTIFIERS.c.party_id == query.party_id,
+        )
+        if not include_sensitive:
+            stmt = stmt.where(EXTERNAL_IDENTIFIERS.c.is_sensitive.is_(False))
+        stmt = stmt.order_by(EXTERNAL_IDENTIFIERS.c.id).limit(query.limit).offset(query.offset)
+        rows = (await context.unit_of_work.persistence.execute(stmt)).fetchall()
+        return [_identifier_record(row) for row in rows]
 
     async def _search_parties(
         self, query: SearchParties, context: HandlingContext
@@ -701,6 +899,8 @@ class PartyModule:
         )
         if query.party_type:
             stmt = stmt.where(PARTIES.c.party_type == query.party_type)
+        stmt = stmt.order_by(func.lower(PARTIES.c.display_name), PARTIES.c.id)
+        stmt = stmt.limit(query.limit).offset(query.offset)
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             PartyRecord(
@@ -730,6 +930,7 @@ class PartyModule:
                 EXTERNAL_IDENTIFIERS.c.tenant_id == tenant.tenant_id,
                 EXTERNAL_IDENTIFIERS.c.provider == query.provider,
                 EXTERNAL_IDENTIFIERS.c.identifier_value == query.identifier_value,
+                EXTERNAL_IDENTIFIERS.c.is_sensitive.is_(False),
             )
         )
         row = (await context.unit_of_work.persistence.execute(stmt)).first()
@@ -749,16 +950,196 @@ class PartyModule:
             updated_at=row.updated_at,
         )
 
+    async def _resolve_by_sensitive_external_id(
+        self, query: ResolvePartyBySensitiveExternalId, context: HandlingContext
+    ) -> PartyRecord | None:
+        tenant = _require_tenant(context.request, query.tenant_id)
+        row = (
+            await context.unit_of_work.persistence.execute(
+                select(PARTIES)
+                .join(EXTERNAL_IDENTIFIERS, EXTERNAL_IDENTIFIERS.c.party_id == PARTIES.c.id)
+                .where(
+                    PARTIES.c.tenant_id == tenant.tenant_id,
+                    EXTERNAL_IDENTIFIERS.c.tenant_id == tenant.tenant_id,
+                    EXTERNAL_IDENTIFIERS.c.provider == query.provider,
+                    EXTERNAL_IDENTIFIERS.c.identifier_value == query.identifier_value,
+                )
+            )
+        ).first()
+        if row is None:
+            return None
+        return await self._get_party(GetParty(tenant_id=tenant.tenant_id, party_id=row.id), context)
+
+    async def _match_duplicates(
+        self, query: MatchPartyDuplicates, context: HandlingContext
+    ) -> DuplicateMatchResult:
+        tenant = _require_tenant(context.request, query.tenant_id)
+        persistence = context.unit_of_work.persistence
+        source = (
+            await persistence.execute(
+                select(PARTIES).where(
+                    PARTIES.c.tenant_id == tenant.tenant_id,
+                    PARTIES.c.id == query.party_id,
+                )
+            )
+        ).first()
+        if source is None:
+            raise BusinessOSError("not_found", "Party not found", status_code=404)
+        reasons: dict[UUID, set[str]] = {}
+
+        async def add_matches(statement: Any, reason: str) -> None:
+            rows = (await persistence.execute(statement)).fetchall()
+            for row in rows:
+                if row.party_id != source.id:
+                    reasons.setdefault(row.party_id, set()).add(reason)
+
+        contacts = (
+            await persistence.execute(
+                select(CONTACT_POINTS.c.channel_type, CONTACT_POINTS.c.value)
+                .where(
+                    CONTACT_POINTS.c.tenant_id == tenant.tenant_id,
+                    CONTACT_POINTS.c.party_id == source.id,
+                    CONTACT_POINTS.c.is_verified.is_(True),
+                )
+                .order_by(CONTACT_POINTS.c.id)
+                .limit(100)
+            )
+        ).fetchall()
+        for contact in contacts:
+            await add_matches(
+                select(CONTACT_POINTS.c.party_id)
+                .where(
+                    CONTACT_POINTS.c.tenant_id == tenant.tenant_id,
+                    CONTACT_POINTS.c.channel_type == contact.channel_type,
+                    CONTACT_POINTS.c.value == contact.value,
+                    CONTACT_POINTS.c.is_verified.is_(True),
+                )
+                .order_by(CONTACT_POINTS.c.party_id)
+                .limit(100),
+                "verified_contact",
+            )
+        identifiers = (
+            await persistence.execute(
+                select(EXTERNAL_IDENTIFIERS.c.provider, EXTERNAL_IDENTIFIERS.c.identifier_value)
+                .where(
+                    EXTERNAL_IDENTIFIERS.c.tenant_id == tenant.tenant_id,
+                    EXTERNAL_IDENTIFIERS.c.party_id == source.id,
+                )
+                .order_by(EXTERNAL_IDENTIFIERS.c.id)
+                .limit(100)
+            )
+        ).fetchall()
+        for identifier in identifiers:
+            await add_matches(
+                select(EXTERNAL_IDENTIFIERS.c.party_id)
+                .where(
+                    EXTERNAL_IDENTIFIERS.c.tenant_id == tenant.tenant_id,
+                    func.lower(EXTERNAL_IDENTIFIERS.c.provider) == identifier.provider.lower(),
+                    EXTERNAL_IDENTIFIERS.c.identifier_value == identifier.identifier_value,
+                )
+                .order_by(EXTERNAL_IDENTIFIERS.c.party_id)
+                .limit(100),
+                "external_identifier",
+            )
+        if source.party_type == "person":
+            profile = (
+                await persistence.execute(
+                    select(PERSON_PROFILES).where(
+                        PERSON_PROFILES.c.tenant_id == tenant.tenant_id,
+                        PERSON_PROFILES.c.party_id == source.id,
+                    )
+                )
+            ).first()
+            if profile is not None and profile.date_of_birth is not None:
+                await add_matches(
+                    select(PERSON_PROFILES.c.party_id)
+                    .join(PARTIES, PARTIES.c.id == PERSON_PROFILES.c.party_id)
+                    .where(
+                        PERSON_PROFILES.c.tenant_id == tenant.tenant_id,
+                        PERSON_PROFILES.c.date_of_birth == profile.date_of_birth,
+                        func.lower(PARTIES.c.display_name) == source.display_name.lower(),
+                    )
+                    .order_by(PERSON_PROFILES.c.party_id)
+                    .limit(100),
+                    "name_and_date_of_birth",
+                )
+        else:
+            profile = (
+                await persistence.execute(
+                    select(ORGANIZATION_PROFILES).where(
+                        ORGANIZATION_PROFILES.c.tenant_id == tenant.tenant_id,
+                        ORGANIZATION_PROFILES.c.party_id == source.id,
+                    )
+                )
+            ).first()
+            if profile is not None:
+                for column, value, reason in (
+                    (
+                        ORGANIZATION_PROFILES.c.tax_identifier,
+                        profile.tax_identifier,
+                        "tax_identifier",
+                    ),
+                    (
+                        ORGANIZATION_PROFILES.c.registration_number,
+                        profile.registration_number,
+                        "registration_number",
+                    ),
+                ):
+                    if value:
+                        await add_matches(
+                            select(ORGANIZATION_PROFILES.c.party_id)
+                            .where(
+                                ORGANIZATION_PROFILES.c.tenant_id == tenant.tenant_id,
+                                column == value,
+                            )
+                            .order_by(ORGANIZATION_PROFILES.c.party_id)
+                            .limit(100),
+                            reason,
+                        )
+        eligible_ids: set[UUID] = set()
+        if reasons:
+            eligible_ids = {
+                row.id
+                for row in (
+                    await persistence.execute(
+                        select(PARTIES.c.id).where(
+                            PARTIES.c.tenant_id == tenant.tenant_id,
+                            PARTIES.c.party_type == source.party_type,
+                            PARTIES.c.id.in_(tuple(reasons)),
+                        )
+                    )
+                ).fetchall()
+            }
+        candidates = [
+            DuplicatePartyCandidate(
+                party_id=party_id,
+                confidence="strong",
+                reasons=tuple(sorted(candidate_reasons)),
+            )
+            for party_id, candidate_reasons in sorted(
+                reasons.items(), key=lambda item: str(item[0])
+            )
+            if party_id in eligible_ids
+        ][: query.limit]
+        return DuplicateMatchResult(source_party_id=source.id, candidates=tuple(candidates))
+
     async def _list_relationships(
         self, query: ListPartyRelationships, context: HandlingContext
     ) -> list[PartyRelationshipRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
-        stmt = select(PARTY_RELATIONSHIPS).where(
-            PARTY_RELATIONSHIPS.c.tenant_id == tenant.tenant_id,
-            or_(
-                PARTY_RELATIONSHIPS.c.from_party_id == query.party_id,
-                PARTY_RELATIONSHIPS.c.to_party_id == query.party_id,
-            ),
+        await self._require_party_parent(tenant.tenant_id, query.party_id, context)
+        stmt = (
+            select(PARTY_RELATIONSHIPS)
+            .where(
+                PARTY_RELATIONSHIPS.c.tenant_id == tenant.tenant_id,
+                or_(
+                    PARTY_RELATIONSHIPS.c.from_party_id == query.party_id,
+                    PARTY_RELATIONSHIPS.c.to_party_id == query.party_id,
+                ),
+            )
+            .order_by(PARTY_RELATIONSHIPS.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
         )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
@@ -776,6 +1157,80 @@ class PartyModule:
             )
             for r in result.fetchall()
         ]
+
+
+def _reject_full_party_overflow(rows: Sequence[Any]) -> None:
+    if len(rows) > _FULL_PARTY_MAX_CHILDREN:
+        raise BusinessOSError(
+            "full_party_aggregate_too_large",
+            "Party aggregate exceeds the supported bound; use paginated Party child queries",
+            status_code=409,
+        )
+
+
+def _contact_record(row: Any) -> ContactPointRecord:
+    return ContactPointRecord(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        party_id=row.party_id,
+        channel_type=row.channel_type,
+        value=row.value,
+        purpose=row.purpose,
+        is_primary=row.is_primary,
+        is_verified=row.is_verified,
+        created_at=row.created_at,
+    )
+
+
+def _address_assignment_record(row: Any) -> PartyAddressAssignmentRecord:
+    return PartyAddressAssignmentRecord(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        party_id=row.party_id,
+        address_id=row.address_id,
+        purpose=row.purpose,
+        is_primary=row.is_primary,
+        is_active=row.is_active,
+        created_at=row.created_at,
+    )
+
+
+def _identifier_record(row: Any) -> ExternalIdentifierRecord:
+    return ExternalIdentifierRecord(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        party_id=row.party_id,
+        provider=row.provider,
+        identifier_value=row.identifier_value,
+        is_sensitive=row.is_sensitive,
+        created_at=row.created_at,
+    )
+
+
+def _new_party_number() -> str:
+    # Keep the established PRT-hex shape while increasing entropy from 32 to 64 bits.
+    return f"PRT-{token_hex(8).upper()}"
+
+
+async def _insert_party_with_number(
+    context: HandlingContext, **values: object
+) -> tuple[str, datetime, datetime]:
+    for _ in range(_PARTY_NUMBER_ATTEMPTS):
+        candidate = _new_party_number()
+        result = await context.unit_of_work.persistence.execute(
+            pg_insert(PARTIES)
+            .values(**values, party_number=candidate)
+            .on_conflict_do_nothing(constraint="uq_party_tenant_number")
+            .returning(PARTIES.c.created_at, PARTIES.c.updated_at)
+        )
+        row = result.first()
+        if row is not None:
+            return candidate, row.created_at, row.updated_at
+    raise BusinessOSError(
+        "party_number_allocation_exhausted",
+        "Party number allocation could not complete; retry the request",
+        status_code=409,
+    )
 
 
 def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> TenantContext:

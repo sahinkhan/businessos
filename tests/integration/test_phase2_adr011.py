@@ -101,6 +101,7 @@ async def _real_policy_setup(
                 "foundation.tenant",
                 "foundation.identity",
                 "foundation.organization",
+                "foundation.currency",
                 "foundation.geography",
                 "foundation.reference_data",
                 "foundation.uom",

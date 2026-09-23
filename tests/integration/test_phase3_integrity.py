@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from decimal import Decimal
 from threading import Event
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import psycopg
@@ -39,6 +39,11 @@ class _DenySensitive:
         return permission != "foundation.party.sensitive.read"
 
 
+class _DenyCurrency:
+    async def is_allowed(self, principal_id: UUID, tenant: TenantContext, permission: str) -> bool:
+        return permission != "foundation.currency.read"
+
+
 def _context(tenant_id: UUID) -> RequestContext:
     return RequestContext(
         correlation_id=f"phase3-{tenant_id}",
@@ -66,12 +71,179 @@ async def _query(app: Any, message: object, context: RequestContext) -> object:
 
 @pytest.mark.integration
 @pytest.mark.postgres
+async def test_currency_public_dispatch_and_permissions(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    from businessos_currency import CurrencyRecord, GetCurrency, ListCurrencies, ResolveCurrency
+
+    app = create_application(
+        Settings(environment="test", database_url=postgres_database.runtime_url),
+        modules=_foundation_modules(),
+        authorizer=Authorizer(_AllowAll()),
+    )
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    first, second = _context(uuid4()), _context(uuid4())
+    try:
+        usd = await _query(app, GetCurrency(code="USD"), first)
+        assert isinstance(usd, CurrencyRecord)
+        assert usd.code == "USD" and usd.minor_unit == 2
+        assert await _query(app, GetCurrency(code="ZZZ"), first) is None
+        assert await _query(app, ResolveCurrency(code="USD"), second) == usd
+        page1 = await _query(app, ListCurrencies(limit=2), first)
+        page2 = await _query(app, ListCurrencies(limit=2, offset=2), second)
+        assert isinstance(page1, list) and isinstance(page2, list)
+        assert [item.code for item in page1] == ["AED", "AUD"]
+        assert [item.code for item in page2] == ["BDT", "BRL"]
+        assert await _query(app, ListCurrencies(), first) == await _query(
+            app, ListCurrencies(), second
+        )
+        migration_url = postgres_database.migration_url.replace(
+            "postgresql+psycopg://", "postgresql://", 1
+        )
+        with psycopg.connect(migration_url) as connection:
+            connection.execute(
+                "UPDATE platform_currency.currencies SET is_active = false WHERE code = 'USD'"
+            )
+        assert await _query(app, GetCurrency(code="USD"), first) is not None
+        active = await _query(app, ListCurrencies(), first)
+        all_codes = await _query(app, ListCurrencies(active_only=False), first)
+        assert "USD" not in [item.code for item in cast(list[CurrencyRecord], active)]
+        assert "USD" in [item.code for item in cast(list[CurrencyRecord], all_codes)]
+    finally:
+        await app.shutdown()
+
+    denied = create_application(
+        Settings(environment="test", database_url=postgres_database.runtime_url),
+        modules=_foundation_modules(),
+        authorizer=Authorizer(_DenyCurrency()),
+    )
+    await denied.startup()
+    try:
+        with pytest.raises(BusinessOSError):
+            await _query(denied, GetCurrency(code="USD"), first)
+    finally:
+        await denied.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_uom_base_move_and_rounding_database_integrity(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(
+        Settings(environment="test", database_url=postgres_database.runtime_url),
+        modules=_foundation_modules(),
+    )
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    url = postgres_database.migration_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    tenant_id, base_id, other_id = uuid4(), uuid4(), uuid4()
+    with psycopg.connect(url) as connection:
+        for code in ("length", "distance"):
+            connection.execute(
+                "INSERT INTO platform_uom.measurement_categories "
+                "(id, tenant_id, code, name, base_unit_code) VALUES (%s, %s, %s, %s, 'm')",
+                (uuid4(), tenant_id, code, code),
+            )
+        connection.execute(
+            "INSERT INTO platform_uom.units_of_measure "
+            "(id, tenant_id, category_code, code, name, symbol, is_base_unit) "
+            "VALUES (%s, %s, 'length', 'm', 'Meter', 'm', true)",
+            (base_id, tenant_id),
+        )
+        connection.execute(
+            "INSERT INTO platform_uom.units_of_measure "
+            "(id, tenant_id, category_code, code, name, symbol, conversion_ratio) "
+            "VALUES (%s, %s, 'length', 'cm', 'Centimeter', 'cm', 0.01)",
+            (other_id, tenant_id),
+        )
+        connection.commit()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(
+                "UPDATE platform_uom.units_of_measure SET category_code = 'distance' WHERE id = %s",
+                (base_id,),
+            )
+        connection.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(
+                "UPDATE platform_uom.units_of_measure SET is_base_unit = true WHERE id = %s",
+                (other_id,),
+            )
+        connection.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(
+                "UPDATE platform_uom.measurement_categories SET base_unit_code = 'cm' "
+                "WHERE tenant_id = %s AND code = 'length'",
+                (tenant_id,),
+            )
+        connection.rollback()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            connection.execute(
+                "UPDATE platform_uom.units_of_measure SET rounding_mode = 'BAD' WHERE id = %s",
+                (other_id,),
+            )
+        connection.rollback()
+        connection.execute("DELETE FROM platform_uom.units_of_measure WHERE id = %s", (other_id,))
+        connection.execute(
+            "UPDATE platform_uom.units_of_measure SET category_code = 'distance' WHERE id = %s",
+            (base_id,),
+        )
+        assert connection.execute(
+            "SELECT category_code FROM platform_uom.units_of_measure WHERE id = %s", (base_id,)
+        ).fetchone() == ("distance",)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_uom_invalid_rounding_preflight_preserves_rows(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(
+        Settings(environment="test", database_url=postgres_database.runtime_url),
+        modules=_foundation_modules(),
+    )
+    assert app.runtime is not None
+    migrations = app.runtime.migrations
+    migrations.upgrade(postgres_database.migration_url, "uom_0001")
+    url = postgres_database.migration_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    tenant_id, unit_id = uuid4(), uuid4()
+    with psycopg.connect(url) as connection:
+        connection.execute(
+            "INSERT INTO platform_uom.measurement_categories "
+            "(id, tenant_id, code, name, base_unit_code) VALUES (%s, %s, 'length', 'Length', 'm')",
+            (uuid4(), tenant_id),
+        )
+        connection.execute(
+            "INSERT INTO platform_uom.units_of_measure "
+            "(id, tenant_id, category_code, code, name, symbol, is_base_unit, rounding_mode) "
+            "VALUES (%s, %s, 'length', 'm', 'Meter', 'm', true, 'BAD')",
+            (unit_id, tenant_id),
+        )
+    with pytest.raises(Exception, match="unsupported rounding mode"):
+        migrations.upgrade(postgres_database.migration_url, "uom_0002")
+    with psycopg.connect(url) as connection:
+        assert connection.execute(
+            "SELECT rounding_mode FROM platform_uom.units_of_measure WHERE id = %s", (unit_id,)
+        ).fetchone() == ("BAD",)
+        connection.execute(
+            "UPDATE platform_uom.units_of_measure SET rounding_mode = 'ROUND_HALF_UP' "
+            "WHERE id = %s",
+            (unit_id,),
+        )
+    migrations.upgrade(postgres_database.migration_url, "uom_0002")
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
 async def test_phase3_commands_enforce_parent_and_tenant_integrity(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     from businessos_geography import (
         AddressValidationResult,
         CreateAddress,
+        GetAddress,
         RegisterCountry,
         ValidateAddress,
     )
@@ -145,10 +317,10 @@ async def test_phase3_commands_enforce_parent_and_tenant_integrity(
             app,
             CreateAddress(
                 tenant_id=tenant_a,
-                country_code="AA",
-                subdivision_code="AA-1",
-                city="Acity",
-                postal_code="1234",
+                country_code=" aa ",
+                subdivision_code=" aa-1 ",
+                city=" Acity ",
+                postal_code=" 1234 ",
                 street_line1="1 A",
             ),
             a,
@@ -167,6 +339,13 @@ async def test_phase3_commands_enforce_parent_and_tenant_integrity(
         )
         assert isinstance(address_a, AddressRecord)
         assert isinstance(address_b, AddressRecord)
+        assert (
+            address_a.country_code,
+            address_a.subdivision_code,
+            address_a.city,
+            address_a.postal_code,
+        ) == ("AA", "AA-1", "Acity", "1234")
+        assert await _query(app, GetAddress(address_id=address_a.id), a) == address_a
         with pytest.raises(BusinessOSError):
             await _command(
                 app,

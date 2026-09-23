@@ -161,6 +161,8 @@ class MatchPartyDuplicates(Query):
 class ListPartyRelationships(Query):
     tenant_id: UUID
     party_id: UUID
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class PartyCreated(DomainEvent):
@@ -1006,12 +1008,18 @@ class PartyModule:
         self, query: ListPartyRelationships, context: HandlingContext
     ) -> list[PartyRelationshipRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
-        stmt = select(PARTY_RELATIONSHIPS).where(
-            PARTY_RELATIONSHIPS.c.tenant_id == tenant.tenant_id,
-            or_(
-                PARTY_RELATIONSHIPS.c.from_party_id == query.party_id,
-                PARTY_RELATIONSHIPS.c.to_party_id == query.party_id,
-            ),
+        stmt = (
+            select(PARTY_RELATIONSHIPS)
+            .where(
+                PARTY_RELATIONSHIPS.c.tenant_id == tenant.tenant_id,
+                or_(
+                    PARTY_RELATIONSHIPS.c.from_party_id == query.party_id,
+                    PARTY_RELATIONSHIPS.c.to_party_id == query.party_id,
+                ),
+            )
+            .order_by(PARTY_RELATIONSHIPS.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
         )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [

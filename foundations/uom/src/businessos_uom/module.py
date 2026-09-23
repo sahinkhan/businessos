@@ -26,6 +26,7 @@ from businessos.sdk import (
 from .contracts import (
     ConvertedAmountRecord,
     MeasurementCategoryRecord,
+    RoundingMode,
     UnitOfMeasureRecord,
     UomConversionService,
 )
@@ -50,7 +51,7 @@ class CreateUnitOfMeasure(Command):
     conversion_ratio: Decimal = Field(default=Decimal("1.0"), gt=0)
     conversion_offset: Decimal = Field(default=Decimal("0.0"))
     precision: int = Field(default=2, ge=0)
-    rounding_mode: str = Field(default="ROUND_HALF_UP")
+    rounding_mode: RoundingMode = "ROUND_HALF_UP"
 
 
 class ConvertQuantity(Command):
@@ -67,6 +68,8 @@ class GetMeasurementCategory(Query):
 
 class ListMeasurementCategories(Query):
     tenant_id: UUID
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class GetUnitOfMeasure(Query):
@@ -77,6 +80,8 @@ class GetUnitOfMeasure(Query):
 class ListUnitsOfMeasure(Query):
     tenant_id: UUID
     category_code: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class UomCategoryCreated(DomainEvent):
@@ -296,8 +301,12 @@ class UomModule:
         self, query: ListMeasurementCategories, context: HandlingContext
     ) -> list[MeasurementCategoryRecord]:
         tenant = _require_tenant(context.request, query.tenant_id)
-        stmt = select(MEASUREMENT_CATEGORIES).where(
-            MEASUREMENT_CATEGORIES.c.tenant_id == tenant.tenant_id
+        stmt = (
+            select(MEASUREMENT_CATEGORIES)
+            .where(MEASUREMENT_CATEGORIES.c.tenant_id == tenant.tenant_id)
+            .order_by(MEASUREMENT_CATEGORIES.c.code, MEASUREMENT_CATEGORIES.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
         )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
@@ -348,6 +357,11 @@ class UomModule:
         stmt = select(UNITS_OF_MEASURE).where(UNITS_OF_MEASURE.c.tenant_id == tenant.tenant_id)
         if query.category_code:
             stmt = stmt.where(UNITS_OF_MEASURE.c.category_code == query.category_code)
+        stmt = (
+            stmt.order_by(UNITS_OF_MEASURE.c.code, UNITS_OF_MEASURE.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             UnitOfMeasureRecord(

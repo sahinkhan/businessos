@@ -79,6 +79,8 @@ class GetReferenceSet(Query):
 class ListReferenceSets(Query):
     tenant_id: UUID
     owning_module: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class GetReferenceValue(Query):
@@ -91,6 +93,8 @@ class ListReferenceValues(Query):
     tenant_id: UUID
     set_code: str
     active_only: bool = True
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class ResolveReferenceValueByExternalId(Query):
@@ -431,6 +435,11 @@ class ReferenceDataModule:
         stmt = select(REFERENCE_SETS).where(REFERENCE_SETS.c.tenant_id == tenant.tenant_id)
         if query.owning_module:
             stmt = stmt.where(REFERENCE_SETS.c.owning_module == query.owning_module)
+        stmt = (
+            stmt.order_by(REFERENCE_SETS.c.code, REFERENCE_SETS.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             ReferenceSetRecord(
@@ -488,7 +497,13 @@ class ReferenceDataModule:
         )
         if query.active_only:
             stmt = stmt.where(REFERENCE_VALUES.c.is_active.is_(True))
-        stmt = stmt.order_by(REFERENCE_VALUES.c.sort_order, REFERENCE_VALUES.c.code)
+        stmt = (
+            stmt.order_by(
+                REFERENCE_VALUES.c.sort_order, REFERENCE_VALUES.c.code, REFERENCE_VALUES.c.id
+            )
+            .limit(query.limit)
+            .offset(query.offset)
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             ReferenceValueRecord(

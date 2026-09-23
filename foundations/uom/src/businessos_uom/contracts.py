@@ -10,6 +10,7 @@ from decimal import (
     ROUND_UP,
     Decimal,
 )
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -22,6 +23,14 @@ _ROUNDING_MODES = {
     "ROUND_UP": ROUND_UP,
     "ROUND_DOWN": ROUND_DOWN,
 }
+RoundingMode = Literal[
+    "ROUND_HALF_UP",
+    "ROUND_HALF_EVEN",
+    "ROUND_FLOOR",
+    "ROUND_CEILING",
+    "ROUND_UP",
+    "ROUND_DOWN",
+]
 
 
 class MeasurementCategoryRecord(BaseModel):
@@ -50,7 +59,7 @@ class UnitOfMeasureRecord(BaseModel):
     conversion_ratio: Decimal
     conversion_offset: Decimal = Decimal("0")
     precision: int = 2
-    rounding_mode: str = "ROUND_HALF_UP"
+    rounding_mode: RoundingMode = "ROUND_HALF_UP"
     is_active: bool = True
     created_at: datetime
 
@@ -95,7 +104,7 @@ class UomConversionService:
         target_value = (base_value - to_unit.conversion_offset) / to_unit.conversion_ratio
 
         # 3. Apply precision & rounding mode
-        rounding = _ROUNDING_MODES.get(to_unit.rounding_mode, ROUND_HALF_UP)
+        rounding = _ROUNDING_MODES[to_unit.rounding_mode]
         quantizer = Decimal("10") ** -to_unit.precision if to_unit.precision > 0 else Decimal("1")
         final_amt = target_value.quantize(quantizer, rounding=rounding)
 

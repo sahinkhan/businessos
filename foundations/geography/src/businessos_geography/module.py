@@ -61,10 +61,10 @@ class RegisterCity(Command):
 
 class CreateAddress(Command):
     tenant_id: UUID
-    country_code: str = Field(min_length=2, max_length=2, pattern=r"^[A-Z]{2}$")
-    subdivision_code: str | None = Field(default=None, max_length=10)
+    country_code: str = Field(min_length=1, max_length=10)
+    subdivision_code: str | None = Field(default=None, max_length=20)
     city: str = Field(min_length=1, max_length=200)
-    postal_code: str | None = Field(default=None, max_length=30)
+    postal_code: str | None = Field(default=None, max_length=40)
     street_line1: str = Field(min_length=1, max_length=300)
     street_line2: str | None = Field(default=None, max_length=300)
     coordinates: dict[str, float] | None = None
@@ -77,6 +77,8 @@ class GetCountry(Query):
 
 class ListCountries(Query):
     active_only: bool = True
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class GetSubdivision(Query):
@@ -86,6 +88,8 @@ class GetSubdivision(Query):
 
 class ListSubdivisions(Query):
     country_code: str
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class GetAddress(Query):
@@ -93,10 +97,10 @@ class GetAddress(Query):
 
 
 class ValidateAddress(Query):
-    country_code: str = Field(min_length=2, max_length=2)
-    subdivision_code: str | None = Field(default=None, max_length=10)
+    country_code: str = Field(min_length=1, max_length=10)
+    subdivision_code: str | None = Field(default=None, max_length=20)
     city: str = Field(min_length=1, max_length=200)
-    postal_code: str | None = Field(default=None, max_length=30)
+    postal_code: str | None = Field(default=None, max_length=40)
     street_line1: str | None = Field(default=None, max_length=300)
 
 
@@ -275,13 +279,17 @@ class GeographyModule:
         )
         if not validation.valid:
             raise BusinessOSError("invalid_address", "Address validation failed", status_code=400)
+        country_code = validation.normalized_country_code
+        subdivision_code = validation.normalized_subdivision_code
+        city = validation.normalized_city
+        postal_code = validation.normalized_postal_code
         formatted = self.address_formatter.format(
             street_line1=command.street_line1,
             street_line2=command.street_line2,
-            city=command.city,
-            subdivision_code=command.subdivision_code,
-            postal_code=command.postal_code,
-            country_code=command.country_code,
+            city=city,
+            subdivision_code=subdivision_code,
+            postal_code=postal_code,
+            country_code=country_code,
         )
         addr_id = uuid4()
         res = await context.unit_of_work.persistence.execute(
@@ -289,10 +297,10 @@ class GeographyModule:
             .values(
                 id=addr_id,
                 tenant_id=tenant.tenant_id,
-                country_code=command.country_code,
-                subdivision_code=command.subdivision_code,
-                city=command.city,
-                postal_code=command.postal_code,
+                country_code=country_code,
+                subdivision_code=subdivision_code,
+                city=city,
+                postal_code=postal_code,
                 street_line1=command.street_line1,
                 street_line2=command.street_line2,
                 formatted_address=formatted,
@@ -311,17 +319,17 @@ class GeographyModule:
                 tenant_id=tenant.tenant_id,
                 correlation_id=context.request.correlation_id,
                 address_id=addr_id,
-                country_code=command.country_code,
-                city=command.city,
+                country_code=country_code,
+                city=city,
             )
         )
         return AddressRecord(
             id=addr_id,
             tenant_id=tenant.tenant_id,
-            country_code=command.country_code,
-            subdivision_code=command.subdivision_code,
-            city=command.city,
-            postal_code=command.postal_code,
+            country_code=country_code,
+            subdivision_code=subdivision_code,
+            city=city,
+            postal_code=postal_code,
             street_line1=command.street_line1,
             street_line2=command.street_line2,
             formatted_address=formatted,
@@ -340,6 +348,30 @@ class GeographyModule:
         city_name = query.city.strip()
         postal_code = query.postal_code.strip() if query.postal_code else None
         errors: list[AddressValidationError] = []
+        if len(country_code) != 2 or not country_code.isascii() or not country_code.isalpha():
+            errors.append(
+                AddressValidationError(
+                    code="invalid_country_code",
+                    field="country_code",
+                    message="Country code must have two letters",
+                )
+            )
+        if subdivision_code is not None and len(subdivision_code) > 10:
+            errors.append(
+                AddressValidationError(
+                    code="invalid_subdivision_code",
+                    field="subdivision_code",
+                    message="Subdivision code is too long",
+                )
+            )
+        if postal_code is not None and len(postal_code) > 30:
+            errors.append(
+                AddressValidationError(
+                    code="invalid_postal_code",
+                    field="postal_code",
+                    message="Postal code is too long",
+                )
+            )
         country = (
             await context.unit_of_work.persistence.execute(
                 select(COUNTRIES.c.address_format).where(
@@ -455,6 +487,9 @@ class GeographyModule:
         stmt = select(COUNTRIES)
         if query.active_only:
             stmt = stmt.where(COUNTRIES.c.is_active.is_(True))
+        stmt = (
+            stmt.order_by(COUNTRIES.c.code, COUNTRIES.c.id).limit(query.limit).offset(query.offset)
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             CountryRecord(
@@ -495,6 +530,11 @@ class GeographyModule:
         self, query: ListSubdivisions, context: HandlingContext
     ) -> list[SubdivisionRecord]:
         stmt = select(SUBDIVISIONS).where(SUBDIVISIONS.c.country_code == query.country_code)
+        stmt = (
+            stmt.order_by(SUBDIVISIONS.c.code, SUBDIVISIONS.c.id)
+            .limit(query.limit)
+            .offset(query.offset)
+        )
         result = await context.unit_of_work.persistence.execute(stmt)
         return [
             SubdivisionRecord(

@@ -40,8 +40,10 @@ resolution contract. A small installation-global canonical base provides
 stable codes such as `PUBLIC`, `INTERNAL`, `CONFIDENTIAL`, `RESTRICTED`,
 `PERSONAL`, and `SENSITIVE`, but this list is illustrative: acceptance does
 not recode existing rows or declare every existing code canonical. Canonical
-definitions are versioned, installation-governed, and read-only to ordinary
-tenant runtime. Tenant-owned extensions and profiles carry `tenant_id`, use
+definitions have immutable technical IDs and codes, version/effective
+metadata, active/inactive lifecycle, and governed semantic attributes. They
+are installation-governed and read-only to ordinary tenant runtime.
+Tenant-owned extensions and profiles carry `tenant_id`, use
 FORCE RLS in shared-schema mode, and may add locally named classifications or
 raise controls for an existing canonical classification. They cannot shadow,
 rename, lower the minimum sensitivity of, or redefine a canonical code.
@@ -50,19 +52,58 @@ regional labels and industry extensions belong in tenant profiles or
 localization/vertical-owned mappings through public contracts, not in a
 global mutable label that changes another tenant's meaning.
 
-Resolution uses an explicit namespace (`canonical` or `tenant`) plus tenant
-and version, not an unqualified code that can silently switch owners. The
-public typed `foundation.governance.data-classification.v2` read/resolution
-contract returns stable identity, owner namespace, effective tenant, version,
-sensitivity floor, allowed handling obligations, and provenance. It rejects
-unknown, ambiguous, cross-tenant, or inactive definitions. Policy field
-decisions in ADR-014 consume
-this contract and deny ambiguous classifications. Phase 5 Metadata/Studio
-stores a stable classification reference on custom fields and resolves it
-through this contract; neither Phase 5 nor a marketplace module reads
-Governance tables. Party field tags and future HR/healthcare/localization
-profiles follow the same reference rules and can impose stricter owner rules.
-The resolver does not turn a classification into authorization by itself.
+The canonical namespace is reserved, conceptually `core:<code>`; tenant
+identities use a disjoint namespace, conceptually
+`tenant:<tenant-id>:<code>`. The exact encoding is a public contract detail,
+but identity always includes stable immutable ID, namespace, tenant where
+applicable, and definition version. Display labels never resolve identity.
+A tenant may use the same display name or local code but cannot shadow,
+replace, or rename a `core` identity. Duplicate qualified IDs or ambiguous
+legacy unqualified codes fail closed. A custom definition can declare a
+stable, explicit canonical base relationship; it is never inferred by name.
+
+Tenant security overlays are separate records from classification identity.
+They may only strengthen canonical controls: required controls compose by
+logical OR, restrictions by union, allowed audience by intersection, and
+mandatory masking by logical OR. A numeric sensitivity level alone does not
+define a total order over privacy, secrecy, jurisdiction, and handling
+obligations. For an attribute without a safe monotonic merge, an override is
+forbidden; the owner must publish a new reviewed classification version or an
+additional restriction contract. A qualified canonical reference is always
+resolved with the trusted tenant's overlay lookup before use. An explicit
+"no overlay registered" result uses canonical controls; lookup failure,
+multiple active overlays, or a registered but unavailable overlay denies
+rather than falling back to weaker canonical-only authority. A tenant overlay cannot edit the
+canonical ID, code, base meaning, or minimum controls.
+
+The typed immutable `foundation.governance.data-classification.v2`
+read/resolution contract returns the stable qualified identity, canonical
+base where applicable, current or requested historical definition version,
+active state, canonical controls, tenant additional controls, effective
+composed controls, effective interval, and provenance. A current resolution
+uses the trusted tenant and instant; historical resolution uses a separately
+authorized as-of contract and the immutable version effective then. Unknown,
+ambiguous, or cross-tenant identities deny. Deactivation prevents **new**
+assignment but preserves stable IDs and historical meanings for existing
+records, metadata, and audit; referenced definitions are never hard-deleted.
+Existing live references remain resolvable with current effective controls,
+including any stricter tenant overlay. A material semantic change creates a
+new version/effective revision, never rewrites historical meaning. A display
+name may change without changing identity or security semantics.
+
+Subject to acceptance of companion ADR-014, Data Governance implements the
+**Policy-owned** `PolicyClassificationFactsProvider` port and registers it
+as canonical classification owner through trusted manifest ownership. Policy
+knows only its own port and typed effective projection; it has no dependency
+on Governance. The module direction remains Data Governance -> Policy.
+Data Governance's public resolver is separately available to Phase 5
+Metadata/Studio, which stores stable qualified IDs on custom fields and
+cannot create Policy permissions, weaken canonical controls, or bypass
+Governance ownership. Neither Phase 5 nor marketplace modules read Governance
+private tables. Party-sensitive tags and future HR, healthcare, and
+localization profiles follow public references and may impose stricter owner
+rules. Classification itself does not grant authorization or relax Party's
+accepted sensitive-field redaction.
 
 ### Mutation authority and database roles
 
@@ -95,11 +136,15 @@ reinterpret any existing meaning. A reviewed disposition maps each row to a
 canonical version or an explicitly identified tenant extension with affected
 tenant consent/evidence. Rows with unresolved provenance or divergent
 meanings block migration and certification; they remain preserved for a
-manual, audited resolution. Existing references are backfilled atomically to
-the qualified identity after the mapping is approved, with referential checks
+manual, audited resolution. Existing global codes remain stable legacy
+identifiers until an approved one-to-one mapping assigns immutable qualified
+IDs and definition versions; neither a generated ID nor an overlay may alter
+their historical meaning. Tenant overlays are created only where tenant
+ownership is deterministically evidenced. Existing references are backfilled atomically to
+the qualified identity and version after the mapping is approved, with referential checks
 and rollback-safe expand/contract stages. A new forward `gov_0003` or next
 available Governance revision adds tenant tables/constraints, FORCE RLS,
-qualified references or compatibility mapping, and narrowed grants. The
+qualified references, overlay/version history or compatibility mapping, and narrowed grants. The
 implementation must verify the actual revision slot and never rewrite
 `gov_0001`/`gov_0002`.
 

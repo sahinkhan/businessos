@@ -6,9 +6,11 @@ Decision date: 2026-09-24
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; SDK/Contract Maintainer; Security Maintainer; Policy Maintainer; Data Governance Owning Domain Maintainer; Audit Owning Domain Maintainer where transaction-bound audit evidence is contracted; Migration Safety Reviewer; Release Maintainer; each affected Resource Owning Domain Maintainer
 
-Approval pull request or commit: [PR #28](https://github.com/sahinkhan/businessos/pull/28) — acceptance candidate; formal authority pending final exact-SHA owner acceptance attestation and merge to `main`
+Approval pull request or commit: [PR #28](https://github.com/sahinkhan/businessos/pull/28) — MERGED as `91e5fd1174fddae67a5378e4e3c1684d6f479778`
 
 Approved semantic proposal SHA: `94b00c19d2e8a281d0083a03770eb0b60dcff262`
+
+Acceptance candidate SHA: `71ecb45809f5a0c17969b047e075fc9d01abb1d6`
 
 Proposal owner attestation: [@sahinkhan's corrected exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/28#issuecomment-5808121619) — supersedes the earlier role-incomplete proposal comment
 
@@ -20,11 +22,17 @@ Independent technical/read-only proposal review: PERFORMED — PASS; Critical 0;
 
 Exact proposal CI: [BusinessOS run 35957060529](https://github.com/sahinkhan/businessos/actions/runs/35957060529) — PASS (`python-quality`, `windows-typing`, `web-quality`)
 
+Final owner acceptance attestation: COMPLETE — [@sahinkhan's exact-candidate attestation](https://github.com/sahinkhan/businessos/pull/28#issuecomment-5808423088)
+
+Acceptance exact-head CI: [BusinessOS run 35959268570](https://github.com/sahinkhan/businessos/actions/runs/35959268570) — PASS (`python-quality`, `windows-typing`, `web-quality`)
+
+Accepted main merge SHA: `91e5fd1174fddae67a5378e4e3c1684d6f479778`
+
 Cross-ADR architecture review: PASS; Critical 0; High 0; Medium 1 implementation precision note
 
 Implementation/certification gate carried forward: concrete contracts must specify how the owner provider returns locked, normalized operation facts to Policy inside Governance's transaction, and the combined ADR-010/011 and ADR-017 lock ordering must be verified. Acceptance does not resolve this gate.
 
-Formal authority: PENDING final owner attestation on the exact acceptance candidate SHA and merge to `main`; this candidate does not itself implement ADR-018 or generally reopen frozen Phase 1
+Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN. ADR-018 does not itself implement the compatible additive Platform/SDK extension. Phase 1 remains FINAL PASS / FROZEN; no general Phase 1 reopening occurred. The implementation/certification gate above remains unresolved until separately certified.
 
 Supersedes: None
 

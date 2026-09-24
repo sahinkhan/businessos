@@ -162,6 +162,7 @@ class _OwnedHandler:
     handler: Handler
     generation: ContributionGeneration | None
     permission: str | None
+    coordinator_token: object | None = None
 
 
 class HandlerRegistry:
@@ -178,6 +179,7 @@ class HandlerRegistry:
         *,
         generation: ContributionGeneration | None = None,
         permission: str | None = None,
+        coordinator_token: object | None = None,
     ) -> None:
         if message_type in self._handlers:
             current_owner = self._handlers[message_type].owner
@@ -189,6 +191,7 @@ class HandlerRegistry:
             cast(Handler, handler),
             generation,
             permission,
+            coordinator_token,
         )
 
     def get(self, message: Message) -> Handler:
@@ -485,7 +488,11 @@ class MessageDispatcher:
                         await unit_of_work.commit()
                 else:
                     async with ResourceTransactionScope(
-                        self._gate, context, registered.owner, registered.generation
+                        self._gate,
+                        context,
+                        registered.owner,
+                        registered.generation,
+                        registered.coordinator_token,
                     ) as resource_scope:
                         async with unit_of_work:
                             transaction = handler_transaction_view(unit_of_work)
@@ -515,7 +522,11 @@ class MessageDispatcher:
                         )
                         return await self.queries.invoke_registered(registered, message, handling)
                 async with ResourceTransactionScope(
-                    self._gate, context, registered.owner, registered.generation
+                    self._gate,
+                    context,
+                    registered.owner,
+                    registered.generation,
+                    registered.coordinator_token,
                 ) as resource_scope:
                     async with unit_of_work:
                         transaction = handler_transaction_view(unit_of_work)

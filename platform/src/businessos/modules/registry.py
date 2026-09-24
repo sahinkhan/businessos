@@ -236,6 +236,9 @@ class ModuleRegistry:
             raise NotFoundError(f"Unknown module: {module_id}")
         return registered
 
+    def is_approved_coordinator(self, module_id: str) -> bool:
+        return module_id in self._coordinator_ids and module_id in self._approved_artifacts
+
     def ordered(self) -> tuple[RegisteredModule, ...]:
         manifests = {
             module_id: registered.manifest for module_id, registered in self._modules.items()
@@ -304,6 +307,8 @@ class LifecycleManager:
     async def _enable(self, module_id: str) -> None:
         registered = self._registry.get(module_id)
         async with registered.lock:
+            if self._registry.get(module_id) is not registered:
+                raise ConfigurationError("Module was replaced while activation was pending")
             if registered.state is ModuleState.ENABLED:
                 return
             if registered.state is ModuleState.RETIRED:

@@ -63,4 +63,5 @@ class FrameworkRuntime:
             generation=generation,
             manifest=self.modules.get(owner).manifest,
             resources=self.resources,
+            coordinator_approved=self.modules.is_approved_coordinator(owner),
         )

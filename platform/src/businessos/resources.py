@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
@@ -100,6 +101,7 @@ class _ProviderEntry:
     binding: ResourceOwnerBinding
     kind: str
     provider: object
+    supported_actions: frozenset[str] = frozenset()
 
 
 _current_scope: ContextVar[ResourceTransactionScope | None] = ContextVar(
@@ -116,11 +118,13 @@ class ResourceTransactionScope:
         request: RequestContext,
         handler_owner: str,
         handler_generation: ContributionGeneration | None,
+        coordinator_token: object | None = None,
     ) -> None:
         self._gate = gate
         self.request = request
         self.handler_owner = handler_owner
         self.handler_generation = handler_generation
+        self.coordinator_token = coordinator_token
         self.transaction: object | None = None
         self._task: asyncio.Task[object] | None = None
         self._stack = AsyncExitStack()
@@ -228,10 +232,10 @@ class AdmittedResourceProvider:
 
     async def validate_operation(self, action: str) -> ResourceOwnerFacts:
         self._check("operation")
-        if not action or not action.isascii():
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII):
             raise ConfigurationError("Operation action must be nonempty canonical ASCII")
         provider = cast(ResourceOwnerOperationProvider, self._entry.provider)
-        if action not in provider.supported_actions:
+        if action not in self._entry.supported_actions:
             raise ConfigurationError("Owner does not support the requested operation")
         result = await provider.validate_operation(
             self._locator, action, self._request, cast("HandlerTransaction", self._transaction)
@@ -245,7 +249,7 @@ class AdmittedResourceProvider:
 
     async def apply_operation(self, action: str) -> None:
         self._check("operation")
-        if not action or not action.isascii():
+        if not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII):
             raise ConfigurationError("Operation action must be nonempty canonical ASCII")
         scope = ResourceTransactionScope.current(self._request, self._transaction)
         scope.consume_validation(self._entry, self._locator, action)
@@ -275,6 +279,7 @@ class ResourceOwnershipRegistry:
     ) -> None:
         self._gate = gate
         self._coordinator_ids = coordinator_ids
+        self._coordinator_tokens: dict[ContributionGeneration, object] = {}
         self._bindings: dict[tuple[str, str], ResourceOwnerBinding] = {}
         self._aliases: dict[tuple[str, str], tuple[str, str]] = {}
         self._providers: dict[tuple[str, str, str], _ProviderEntry] = {}
@@ -326,14 +331,32 @@ class ResourceOwnershipRegistry:
         if kind == "operation" and (
             not isinstance(getattr(provider, "supported_actions", None), frozenset)
             or not provider.supported_actions  # type: ignore[attr-defined]
+            or any(
+                not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII)
+                for action in provider.supported_actions  # type: ignore[attr-defined]
+            )
         ):
             raise ConfigurationError("Owner operation provider requires supported actions")
         key = (namespace, version, kind)
         if key in self._providers:
             raise ConflictError("Resource provider already registered")
         self._providers[key] = _ProviderEntry(
-            ResourceOwnerBinding(ownership, generation), kind, provider
+            ResourceOwnerBinding(ownership, generation),
+            kind,
+            provider,
+            frozenset(provider.supported_actions) if kind == "operation" else frozenset(),  # type: ignore[attr-defined]
         )
+
+    def authorize_coordinator_generation(
+        self, generation: ContributionGeneration, token: object
+    ) -> None:
+        if generation.owner not in self._coordinator_ids:
+            raise ConfigurationError("Coordinator is not approved by protected composition")
+        if self._gate.state(generation) is not ContributionState.STAGED:
+            raise ConfigurationError("Coordinator admission must stage before activation")
+        if generation in self._coordinator_tokens:
+            raise ConflictError("Coordinator generation is already approved")
+        self._coordinator_tokens[generation] = token
 
     def resolve_owner(self, namespace: str, version: str) -> ResourceOwnerBinding:
         key = self._aliases.get((namespace, version), (namespace, version))
@@ -362,6 +385,7 @@ class ResourceOwnershipRegistry:
             scope.handler_owner not in self._coordinator_ids
             or scope.handler_generation is None
             or not self._gate.is_active(scope.handler_generation)
+            or self._coordinator_tokens.get(scope.handler_generation) is not scope.coordinator_token
         ):
             raise ConfigurationError("Operation requires an admitted framework coordinator")
         await scope.admit(binding.generation)
@@ -399,6 +423,7 @@ class ResourceOwnershipRegistry:
             raise ConfigurationError("Resource locator does not match trusted tenant or owner")
 
     def remove_owner_generation(self, generation: ContributionGeneration) -> None:
+        self._coordinator_tokens.pop(generation, None)
         self._providers = {
             key: entry
             for key, entry in self._providers.items()

@@ -2,10 +2,12 @@
 
 Status: implementation candidate for [ADR-018](../adr/ADR-018-canonical-resource-ownership-and-owner-operation-boundary.md).
 
-Runtime implementation commit: `9d0f85718cc823291ab8907c778aaef1b055395e`.
+Initial runtime implementation commit: `9d0f85718cc823291ab8907c778aaef1b055395e`.
 
-Changed files in that runtime commit: `platform/src/businessos/bootstrap.py`,
+Changed files in the implementation PR: this document,
+`platform/src/businessos/bootstrap.py`,
 `platform/src/businessos/dependencies.py`, `platform/src/businessos/messages.py`,
+`platform/src/businessos/migrations.py`,
 `platform/src/businessos/modules/__init__.py`,
 `platform/src/businessos/modules/artifact.py`,
 `platform/src/businessos/modules/manifest.py`,
@@ -13,8 +15,7 @@ Changed files in that runtime commit: `platform/src/businessos/bootstrap.py`,
 `platform/src/businessos/modules/sdk.py`, `platform/src/businessos/resources.py`,
 `platform/src/businessos/runtime.py`, `platform/src/businessos/sdk/__init__.py`,
 `tests/conformance/test_public_sdk.py`, and
-`tests/unit/test_resource_ownership.py`. This document is the only additional
-file in the documentation commit.
+`tests/unit/test_resource_ownership.py`.
 
 ## Trust and composition
 
@@ -60,8 +61,10 @@ The resolver returns an immutable binding and an admitted handle for the exact
 resource/version/provider kind. It checks trusted request tenant and the
 returned owner facts' tenant, namespace, record, owner, version, and lifecycle.
 Operation handles require an approved coordinator module generation already
-admitted by the framework dispatcher; a caller-supplied coordinator name is
-never accepted. Operation providers declare supported actions; validation in
+admitted by the framework dispatcher and a matching token issued through its
+owner-scoped module registration. A caller-supplied coordinator name or a raw
+handler registry registration cannot mint that token. Operation providers
+declare supported actions at registration; validation in
 the same transaction precedes application. These contracts do not implement
 retention, holds, Policy V2, Audit V2, or domain mutations.
 

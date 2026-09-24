@@ -54,6 +54,23 @@ class RegisteringModule(OwnerModule):
         registration.resource_owner_operation("example_owner.record", "1", OperationProvider())
 
 
+class FailingRegisteringModule(RegisteringModule):
+    async def start(self) -> None:
+        raise RuntimeError("activation failed")
+
+
+class CoordinatorModule(OwnerModule):
+    def __init__(self) -> None:
+        super().__init__("example_governance")
+        self.manifest = _manifest("example_governance", resource_ownership=())
+
+    async def register(self, registration: ModuleRegistration) -> None:
+        async def handler(_: GovernOwner, handling: HandlingContext) -> object:
+            return None
+
+        registration.command(GovernOwner, handler)
+
+
 def _manifest(module_id: str = "example_owner", **changes: object) -> ModuleManifest:
     values: dict[str, object] = {
         "module_id": module_id,
@@ -206,6 +223,26 @@ def test_grant_is_bound_to_exact_loaded_instance() -> None:
         registry.add(substituted)
 
 
+def test_coordinator_identity_also_requires_protected_grant() -> None:
+    module = OwnerModule("example_governance")
+    module.manifest = _manifest("example_governance", resource_ownership=())
+    registry = ModuleRegistry(
+        platform_version="0.1.0",
+        sdk_version="0.1.0",
+        coordinator_ids=frozenset({"example_governance"}),
+    )
+    with pytest.raises(ConfigurationError, match="approved artifact"):
+        registry.add(module)
+    approved = ModuleRegistry(
+        platform_version="0.1.0",
+        sdk_version="0.1.0",
+        coordinator_ids=frozenset({"example_governance"}),
+        approved_artifacts={"example_governance": _grant(module)},
+    )
+    approved.add(module)
+    assert approved.is_approved_coordinator("example_governance")
+
+
 def test_legacy_alias_requires_independent_exact_approval() -> None:
     module = OwnerModule()
     alias = ResourceOwnership(
@@ -283,6 +320,55 @@ async def test_manifest_swap_after_admission_cannot_create_resource_claim() -> N
     assert app.runtime is not None
     with pytest.raises(NotFoundError):
         app.runtime.resources.resolve_owner("example_owner.record", "1")
+
+
+@pytest.mark.asyncio
+async def test_failed_activation_rolls_back_staged_resource_contributions() -> None:
+    module = FailingRegisteringModule()
+    app = create_application(
+        Settings(
+            environment="test",
+            database_url="postgresql+psycopg://test:test@db/test",
+            database_readiness_enabled=False,
+        ),
+        modules=(module,),
+        approved_module_artifacts={"example_owner": _grant(module)},
+    )
+    with pytest.raises(RuntimeError, match="activation failed"):
+        await app.startup()
+    assert app.runtime is not None
+    with pytest.raises(NotFoundError):
+        app.runtime.resources.resolve_owner("example_owner.record", "1")
+    with pytest.raises(ConfigurationError, match="Unknown"):
+        app.runtime.contributions.state(module.registrations[0].generation)
+
+
+@pytest.mark.asyncio
+async def test_composition_issues_token_only_to_approved_coordinator_registration() -> None:
+    owner = RegisteringModule()
+    coordinator = CoordinatorModule()
+    app = create_application(
+        Settings(
+            environment="test",
+            database_url="postgresql+psycopg://test:test@db/test",
+            database_readiness_enabled=False,
+        ),
+        modules=(owner, coordinator),
+        approved_module_artifacts={
+            "example_owner": _grant(owner),
+            "example_governance": _grant(coordinator),
+        },
+        resource_coordinator_ids=frozenset({"example_governance"}),
+    )
+    await app.startup()
+    assert app.runtime is not None
+    registered = app.runtime.messages.commands.resolve(GovernOwner())
+    assert registered.coordinator_token is not None
+    assert registered.generation is not None
+    assert app.runtime.resources._coordinator_tokens[registered.generation] is (
+        registered.coordinator_token
+    )
+    await app.shutdown()
 
 
 def test_generic_provider_is_not_resource_owner_authority() -> None:
@@ -373,6 +459,10 @@ class ReadOwner(Query):
 
 
 class GovernOwner(Command):
+    pass
+
+
+class SpoofOwner(Command):
     pass
 
 
@@ -519,13 +609,17 @@ async def test_operation_requires_framework_coordinator_and_validated_action() -
     resources = ResourceOwnershipRegistry(gate, coordinator_ids=frozenset({"example_governance"}))
     owner = gate.reserve("example_owner")
     manifest = _manifest()
+    operation_provider = OperationProvider()
     resources.register_provider(
-        manifest, owner, "example_owner.record", "1", "operation", OperationProvider()
+        manifest, owner, "example_owner.record", "1", "operation", operation_provider
     )
+    operation_provider.supported_actions = frozenset({"archive", "purge"})
     resources.stage(manifest, owner)
     gate.publish(owner)
     unapproved = gate.reserve("caller")
     approved = gate.reserve("example_governance")
+    coordinator_token = object()
+    resources.authorize_coordinator_generation(approved, coordinator_token)
     gate.publish(unapproved)
     gate.publish(approved)
     commit_entered = asyncio.Event()
@@ -541,7 +635,7 @@ async def test_operation_requires_framework_coordinator_and_validated_action() -
     request = RequestContext(tenant=tenant)
     locator = ResourceLocator("example_owner.record", "1", uuid4(), tenant.tenant_id)
 
-    async def caller(_: UseOwner, handling: HandlingContext) -> object:
+    async def caller(_: Command, handling: HandlingContext) -> object:
         with pytest.raises(ConfigurationError, match="coordinator"):
             await resources.resolve_provider(
                 locator, "operation", handling.request, handling.unit_of_work
@@ -568,12 +662,18 @@ async def test_operation_requires_framework_coordinator_and_validated_action() -
         return None
 
     dispatcher.commands.register(UseOwner, "caller", caller, generation=unapproved)
+    dispatcher.commands.register(SpoofOwner, "example_governance", caller, generation=approved)
     dispatcher.commands.register(
-        GovernOwner, "example_governance", coordinator, generation=approved
+        GovernOwner,
+        "example_governance",
+        coordinator,
+        generation=approved,
+        coordinator_token=coordinator_token,
     )
     container = Container()
     async with container.request_scope() as dependencies:
         await dispatcher.command(UseOwner(), request, dependencies)
+        await dispatcher.command(SpoofOwner(), request, dependencies)
         await dispatcher.command(GovernOwner(), request, dependencies)
 
 
@@ -729,6 +829,77 @@ async def test_query_lease_spans_read_uow_close() -> None:
         exit_release.set()
         assert await task == "read"
     assert gate.in_flight(owner) == 0
+
+
+@pytest.mark.asyncio
+async def test_multiple_providers_pin_each_generation_once() -> None:
+    gate = ContributionGate()
+    resources = ResourceOwnershipRegistry(gate)
+    first = gate.reserve("example_owner")
+    first_manifest = _manifest(
+        resource_ownership=(
+            ResourceOwnership(
+                resource_namespace="example_owner.record",
+                owner_module_id="example_owner",
+                contract_version="1",
+            ),
+            ResourceOwnership(
+                resource_namespace="example_owner.other",
+                owner_module_id="example_owner",
+                contract_version="1",
+            ),
+        )
+    )
+    second = gate.reserve("example_two")
+    second_manifest = _manifest("example_two")
+    for manifest, generation, namespace in (
+        (first_manifest, first, "example_owner.record"),
+        (first_manifest, first, "example_owner.other"),
+        (second_manifest, second, "example_two.record"),
+    ):
+        resources.register_provider(manifest, generation, namespace, "1", "facts", FactsProvider())
+    resources.stage(first_manifest, first)
+    resources.stage(second_manifest, second)
+    gate.publish(first)
+    gate.publish(second)
+    handler_generation = gate.reserve("reader")
+    gate.publish(handler_generation)
+    commit_entered, commit_release = asyncio.Event(), asyncio.Event()
+    dispatcher = MessageDispatcher(
+        FakeFactory(FakeUOW(commit_entered, commit_release)),
+        EventBus(gate),
+        gate,
+        resources=resources,
+    )
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    request = RequestContext(tenant=tenant)
+
+    async def handler(_: UseOwner, handling: HandlingContext) -> object:
+        for namespace in (
+            "example_owner.record",
+            "example_owner.record",
+            "example_owner.other",
+            "example_two.record",
+        ):
+            await resources.resolve_provider(
+                ResourceLocator(namespace, "1", uuid4(), tenant.tenant_id),
+                "facts",
+                handling.request,
+                handling.unit_of_work,
+            )
+        assert gate.in_flight(first) == 1
+        assert gate.in_flight(second) == 1
+        return None
+
+    dispatcher.commands.register(UseOwner, "reader", handler, generation=handler_generation)
+    container = Container()
+    async with container.request_scope() as dependencies:
+        task = asyncio.create_task(dispatcher.command(UseOwner(), request, dependencies))
+        await commit_entered.wait()
+        assert gate.in_flight(first) == gate.in_flight(second) == 1
+        commit_release.set()
+        await task
+    assert gate.in_flight(first) == gate.in_flight(second) == 0
 
 
 @pytest.mark.asyncio

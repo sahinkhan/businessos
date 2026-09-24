@@ -245,7 +245,7 @@ class AdmittedResourceProvider:
 
     async def validate_operation(self, action: str) -> ResourceOwnerFacts:
         self._check("operation")
-        if not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII):
+        if type(action) is not str or not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII):
             raise ConfigurationError("Operation action must be nonempty canonical ASCII")
         provider = cast(ResourceOwnerOperationProvider, self._entry.provider)
         if action not in self._entry.supported_actions:
@@ -262,7 +262,7 @@ class AdmittedResourceProvider:
 
     async def apply_operation(self, action: str) -> None:
         self._check("operation")
-        if not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII):
+        if type(action) is not str or not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII):
             raise ConfigurationError("Operation action must be nonempty canonical ASCII")
         scope = ResourceTransactionScope.current(self._request, self._transaction)
         scope.consume_validation(self._entry, self._locator, action)

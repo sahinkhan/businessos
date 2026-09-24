@@ -710,6 +710,13 @@ async def test_operation_requires_framework_coordinator_and_validated_action() -
     request = RequestContext(tenant=tenant)
     locator = ResourceLocator("example_owner.record", "1", uuid4(), tenant.tenant_id)
 
+    class DeceptiveRequestedAction(str):
+        def __hash__(self) -> int:
+            return hash("archive")
+
+        def __eq__(self, other: object) -> bool:
+            return other == "archive" or super().__eq__(other)
+
     async def caller(_: Command, handling: HandlingContext) -> object:
         with pytest.raises(ConfigurationError, match="coordinator"):
             await resources.resolve_provider(
@@ -732,7 +739,11 @@ async def test_operation_requires_framework_coordinator_and_validated_action() -
             await handle.apply_operation("archive")
         with pytest.raises(ConfigurationError, match="support"):
             await handle.validate_operation("purge")
+        with pytest.raises(ConfigurationError, match="canonical"):
+            await handle.validate_operation(DeceptiveRequestedAction("purge"))
         await handle.validate_operation("archive")
+        with pytest.raises(ConfigurationError, match="canonical"):
+            await handle.apply_operation(DeceptiveRequestedAction("purge"))
         await handle.apply_operation("archive")
         return None
 

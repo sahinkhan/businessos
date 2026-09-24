@@ -2,6 +2,15 @@ import ast
 import tomllib
 from pathlib import Path
 
+from businessos.sdk import (
+    ModuleManifest,
+    ResourceLocator,
+    ResourceOwnerFacts,
+    ResourceOwnerFactsProvider,
+    ResourceOwnerOperationProvider,
+    ResourceOwnership,
+)
+
 
 def test_external_proof_module_imports_businessos_only_through_public_sdk() -> None:
     package = Path("examples/proof_module/src/businessos_proof")
@@ -30,3 +39,13 @@ def test_external_proof_module_declares_every_direct_runtime_dependency() -> Non
         "pydantic>=2.10,<3",
         "sqlalchemy>=2.0.36,<3",
     ]
+
+
+def test_resource_owner_contracts_are_available_through_stable_sdk() -> None:
+    assert "resource_ownership" in ModuleManifest.model_fields
+    assert ResourceOwnership.__module__ == "businessos.modules.manifest"
+    assert ResourceLocator.__module__ == "businessos.resources"
+    assert ResourceOwnerFacts.__module__ == "businessos.resources"
+    assert "read_facts" in ResourceOwnerFactsProvider.__dict__
+    assert "validate_operation" in ResourceOwnerOperationProvider.__dict__
+    assert "apply_operation" in ResourceOwnerOperationProvider.__dict__

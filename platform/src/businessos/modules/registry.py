@@ -10,6 +10,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
+from businessos.modules.artifact import ApprovedModuleArtifact
 from businessos.modules.manifest import ModuleContractDeclaration, ModuleManifest
 from businessos.modules.sdk import BusinessOSModule, ModuleRegistration
 from businessos.providers import ProviderRegistry
@@ -130,16 +131,48 @@ def _validate_manifest_upgrade(current: ModuleManifest, target: ModuleManifest) 
             raise ConfigurationError(
                 f"Upgrade target withdraws {kind} declaration from module '{current.module_id}'"
             )
+    next_resources = {
+        (item.resource_namespace, item.contract_version): item for item in target.resource_ownership
+    }
+    for old in current.resource_ownership:
+        replacement = next_resources.get((old.resource_namespace, old.contract_version))
+        if replacement is None or not set(old.aliases).issubset(replacement.aliases):
+            raise ConfigurationError("Upgrade target withdraws resource ownership or aliases")
+
+
+def _validate_resource_claims(manifests: Iterable[ModuleManifest]) -> None:
+    allocated: dict[tuple[str, str], str] = {}
+    for manifest in manifests:
+        for ownership in manifest.resource_ownership:
+            for namespace in (ownership.resource_namespace, *ownership.aliases):
+                key = (namespace, ownership.contract_version)
+                prior = allocated.get(key)
+                if prior is not None:
+                    raise ConflictError(
+                        f"Resource namespace/version collision between '{prior}' "
+                        f"and '{manifest.module_id}'"
+                    )
+                allocated[key] = manifest.module_id
 
 
 class ModuleRegistry:
-    def __init__(self, *, platform_version: str, sdk_version: str) -> None:
+    def __init__(
+        self,
+        *,
+        platform_version: str,
+        sdk_version: str,
+        approved_artifacts: Mapping[str, ApprovedModuleArtifact] | None = None,
+        coordinator_ids: frozenset[str] = frozenset(),
+    ) -> None:
         self.platform_version = Version(platform_version)
         self.sdk_version = Version(sdk_version)
         self.python_version = Version(
             f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         )
         self._modules: dict[str, RegisteredModule] = {}
+        self._approved_artifacts = dict(approved_artifacts or {})
+        self._coordinator_ids = coordinator_ids
+        self._allocations: dict[str, tuple[str, str]] = {}
 
     def add(self, module: BusinessOSModule) -> None:
         module_id = module.manifest.module_id
@@ -151,7 +184,46 @@ class ModuleRegistry:
             python=str(self.python_version),
         ):
             raise ConfigurationError(f"Module is incompatible with this runtime: {module_id}")
+        if module.manifest.resource_ownership or module_id in self._coordinator_ids:
+            grant = self._approved_artifacts.get(module_id)
+            if grant is None:
+                raise ConfigurationError("Resource or coordinator claim requires approved artifact")
+            grant.verify(module, module.manifest)
+            allocation = (grant.publisher, grant.package_identity)
+            previous = self._allocations.get(module_id)
+            if previous is not None and previous != allocation:
+                raise ConfigurationError("Retired module ID allocation cannot transfer publisher")
+            self._allocations[module_id] = allocation
         self._modules[module_id] = RegisteredModule(module=module)
+
+    def replace(self, module: BusinessOSModule, artifact: ApprovedModuleArtifact) -> None:
+        """Stage a disabled module's reviewed replacement under its allocated ID."""
+        module_id = module.manifest.module_id
+        current = self.get(module_id)
+        if (
+            current.lock.locked()
+            or current.registration is not None
+            or current.started
+            or current.state not in {ModuleState.DISABLED, ModuleState.INSTALLED}
+        ):
+            raise ConfigurationError("Module replacement requires an inactive installed module")
+        previous_grant = self._approved_artifacts.get(module_id)
+        if previous_grant is None or previous_grant.install_identity == artifact.install_identity:
+            raise ConfigurationError("Replacement requires fresh approved artifact evidence")
+        artifact.verify(module, module.manifest)
+        if (artifact.publisher, artifact.package_identity) != self._allocations.get(module_id):
+            raise ConfigurationError("Replacement cannot transfer a module ID allocation")
+        if not module.manifest.supports(
+            platform=str(self.platform_version),
+            sdk=str(self.sdk_version),
+            python=str(self.python_version),
+        ):
+            raise ConfigurationError("Replacement is incompatible with this runtime")
+        if Version(module.manifest.version) < Version(current.module.manifest.version):
+            raise ConfigurationError("Replacement cannot downgrade the module")
+        _validate_manifest_upgrade(current.module.manifest, module.manifest)
+        self._approved_artifacts[module_id] = artifact
+        self._modules[module_id] = RegisteredModule(module=module, state=ModuleState.INSTALLED)
 
     def get(self, module_id: str) -> RegisteredModule:
         registered = self._modules.get(module_id)
@@ -163,6 +235,7 @@ class ModuleRegistry:
         manifests = {
             module_id: registered.module.manifest for module_id, registered in self._modules.items()
         }
+        _validate_resource_claims(manifests.values())
         return tuple(
             self._modules[manifest.module_id] for manifest in _ordered_manifests(manifests)
         )
@@ -441,6 +514,7 @@ class UpgradeCoordinator:
             ):
                 raise ConfigurationError(f"Upgrade target is incompatible: {target.module_id}")
             _validate_manifest_upgrade(current, target)
+        _validate_resource_claims(proposed.values())
         ordered = _ordered_manifests(proposed)
         migrations = tuple(
             (manifest.module_id, location)

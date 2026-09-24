@@ -460,6 +460,20 @@ def test_owner_provider_registration_rejects_undeclared_duplicate_and_kind() -> 
             manifest, generation, "example_owner.record", "1", "operation", deceptive_operation
         )
 
+    class DeceptiveAction(str):
+        def __hash__(self) -> int:
+            return hash("purge")
+
+        def __eq__(self, other: object) -> bool:
+            return other == "purge" or super().__eq__(other)
+
+    deceptive_member = OperationProvider()
+    deceptive_member.supported_actions = frozenset({DeceptiveAction("archive")})
+    with pytest.raises(ConfigurationError, match="supported actions"):
+        resources.register_provider(
+            manifest, generation, "example_owner.record", "1", "operation", deceptive_member
+        )
+
 
 class FactsProvider:
     async def read_facts(

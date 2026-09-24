@@ -24,7 +24,11 @@ Neither companion proposal is accepted authority yet.
 
 The frozen Phase 1 `ModuleRegistry.add` rejects duplicate module IDs and
 `LifecycleManager` creates `ModuleRegistration` from the manifest module ID.
-`ModuleRegistration.provider` stamps that trusted owner and its activation
+But `ModuleRegistry.add` accepts that ID from the loaded manifest; discovery
+loads installed entry points without verifying entitlement to a reserved
+first-party ID. Manifest `publisher` and `signature_reference` fields are
+assertions, not verified provenance. `ModuleRegistration.provider` stamps
+that lifecycle-assigned owner and its activation
 generation onto `ProviderRegistry` entries. `OwnedRegistry` rejects duplicate
 capability keys, resolves active generations, and offers `admit_entry`;
 `ContributionGate` stops new admission during drain and waits for in-flight
@@ -40,7 +44,8 @@ They are **insufficient by themselves**. The current manifest has no resource
 namespace declaration; the SDK's generic `provider(capability, object)` accepts
 any string and does not check namespace ownership. Its registry prevents
 duplicate *keys*, not two different keys or versions claiming the same
-resource namespace. The SDK exposes no owner-scoped resource registration or
+resource namespace. A package could claim `foundation.party` when genuine
+Party is absent. The SDK exposes no owner-scoped resource registration or
 canonical resolver to modules. A Phase 4 resolver using the first provider,
 unverified naming conventions, or direct private registry access would leave
 spoofing, ambiguity, or stale-handle gaps. A transaction-spanning provider
@@ -67,8 +72,20 @@ from old name to one canonical namespace, version and owner; aliases cannot
 transfer ownership and collisions fail closed. No implicit aliases exist.
 
 An additive manifest declaration lists the module's owned namespaces and
-supported public versions. The trusted lifecycle loader validates each
-declaration's root against its registered `module_id`, rejects duplicate or
+supported public versions. **Before any resource claim**, a trusted
+installation/module admission authority binds the loaded artifact's verified
+package identity and digest/signature (or equivalently protected
+operator-approved install record) to its permitted `module_id` and publisher.
+This evidence is independent of the module's own manifest and entry point.
+Reserved first-party IDs such as `foundation.party` require first-party
+approved provenance; partner/customer IDs require an installation-approved
+publisher/ID grant. Missing, conflicting, revoked, or unverifiable evidence
+rejects the resource claim before activation. Replacement or upgrade must
+present fresh approved artifact evidence for the **same allocated ID**;
+retirement does not release that ID to another publisher. Existing modules
+without resource claims retain current admission behavior but cannot gain
+resource-owner authority. The trusted lifecycle loader then validates each
+declaration's root against this verified `module_id`, rejects duplicate or
 overlapping effective ownership/alias claims deterministically before
 publication, and records the trusted owner and generation. Its owner-scoped
 SDK registration binds the typed facts and/or operation provider only to an
@@ -187,7 +204,13 @@ resource ownership declarations to
 method in `platform/src/businessos/modules/sdk.py`, and a neutral resource
 registry/resolver integrated with trusted lifecycle creation/removal in
 `platform/src/businessos/modules/registry.py` and the platform composition
-root. Add a narrow transaction-scoped admission lease to the restricted
+root. The opt-in resource-claim admission also requires a protected
+artifact-to-module-ID grant checked in `ModuleRegistry.add` before a claiming
+module is enabled; `platform/src/businessos/modules/discovery.py` or its
+composition caller must carry verifiable artifact provenance rather than
+trusting manifest fields. The grant is installation-controlled, reserves
+first-party IDs, and survives disable/retire so another publisher cannot
+inherit them. Add a narrow transaction-scoped admission lease to the restricted
 handler/dispatcher path in `platform/src/businessos/messages.py`, released
 after the outer commit or rollback. The existing `ProviderRegistry`,
 `OwnedRegistry`, `ContributionGate`, dispatcher and UOW ownership are reused,

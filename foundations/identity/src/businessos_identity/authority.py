@@ -4,7 +4,7 @@ Callers in another foundation can lock authority without reading Identity's
 private table themselves or opening a second Unit of Work.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -49,6 +49,29 @@ async def lock_membership_for_authority(
 
 class DatabaseMembershipAuthority:
     """Identity's bounded same-transaction membership authority port."""
+
+    async def lock_current(
+        self,
+        persistence: TransactionalPersistence,
+        tenant_id: UUID,
+        principal: PrincipalReference,
+    ) -> tuple[MembershipRecord, datetime]:
+        if type(tenant_id) is not UUID or type(principal.principal_id) is not UUID:
+            raise BusinessOSError("forbidden", "Typed membership required", status_code=403)
+        try:
+            record = await lock_membership_for_authority(
+                persistence, tenant_id, principal.principal_id, principal.principal_type
+            )
+        except BusinessOSError as error:
+            if error.code == "not_found":
+                raise BusinessOSError(
+                    "forbidden", "Active membership required", status_code=403
+                ) from None
+            raise
+        instant = datetime.now(UTC)
+        if not record.is_effective(instant):
+            raise BusinessOSError("forbidden", "Active membership required", status_code=403)
+        return record, instant
 
     async def lock_many(
         self,

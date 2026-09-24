@@ -22,6 +22,15 @@ class PrincipalReference:
 class MembershipAuthority(Protocol):
     """Validate and lock typed memberships in the caller's transaction."""
 
+    async def lock_current(
+        self,
+        persistence: TransactionalPersistence,
+        tenant_id: UUID,
+        principal: PrincipalReference,
+    ) -> tuple["MembershipRecord", datetime]:
+        """Lock first, then choose and validate one current UTC decision instant."""
+        ...
+
     async def lock_many(
         self,
         persistence: TransactionalPersistence,

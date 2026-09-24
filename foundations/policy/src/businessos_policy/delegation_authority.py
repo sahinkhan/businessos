@@ -283,3 +283,20 @@ def _covers(start: datetime | None, end: datetime | None, first: datetime, last:
 
 def _active_at(start: datetime | None, end: datetime | None, instant: datetime) -> bool:
     return (start is None or start <= instant) and (end is None or instant < end)
+
+
+def scope_covers(
+    source_type: ScopeType,
+    source_id: UUID | None,
+    target_type: ScopeType,
+    target_id: UUID | None,
+) -> bool:
+    return _scope_covers(source_type, source_id, target_type, target_id)
+
+
+def covers(start: datetime | None, end: datetime | None, first: datetime, last: datetime) -> bool:
+    return _covers(start, end, first, last)
+
+
+def active_at(start: datetime | None, end: datetime | None, instant: datetime) -> bool:
+    return _active_at(start, end, instant)

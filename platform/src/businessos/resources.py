@@ -93,6 +93,18 @@ class ResourceOwnerFactsProvider(Protocol):
     ) -> ResourceOwnerFacts: ...
 
 
+class ResourceOwnerLockedFactsProvider(Protocol):
+    """Optional owner contract for locked, normalized Policy V2 commit facts."""
+
+    async def read_locked_facts(
+        self,
+        locator: ResourceLocator,
+        action: str,
+        request: RequestContext,
+        transaction: HandlerTransaction,
+    ) -> ResourceOwnerFacts: ...
+
+
 class ResourceOwnerOperationProvider(Protocol):
     supported_actions: frozenset[str]
 
@@ -275,6 +287,20 @@ class AdmittedResourceProvider:
         )
         return self._check_facts(result)
 
+    async def read_locked_facts(self, action: str) -> ResourceOwnerFacts:
+        self._check("facts")
+        if type(action) is not str or not re.fullmatch(r"[a-z][a-z0-9_.-]*", action, re.ASCII):
+            raise ConfigurationError("Locked facts require a canonical action")
+        method = getattr(self._entry.provider, "read_locked_facts", None)
+        if not callable(method):
+            raise NotFoundError("Owner does not provide locked Policy operation facts")
+        provider = cast(ResourceOwnerLockedFactsProvider, self._entry.provider)
+        result = await provider.read_locked_facts(
+            self._locator, action, self._request, cast("HandlerTransaction", self._transaction)
+        )
+        self._check("facts")
+        return self._check_facts(result)
+
     async def validate_operation(self, action: str) -> ResourceOwnerFacts:
         self._check("operation")
         if type(action) is not str or not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII):
@@ -308,6 +334,10 @@ class ResourceOwnerResolver(Protocol):
     """Narrow SDK lookup; admission still requires the dispatcher's transaction."""
 
     def resolve_owner(self, namespace: str, version: str) -> ResourceOwnerBinding: ...
+
+    def assert_owner_handler(
+        self, locator: ResourceLocator, request: RequestContext, transaction: HandlerTransaction
+    ) -> None: ...
 
     async def resolve_provider(
         self,
@@ -425,6 +455,18 @@ class ResourceOwnershipRegistry:
         if binding is None or not self._gate.is_active(binding.generation):
             raise NotFoundError("Canonical resource owner is unavailable")
         return binding
+
+    def assert_owner_handler(
+        self, locator: ResourceLocator, request: RequestContext, transaction: HandlerTransaction
+    ) -> None:
+        scope = ResourceTransactionScope.current(request, transaction)
+        binding = self.resolve_owner(locator.namespace, locator.contract_version)
+        self.verify_locator(locator, request, binding)
+        if (
+            scope.handler_owner != binding.ownership.owner_module_id
+            or scope.handler_generation != binding.generation
+        ):
+            raise ConfigurationError("Policy commit requires the canonical owner handler")
 
     async def resolve_provider(
         self,

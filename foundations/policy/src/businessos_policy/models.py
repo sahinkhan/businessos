@@ -216,7 +216,9 @@ SUPPORT_ACCESS_GRANTS = Table(
     Column("id", PG_UUID(as_uuid=True), primary_key=True),
     Column("tenant_id", PG_UUID(as_uuid=True), nullable=False),
     Column("support_principal_id", PG_UUID(as_uuid=True), nullable=False),
+    Column("support_principal_type", String(30), nullable=True),
     Column("approved_by", PG_UUID(as_uuid=True), nullable=False),
+    Column("approved_by_type", String(30), nullable=True),
     Column("reason", Text(), nullable=False),
     Column("valid_from", DateTime(timezone=True), nullable=False),
     Column("valid_to", DateTime(timezone=True), nullable=False),
@@ -382,7 +384,9 @@ class SupportAccessGrantRecord(BaseModel):
     id: UUID
     tenant_id: UUID
     support_principal_id: UUID
+    support_principal_type: str | None = None
     approved_by: UUID
+    approved_by_type: str | None = None
     reason: str
     valid_from: datetime
     valid_to: datetime

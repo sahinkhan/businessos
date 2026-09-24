@@ -351,15 +351,20 @@ class ResourceOwnershipRegistry:
         required = ("read_facts",) if kind == "facts" else ("validate_operation", "apply_operation")
         if not all(callable(getattr(provider, name, None)) for name in required):
             raise ConfigurationError("Resource provider does not implement its typed contract")
-        if kind == "operation" and (
-            not isinstance(getattr(provider, "supported_actions", None), frozenset)
-            or not provider.supported_actions  # type: ignore[attr-defined]
-            or any(
-                not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII)
-                for action in provider.supported_actions  # type: ignore[attr-defined]
-            )
-        ):
-            raise ConfigurationError("Owner operation provider requires supported actions")
+        supported_actions: frozenset[str] = frozenset()
+        if kind == "operation":
+            raw_actions = getattr(provider, "supported_actions", None)
+            if (
+                not isinstance(raw_actions, frozenset)
+                or not raw_actions
+                or any(
+                    not isinstance(action, str)
+                    or not re.fullmatch(r"[a-z][a-z0-9_-]*", action, re.ASCII)
+                    for action in cast(frozenset[object], raw_actions)
+                )
+            ):
+                raise ConfigurationError("Owner operation provider requires supported actions")
+            supported_actions = cast(frozenset[str], raw_actions)
         key = (namespace, version, kind)
         if key in self._providers:
             raise ConflictError("Resource provider already registered")
@@ -367,7 +372,7 @@ class ResourceOwnershipRegistry:
             ResourceOwnerBinding(ownership, generation),
             kind,
             provider,
-            frozenset(provider.supported_actions) if kind == "operation" else frozenset(),  # type: ignore[attr-defined]
+            supported_actions,
         )
 
     def authorize_coordinator_generation(

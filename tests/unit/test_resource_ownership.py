@@ -442,6 +442,12 @@ def test_owner_provider_registration_rejects_undeclared_duplicate_and_kind() -> 
         resources.register_provider(
             manifest, generation, "example_owner.record", "1", "facts", FactsProvider()
         )
+    malformed_operation = OperationProvider()
+    malformed_operation.supported_actions = frozenset({1})  # type: ignore[arg-type]
+    with pytest.raises(ConfigurationError, match="supported actions"):
+        resources.register_provider(
+            manifest, generation, "example_owner.record", "1", "operation", malformed_operation
+        )
 
 
 class FactsProvider:

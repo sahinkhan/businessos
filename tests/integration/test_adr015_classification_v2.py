@@ -21,11 +21,13 @@ from businessos_data_governance.classification_runtime import DataGovernanceClas
 from businessos_data_governance.legacy_mapping import apply_reviewed_mapping, preflight
 from businessos_data_governance.module import (
     CreateTenantClassificationV2Command,
+    GetSensitiveFieldTagsQuery,
     ResolveClassificationV2Query,
     ResolveHistoricalClassificationV2Query,
     ReviseTenantClassificationV2Command,
     SetCanonicalOverlayV2Command,
 )
+from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -199,9 +201,11 @@ async def test_classification_v2_grants_rls_and_tenant_identity(
             migration.execute(
                 "INSERT INTO platform_gov.classification_legacy_mappings "
                 "(legacy_code, qualified_ref, definition_id, definition_version, "
-                "legacy_description_sha256, tenant_id, approved_by, "
+                "legacy_name, legacy_sensitivity_level, legacy_description_sha256, "
+                "tenant_id, approved_by, "
                 "evidence_reference, tenant_provenance) "
-                "VALUES ('tenant-map', %s, %s, 1, %s, %s, 'reviewer', 'review-1', 'source-1')",
+                "VALUES ('tenant-map', %s, %s, 1, 'Local', 3, %s, %s, "
+                "'reviewer', 'review-1', 'source-1')",
                 (
                     created.qualified_ref,
                     created.definition_id,
@@ -576,6 +580,32 @@ def test_reviewed_legacy_mapping_is_atomic_and_never_infers_ownership(
         connection.commit()
         assert preflight(connection)["status"] == "PASS"
 
+        connection.execute(
+            "UPDATE platform_gov.data_classifications SET name = 'Renamed' WHERE code = 'personal'"
+        )
+        connection.commit()
+        renamed_preflight = preflight(connection)
+        assert renamed_preflight["status"] == "BLOCK"
+        assert renamed_preflight["changed_mapping_meaning_count"] == 1
+        connection.execute(
+            "UPDATE platform_gov.data_classifications SET name = 'Personal' WHERE code = 'personal'"
+        )
+        connection.commit()
+        connection.execute(
+            "UPDATE platform_gov.data_classifications SET sensitivity_level = 4 "
+            "WHERE code = 'personal'"
+        )
+        connection.commit()
+        changed_sensitivity_preflight = preflight(connection)
+        assert changed_sensitivity_preflight["status"] == "BLOCK"
+        assert changed_sensitivity_preflight["changed_mapping_meaning_count"] == 1
+        connection.execute(
+            "UPDATE platform_gov.data_classifications SET sensitivity_level = 3 "
+            "WHERE code = 'personal'"
+        )
+        connection.commit()
+        assert preflight(connection)["status"] == "PASS"
+
         reviewed["reviewed_mappings"][0]["definition_id"] = str(uuid4())
         file.write_text(json.dumps(reviewed), encoding="utf-8")
         with pytest.raises(ValueError, match="meaning"):
@@ -589,6 +619,117 @@ def test_reviewed_legacy_mapping_is_atomic_and_never_infers_ownership(
 
 @pytest.mark.integration
 @pytest.mark.postgres
+def test_legacy_preflight_tenant_mapping_collision_and_orphans(
+    postgres_database: PostgreSQLTestDatabase, tmp_path: Path
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    url = postgres_database.migration_url.replace("postgresql+psycopg://", "postgresql://")
+    tenant_id, definition_id = uuid4(), uuid4()
+    reference = f"tenant:{tenant_id}:LOCAL"
+    with psycopg.connect(url, row_factory=dict_row) as connection:
+        assert preflight(connection)["status"] == "PASS"
+        connection.execute(
+            "INSERT INTO platform_gov.data_classifications "
+            "(code, name, sensitivity_level, description) "
+            "VALUES ('local', 'Local', 2, 'Owner reviewed')"
+        )
+        connection.execute(
+            "INSERT INTO platform_gov.tenant_classifications "
+            "(id, tenant_id, code, qualified_ref, name, is_active) "
+            "VALUES (%s, %s, 'LOCAL', %s, 'Local', true)",
+            (definition_id, tenant_id, reference),
+        )
+        connection.execute(
+            "INSERT INTO platform_gov.tenant_classification_versions "
+            "(id, tenant_id, definition_id, version, valid_from, "
+            "sensitivity_level, required_controls, restrictions, mandatory_masking) "
+            "VALUES (%s, %s, %s, 1, %s, 2, '{}', '{}', false)",
+            (uuid4(), tenant_id, definition_id, datetime(2025, 1, 1, tzinfo=UTC)),
+        )
+        connection.commit()
+        unresolved = preflight(connection)
+        assert unresolved["status"] == "BLOCK"
+        assert unresolved["unresolved_total"] == 1
+        reviewed = {
+            "reviewed_mappings": [
+                {
+                    "legacy_code": "local",
+                    "legacy_name": "Local",
+                    "legacy_sensitivity_level": 2,
+                    "legacy_description_sha256": hashlib.sha256(b"Owner reviewed").hexdigest(),
+                    "qualified_ref": reference,
+                    "definition_id": str(definition_id),
+                    "definition_version": 1,
+                    "tenant_id": str(tenant_id),
+                    "approved_by": "reviewer",
+                    "evidence_reference": "approval-1",
+                    "tenant_provenance": "tenant-record-1",
+                }
+            ]
+        }
+        file = tmp_path / "tenant-reviewed.json"
+        file.write_text(json.dumps(reviewed), encoding="utf-8")
+        assert apply_reviewed_mapping(connection, file) == 1
+        approved = preflight(connection)
+        assert approved["status"] == "PASS"
+        assert cast(list[dict[str, Any]], approved["rows"])[0]["approved_tenant_id"] == str(
+            tenant_id
+        )
+
+        connection.execute(
+            "INSERT INTO platform_gov.data_classifications "
+            "(code, name, sensitivity_level, description) "
+            "VALUES ('LOCAL', 'Local', 2, 'Owner reviewed')"
+        )
+        connection.commit()
+        collision = preflight(connection)
+        assert collision["status"] == "BLOCK"
+        assert collision["collision_sample"]
+        with pytest.raises(ValueError, match="collision"):
+            apply_reviewed_mapping(connection, file)
+        connection.execute("DELETE FROM platform_gov.data_classifications WHERE code = 'LOCAL'")
+        connection.commit()
+
+        # Model a corrupted historical import after its FK was absent.
+        for table, values in (
+            (
+                "sensitive_field_tags",
+                "(id, tenant_id, entity_type, field_name, classification_code) "
+                "VALUES (%s, %s, 'record', 'orphan', 'missing')",
+            ),
+            (
+                "retention_policies",
+                "(id, tenant_id, code, name, entity_type, classification_code, "
+                "retention_period_days) "
+                "VALUES (%s, %s, 'orphan', 'Orphan', 'record', 'missing', 30)",
+            ),
+        ):
+            constraint = connection.execute(
+                "SELECT conname FROM pg_constraint WHERE conrelid = %s::regclass "
+                "AND contype = 'f' AND confrelid = "
+                "'platform_gov.data_classifications'::regclass",
+                (f"platform_gov.{table}",),
+            ).fetchone()
+            assert constraint is not None
+            connection.execute(
+                sql.SQL("ALTER TABLE platform_gov.{} DROP CONSTRAINT {}").format(
+                    sql.Identifier(table), sql.Identifier(constraint["conname"])
+                )
+            )
+            connection.execute(
+                f"INSERT INTO platform_gov.{table} {values}",
+                (uuid4(), tenant_id),
+            )
+            connection.commit()
+            orphan = preflight(connection)
+            assert orphan["status"] == "BLOCK"
+            assert cast(dict[str, int], orphan["orphan_counts"])[table] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_canonical_overlay_only_strengthens_controls(
     postgres_database: PostgreSQLTestDatabase,
@@ -597,6 +738,7 @@ async def test_canonical_overlay_only_strengthens_controls(
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     definition_id = uuid4()
+    strict_definition_id = uuid4()
     url = postgres_database.migration_url.replace("postgresql+psycopg://", "postgresql://")
     with psycopg.connect(url) as connection:
         connection.execute(
@@ -611,10 +753,16 @@ async def test_canonical_overlay_only_strengthens_controls(
             (definition_id,),
         )
         connection.execute(
+            "INSERT INTO platform_gov.classification_definitions "
+            "(id, code, qualified_ref, name, is_active) "
+            "VALUES (%s, 'STRICT', 'core:STRICT', 'Strict', true)",
+            (strict_definition_id,),
+        )
+        connection.execute(
             "INSERT INTO platform_gov.classification_versions "
             "(id, definition_id, version, valid_from, sensitivity_level, "
             "required_controls, restrictions, allowed_audience, mandatory_masking) "
-            "VALUES (%s, %s, 1, %s, 3, %s, %s, %s, true)",
+            "VALUES (%s, %s, 1, %s, 3, %s, %s, %s, false)",
             (
                 uuid4(),
                 definition_id,
@@ -627,9 +775,18 @@ async def test_canonical_overlay_only_strengthens_controls(
         connection.execute(
             "INSERT INTO platform_gov.classification_legacy_mappings "
             "(legacy_code, qualified_ref, definition_id, definition_version, "
-            "legacy_description_sha256, approved_by, evidence_reference) "
-            "VALUES ('personal', 'core:PERSONAL', %s, 1, %s, 'reviewer', 'review-1')",
+            "legacy_name, legacy_sensitivity_level, legacy_description_sha256, "
+            "approved_by, evidence_reference) "
+            "VALUES ('personal', 'core:PERSONAL', %s, 1, 'Personal', 3, %s, "
+            "'reviewer', 'review-1')",
             (definition_id, hashlib.sha256(b"").hexdigest()),
+        )
+        connection.execute(
+            "INSERT INTO platform_gov.classification_versions "
+            "(id, definition_id, version, valid_from, sensitivity_level, "
+            "required_controls, restrictions, mandatory_masking) "
+            "VALUES (%s, %s, 1, %s, 3, '{}', '{}', true)",
+            (uuid4(), strict_definition_id, datetime(2025, 1, 1, tzinfo=UTC)),
         )
         connection.execute(
             "UPDATE platform_gov.classification_definitions SET name = 'Personal' WHERE id = %s",
@@ -647,6 +804,21 @@ async def test_canonical_overlay_only_strengthens_controls(
         assert isinstance(no_overlay, ClassificationResolutionV2)
         assert no_overlay.tenant_additions is None
         assert no_overlay.effective_controls.sensitivity_level == 3
+        assert no_overlay.effective_controls.mandatory_masking is False
+        async with app.container.request_scope() as dependencies:
+            original_tag = await app.runtime.messages.command(
+                TagSensitiveFieldCommand(
+                    tenant_id=tenant_id,
+                    entity_type="record",
+                    field_name="secret",
+                    classification_code="personal",
+                    is_masked_by_default=False,
+                ),
+                _context(tenant_id),
+                dependencies,
+            )
+        assert isinstance(original_tag, SensitiveFieldTagRecord)
+        assert original_tag.is_masked_by_default is False
         async with app.container.request_scope() as dependencies:
             composed = await app.runtime.messages.command(
                 SetCanonicalOverlayV2Command(
@@ -655,6 +827,7 @@ async def test_canonical_overlay_only_strengthens_controls(
                     required_controls=frozenset({"mfa"}),
                     restrictions=frozenset({"region_only"}),
                     allowed_audience=frozenset({"manager"}),
+                    mandatory_masking=True,
                 ),
                 _context(tenant_id),
                 dependencies,
@@ -665,6 +838,27 @@ async def test_canonical_overlay_only_strengthens_controls(
         assert composed.effective_controls.restrictions == frozenset({"no_export", "region_only"})
         assert composed.effective_controls.allowed_audience == frozenset({"manager"})
         assert composed.effective_controls.mandatory_masking is True
+        with psycopg.connect(url) as connection:
+            with pytest.raises(psycopg.errors.ExclusionViolation):
+                with connection.transaction():
+                    connection.execute(
+                        "INSERT INTO platform_gov.classification_overlays "
+                        "(id, tenant_id, canonical_definition_id, version, valid_from, "
+                        "sensitivity_level, required_controls, restrictions, "
+                        "mandatory_masking) "
+                        "VALUES (%s, %s, %s, 2, %s, 4, '{}', '{}', true)",
+                        (uuid4(), tenant_id, definition_id, composed.valid_from),
+                    )
+        async with app.container.request_scope() as dependencies:
+            current_tags = await app.runtime.messages.query(
+                GetSensitiveFieldTagsQuery(tenant_id=tenant_id, entity_type="record"),
+                _context(tenant_id),
+                dependencies,
+            )
+        assert isinstance(current_tags, list)
+        assert len(current_tags) == 1
+        assert isinstance(current_tags[0], SensitiveFieldTagRecord)
+        assert current_tags[0].is_masked_by_default is True
         with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
             SetCanonicalOverlayV2Command.model_validate(
                 {
@@ -700,7 +894,7 @@ async def test_canonical_overlay_only_strengthens_controls(
             async with app.container.request_scope() as dependencies:
                 await app.runtime.messages.command(
                     SetCanonicalOverlayV2Command(
-                        canonical_ref="core:PERSONAL",
+                        canonical_ref="core:STRICT",
                         sensitivity_level=4,
                         mandatory_masking=False,
                     ),

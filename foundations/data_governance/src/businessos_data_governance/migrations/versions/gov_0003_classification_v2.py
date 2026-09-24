@@ -193,6 +193,8 @@ def upgrade() -> None:
         sa.Column("qualified_ref", sa.String(100), nullable=False),
         sa.Column("definition_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("definition_version", sa.Integer(), nullable=False),
+        sa.Column("legacy_name", sa.String(100), nullable=False),
+        sa.Column("legacy_sensitivity_level", sa.Integer(), nullable=False),
         sa.Column("legacy_description_sha256", sa.String(64), nullable=False),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("approved_by", sa.String(200), nullable=False),

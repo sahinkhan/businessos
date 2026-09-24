@@ -78,8 +78,13 @@ command requires an exact, operator-reviewed JSON mapping for every legacy
 row, with the description fingerprint, target ID/version, reviewer, evidence
 reference, and explicit tenant provenance where applicable. It verifies the
 reviewed snapshot, target name and sensitivity, and tenant references,
-then inserts mapping evidence and backfills both reference tables atomically.
+then stores the approved legacy name, sensitivity, and description fingerprint
+as mapping evidence and backfills both reference tables atomically. Later
+changes to any of these legacy meaning fields block preflight.
 Any unresolved, changed, ambiguous, or orphaned reference blocks conversion.
+The reviewed apply holds both reference tables against concurrent inserts until
+the backfill commits. Sensitive-field reads combine the stored default with
+current effective mandatory masking, and fail closed on unresolved identity.
 
 The unsafe V1 `RegisterDataClassificationCommand` now returns a controlled
 `classification_v1_write_retired` error (HTTP 410). It cannot mutate the

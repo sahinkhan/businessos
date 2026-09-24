@@ -976,7 +976,23 @@ class DataGovernanceModule:
                 "Sensitive field classifications are unresolved or exceed the read bound",
                 status_code=409,
             )
-        return [SensitiveFieldTagRecord.model_validate(dict(row)) for row in rows]
+        tags: list[SensitiveFieldTagRecord] = []
+        for row in rows:
+            resolved = await self.classification_v2.resolve_current(
+                row["classification_ref"], ctx.request, ctx.unit_of_work
+            )
+            if resolved.definition_id != row["classification_definition_id"]:
+                raise BusinessOSError(
+                    "classification_unavailable",
+                    "Sensitive field classification identity has changed",
+                    status_code=409,
+                )
+            values = dict(row)
+            values["is_masked_by_default"] = (
+                values["is_masked_by_default"] or resolved.effective_controls.mandatory_masking
+            )
+            tags.append(SensitiveFieldTagRecord.model_validate(values))
+        return tags
 
     async def _approved_legacy_classification(
         self, code: str, ctx: HandlingContext

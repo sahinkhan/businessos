@@ -4,7 +4,7 @@ Status: PROPOSED
 
 Decision date: Pending formal acceptance
 
-Approving roles required: Architecture Maintainer; Security Maintainer; Data Governance Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Release Maintainer; Frontend Foundation Maintainer when Phase 5 UI classification consumption is contracted
+Approving roles required: Architecture Maintainer; Security Maintainer; Policy Maintainer; Data Governance Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Release Maintainer; Frontend Foundation Maintainer when Phase 5 UI classification consumption is contracted
 
 Approval pull request or commit: Pending
 
@@ -93,17 +93,23 @@ name may change without changing identity or security semantics.
 
 Subject to acceptance of companion ADR-014, Data Governance implements the
 **Policy-owned** `PolicyClassificationFactsProvider` port and registers it
-as canonical classification owner through trusted manifest ownership. Policy
+as canonical classification owner through the neutral ADR-018 resource
+ownership boundary, **subject to acceptance of ADR-018**. The frozen
+manifest/generic provider registry alone does not establish that ownership. Policy
 knows only its own port and typed effective projection; it has no dependency
 on Governance. The module direction remains Data Governance -> Policy.
 Data Governance's public resolver is separately available to Phase 5
 Metadata/Studio, which stores stable qualified IDs on custom fields and
 cannot create Policy permissions, weaken canonical controls, or bypass
 Governance ownership. Neither Phase 5 nor marketplace modules read Governance
-private tables. Party-sensitive tags and future HR, healthcare, and
-localization profiles follow public references and may impose stricter owner
-rules. Classification itself does not grant authorization or relax Party's
-accepted sensitive-field redaction.
+private tables. Higher modules and later HR, healthcare, and localization
+profiles may use Governance public classification references where their
+dependency direction permits. Party remains frozen, owns Party data, and does
+not call Governance to resolve classification. Its Phase 3 sensitive-field
+rules and redaction remain authoritative. Policy consumes the Governance
+classification projection through the Policy-facing port without a
+Policy -> Governance dependency. Classification itself does not grant
+authorization or relax Party's accepted sensitive-field redaction.
 
 ### Mutation authority and database roles
 
@@ -165,8 +171,10 @@ No exception is granted merely by this proposal.
 
 Classification meaning becomes stable across tenants while tenant and
 industry customization stays isolated. Data Governance owns both schemas and
-contract; Policy, Party, Phase 5, HR, healthcare, localization, and
-marketplace consumers use public references without private imports.
+contract; Policy consumes the classification projection through its
+Policy-facing port, while permitted higher modules and Phase 5 consumers use
+Governance public references without private imports. Party does not become
+a Governance consumer.
 Existing unqualified codes need migration. Ambiguous historical data may
 delay rollout rather than be guessed. The architecture preserves tenant
 residency, export/delete handling for extensions, and future stricter

@@ -52,14 +52,20 @@ Policy owns evaluation, its role/permission data, and the versioned public
 `AuthorizationResourceFactsProvider` interface. A higher resource-owning
 module implements that interface; Policy imports no owner repository. Each
 protected resource namespace (for example `sales.order`) has exactly one
-canonical owner module identity established by trusted module/manifest
-registration. The framework registry binds provider registration to both the
-namespace and that canonical owner identity, and rejects a non-owner,
-duplicate, or colliding registration. Policy resolves the provider from this
+canonical owner module identity established through the neutral resource
+ownership boundary proposed in ADR-018, **subject to acceptance of ADR-018**.
+The present frozen manifest and generic provider registry do not themselves
+prove resource ownership. ADR-018 proposes an additive trusted declaration and
+owner-scoped registry that bind a provider to the namespace, owner and active
+generation and reject a non-owner, duplicate or colliding registration.
+Policy resolves the provider from this
 trusted registry. A request cannot select a provider ID, module ID, or owner
 identity, even when it supplies a resource locator. Missing or conflicting
 ownership/provider registration denies authorization; arbitrary SDK provider
-registration alone is not proof of resource ownership.
+registration alone is not proof of resource ownership. The Policy-owned
+decision-facing facts port can adapt the neutral ADR-018 owner-facts protocol
+for a lower owner such as Party, so Party does not import Policy; an allowed
+direct public Party contract remains usable where appropriate.
 
 The provider returns an immutable typed `AuthorizationResourceFactsV2`
 projection bound to the trusted tenant, namespace, resource and record IDs,
@@ -72,9 +78,14 @@ requested record. Missing records, stale/mismatched projections, provider
 failures, or ambiguous scope deny. HTTP/API facts remain advisory and cannot
 replace this projection.
 
-Presentation/read decisions use verified context and owner-resolved facts,
-but need not hold a long-lived write lock. Their results are advisory for UI
-and reads, never reusable commit authorization for a mutation. For mutation
+UI presentation hints (button visibility, disabled state, read-only styling,
+field display) are advisory and never authorize a backend action. A backend
+query/read handler must enforce Policy authoritatively before returning
+protected records or fields; a UI hint is insufficient. Backend read decisions
+use verified context and owner-resolved facts but need not hold a long-lived
+write lock. They cannot be reused as commit authorization. Thus a UI hint,
+backend read authorization, and commit-bound mutation authorization are three
+distinct outcomes. For mutation
 or approval, the owner command obtains its framework-owned unit of work,
 acquires the owner-required record lock or equivalent concurrency protection,
 resolves facts inside **that same transaction**, invokes Policy v2 there,

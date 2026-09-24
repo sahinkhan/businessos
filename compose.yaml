@@ -8,6 +8,7 @@ services:
       BOS_ENVIRONMENT: development
       BOS_LOG_LEVEL: INFO
       BOS_INSTALLATION_ID: 00000000-0000-0000-0000-000000000001
+      BOS_APPROVED_MODULE_INVENTORY: ${BOS_APPROVED_MODULE_INVENTORY:-}
       BOS_S3_BUCKET: businessos-development
       BOS_S3_ENDPOINT_URL: http://object-storage:9000
       BOS_S3_REGION_NAME: us-east-1
@@ -31,6 +32,7 @@ services:
     profiles: [tools]
     environment:
       BOS_MIGRATION_DATABASE_URL: postgresql+psycopg://businessos_migrator:businessos-migration@postgres:5432/businessos
+      BOS_APPROVED_MODULE_INVENTORY: ${BOS_APPROVED_MODULE_INVENTORY:-}
     command: ["businessos", "migrate", "upgrade", "heads"]
     volumes:
       - .:/app
@@ -48,6 +50,7 @@ services:
       BOS_EVENT_WORKER_OPERATIONS_DATABASE_URL: postgresql+psycopg://businessos_ops:businessos-operations@postgres:5432/businessos
       BOS_EVENT_WORKER_NATS_URL: nats://nats:4222
       BOS_EVENT_WORKER_INSTALLATION_ID: 00000000-0000-0000-0000-000000000001
+      BOS_APPROVED_MODULE_INVENTORY: ${BOS_APPROVED_MODULE_INVENTORY:-}
       BOS_EVENT_WORKER_PRINCIPAL_ID: 00000000-0000-0000-0000-000000000002
       BOS_EVENT_WORKER_PERMISSIONS: example.phase1-proof.read,example.phase1-proof.write
       BOS_EVENT_WORKER_SHUTDOWN_TIMEOUT_SECONDS: "10"

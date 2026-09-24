@@ -1,0 +1,19 @@
+{
+  "approved_modules": [
+    {
+      "module_id": "foundation.data_governance",
+      "publisher": "BusinessOS",
+      "package_identity": "businessos-foundation-data-governance",
+      "loaded_type": "businessos_data_governance.module:DataGovernanceModule",
+      "install_identity": "ci-test-only-adr015-classification-owner",
+      "first_party": true,
+      "approved_aliases": [
+        [
+          "foundation.governance.data-classification",
+          "foundation.data_governance.data-classification",
+          "2"
+        ]
+      ]
+    }
+  ]
+}

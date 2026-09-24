@@ -19,6 +19,9 @@ dependencies = [
 [project.entry-points."businessos.modules"]
 foundation-data-governance = "businessos_data_governance:DataGovernanceModule"
 
+[project.scripts]
+businessos-classification-legacy = "businessos_data_governance.legacy_mapping:main"
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 include-package-data = true

@@ -46,8 +46,11 @@ RETENTION_POLICIES = Table(
         "classification_code",
         String(50),
         ForeignKey("platform_gov.data_classifications.code", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     ),
+    Column("classification_ref", String(100), nullable=True),
+    Column("classification_version", Integer(), nullable=True),
+    Column("classification_definition_id", PG_UUID(as_uuid=True), nullable=True),
     Column("retention_period_days", Integer(), nullable=False),
     Column(
         "action_on_expiry", String(50), nullable=False, server_default="archive"
@@ -103,8 +106,11 @@ SENSITIVE_FIELD_TAGS = Table(
         "classification_code",
         String(50),
         ForeignKey("platform_gov.data_classifications.code", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     ),
+    Column("classification_ref", String(100), nullable=True),
+    Column("classification_version", Integer(), nullable=True),
+    Column("classification_definition_id", PG_UUID(as_uuid=True), nullable=True),
     Column("is_masked_by_default", Boolean(), nullable=False, server_default="false"),
     Column("description", Text(), nullable=False, server_default=""),
     UniqueConstraint(
@@ -137,7 +143,10 @@ class RetentionPolicyRecord(BaseModel):
     code: str
     name: str
     entity_type: str
-    classification_code: str
+    classification_code: str | None
+    classification_ref: str | None = None
+    classification_version: int | None = None
+    classification_definition_id: UUID | None = None
     retention_period_days: int
     action_on_expiry: ExpiryAction
     is_active: bool
@@ -182,7 +191,10 @@ class SensitiveFieldTagRecord(BaseModel):
     tenant_id: UUID
     entity_type: str
     field_name: str
-    classification_code: str
+    classification_code: str | None
+    classification_ref: str | None = None
+    classification_version: int | None = None
+    classification_definition_id: UUID | None = None
     is_masked_by_default: bool
     description: str = ""
 

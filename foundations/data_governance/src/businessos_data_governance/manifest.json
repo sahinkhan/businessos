@@ -14,9 +14,18 @@
     {"module_id": "foundation.audit", "version": ">=0.4,<1"}
   ],
   "capabilities": [],
+  "resource_ownership": [
+    {
+      "resource_namespace": "foundation.data_governance.data-classification",
+      "owner_module_id": "foundation.data_governance",
+      "contract_version": "2",
+      "aliases": ["foundation.governance.data-classification"]
+    }
+  ],
   "permissions": [
     "foundation.governance.read",
     "foundation.governance.manage",
+    "foundation.governance.classification.history.read",
     "foundation.governance.hold",
     "foundation.governance.erase"
   ],

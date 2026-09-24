@@ -20,6 +20,10 @@ from businessos.context import RequestContext, TenantContext, bind_request_conte
 from businessos.eventing import OutboxPublisher
 from businessos.messages import DurableSubscriberDeclaration
 from businessos.modules import BusinessOSModule, discover_modules
+from businessos.modules.installation_inventory import (
+    approved_artifacts_from_operator_inventory,
+    read_operator_inventory,
+)
 from businessos.persistence import (
     Database,
     EventSubscriberObligation,
@@ -459,6 +463,8 @@ def create_event_worker(
     object_storage: ObjectStorageProvider | None = None,
 ) -> EventWorker:
     """Compose the isolated worker; operational credentials never enter the web app."""
+    operator_inventory = read_operator_inventory()
+    loaded_modules = tuple(discover_modules()) if modules is None else tuple(modules)
     resolved_broker = broker or NatsJetStreamPublisher((settings.nats_url,))
     resolved_storage = object_storage
     if resolved_storage is None and settings.s3_bucket is not None:
@@ -478,7 +484,10 @@ def create_event_worker(
             database_url=settings.runtime_database_url,
             shutdown_timeout_seconds=settings.shutdown_timeout_seconds,
         ),
-        modules=tuple(discover_modules()) if modules is None else modules,
+        modules=loaded_modules,
+        approved_module_artifacts=approved_artifacts_from_operator_inventory(
+            loaded_modules, inventory=operator_inventory
+        ),
         authorizer=Authorizer(
             _WorkerPermissionPolicy(settings.principal_id, settings.allowed_permissions)
         ),

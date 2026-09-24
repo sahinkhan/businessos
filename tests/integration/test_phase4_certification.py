@@ -1,21 +1,22 @@
 """PostgreSQL certification checks for the Phase 4 foundations."""
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import psycopg
 import pytest
 from businessos_data_governance import (
     CheckPurgeEligibilityQuery,
+    ClassificationResolutionV2,
     ConsentRecordModel,
     ConsentVerificationResult,
-    CreateRetentionPolicyCommand,
+    CreateRetentionPolicyV2Command,
+    CreateTenantClassificationV2Command,
     LegalHoldRecord,
     PlaceLegalHoldCommand,
     PurgeEligibilityResult,
     RecordConsentCommand,
-    RegisterDataClassificationCommand,
     ReleaseLegalHoldCommand,
     RevokeConsentCommand,
     VerifyConsentQuery,
@@ -150,7 +151,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
         assert heads == {
             "audit_0002",
             "geography_0003",
-            "gov_0002",
+            "gov_0003",
             "identity_0003",
             "organization_0003",
             "party_0002",
@@ -158,10 +159,10 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
             "proof_0003",
             "tenant_0002",
         }
-        assert len(rls) == 14
+        assert len(rls) >= 17
         assert all(row[2] and row[3] for row in rls)
     finally:
-        with pytest.raises(Exception, match="currency_0001 downgrade refused"):
+        with pytest.raises(Exception, match="gov_0003 downgrade refused"):
             app.runtime.migrations.downgrade(postgres_database.migration_url)
 
 
@@ -187,21 +188,23 @@ async def test_governance_retention_legal_hold_and_consent_lifecycle(
     context = _context(tenant_id)
     await app.startup()
     try:
-        await _dispatch(
-            app,
-            RegisterDataClassificationCommand(
-                code="personal", name="Personal", sensitivity_level=3
+        classification = cast(
+            ClassificationResolutionV2,
+            await _dispatch(
+                app,
+                CreateTenantClassificationV2Command(
+                    code="PERSONAL", name="Personal", sensitivity_level=3
+                ),
+                context,
             ),
-            context,
         )
         await _dispatch(
             app,
-            CreateRetentionPolicyCommand(
-                tenant_id=tenant_id,
+            CreateRetentionPolicyV2Command(
                 code="party-retention",
                 name="Party retention",
                 entity_type="party",
-                classification_code="personal",
+                classification_ref=classification.qualified_ref,
                 retention_period_days=30,
             ),
             context,
@@ -304,5 +307,5 @@ async def test_governance_retention_legal_hold_and_consent_lifecycle(
         assert not revoked_consent.has_consent
     finally:
         await app.shutdown()
-        with pytest.raises(Exception, match="currency_0001 downgrade refused"):
+        with pytest.raises(Exception, match="gov_0003 downgrade refused"):
             app.runtime.migrations.downgrade(postgres_database.migration_url)

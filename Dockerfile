@@ -92,6 +92,8 @@ CMD ["uvicorn", "businessos.asgi:application", "--host", "0.0.0.0", "--port", "8
 FROM production AS migration-smoke
 
 USER root
+COPY tests/fixtures/approved-module-inventory.ci.json /opt/businessos/ci-approved-inventory.json
+ENV BOS_APPROVED_MODULE_INVENTORY=/opt/businessos/ci-approved-inventory.json
 COPY --from=wheel-builder /wheels/businessos_phase1_proof-*.whl /tmp/wheels/
 RUN python -m pip install --no-cache-dir --no-deps /tmp/wheels/businessos_phase1_proof-*.whl \
     && rm -rf /tmp/wheels \

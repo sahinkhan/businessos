@@ -39,7 +39,12 @@ def preflight(connection: psycopg.Connection[Any]) -> dict[str, object]:
         legacy_count = count_row["n"]
         rows = connection.execute(
             "SELECT d.code, d.name, d.sensitivity_level, "
+            "left(d.description, 200) AS description_preview, "
+            "length(d.description) AS description_length, "
+            "encode(sha256(convert_to(d.description, 'UTF8')), 'hex') "
+            "AS description_sha256, "
             "m.qualified_ref, m.definition_id, m.definition_version, m.tenant_id, "
+            "m.legacy_description_sha256 AS approved_description_sha256, "
             "(SELECT count(*) FROM platform_gov.sensitive_field_tags t "
             " WHERE t.classification_code = d.code) AS tag_count, "
             "(SELECT count(*) FROM platform_gov.retention_policies p "
@@ -95,11 +100,22 @@ def preflight(connection: psycopg.Connection[Any]) -> dict[str, object]:
         ).fetchone()
         assert unresolved_row is not None
         unresolved = unresolved_row["n"]
+        changed_meaning_row = connection.execute(
+            "SELECT count(*) AS n FROM platform_gov.data_classifications d "
+            "JOIN platform_gov.classification_legacy_mappings m "
+            "ON m.legacy_code = d.code WHERE m.legacy_description_sha256 "
+            "IS DISTINCT FROM encode(sha256(convert_to(d.description, 'UTF8')), 'hex')"
+        ).fetchone()
+        assert changed_meaning_row is not None
+        changed_mapping_meaning_count = changed_meaning_row["n"]
         output_rows = [
             {
                 "code": row["code"],
                 "name": row["name"],
                 "sensitivity_level": row["sensitivity_level"],
+                "description_preview": row["description_preview"],
+                "description_length": row["description_length"],
+                "description_sha256": row["description_sha256"],
                 "tag_count": row["tag_count"],
                 "retention_count": row["retention_count"],
                 "referencing_tenant_count": row["tenant_count"],
@@ -108,6 +124,7 @@ def preflight(connection: psycopg.Connection[Any]) -> dict[str, object]:
                 if row["definition_id"] is not None
                 else None,
                 "approved_version": row["definition_version"],
+                "approved_description_sha256": row["approved_description_sha256"],
                 "approved_tenant_id": str(row["tenant_id"])
                 if row["tenant_id"] is not None
                 else None,
@@ -124,12 +141,14 @@ def preflight(connection: psycopg.Connection[Any]) -> dict[str, object]:
             or collisions
             or any(orphans.values())
             or any(inconsistent_references.values())
+            or changed_mapping_meaning_count
             else "PASS",
             "legacy_total": legacy_count,
             "unresolved_total": unresolved,
             "collision_sample": [dict(row) for row in collisions[:_LIMIT]],
             "orphan_counts": orphans,
             "inconsistent_reference_counts": inconsistent_references,
+            "changed_mapping_meaning_count": changed_mapping_meaning_count,
             "truncated": truncated,
             "rows": output_rows,
             "note": (
@@ -156,6 +175,7 @@ def _load_reviewed_file(path: Path) -> list[dict[str, object]]:
         "legacy_code",
         "legacy_name",
         "legacy_sensitivity_level",
+        "legacy_description_sha256",
         "qualified_ref",
         "definition_id",
         "definition_version",
@@ -176,6 +196,7 @@ def _load_reviewed_file(path: Path) -> list[dict[str, object]]:
             for key in (
                 "legacy_code",
                 "legacy_name",
+                "legacy_description_sha256",
                 "qualified_ref",
                 "definition_id",
                 "approved_by",
@@ -190,6 +211,9 @@ def _load_reviewed_file(path: Path) -> list[dict[str, object]]:
             raise ValueError("Reviewed mapping version or sensitivity is invalid")
         if entry["definition_version"] <= 0:
             raise ValueError("Reviewed mapping version must be positive")
+        digest = cast(str, entry["legacy_description_sha256"])
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise ValueError("Reviewed legacy description fingerprint is invalid")
         if entry["tenant_id"] is not None and (
             type(entry["tenant_id"]) is not str or not entry["tenant_id"]
         ):
@@ -219,7 +243,9 @@ def apply_reviewed_mapping(connection: psycopg.Connection[Any], path: Path) -> i
         if count_row["n"] > 10000:
             raise ValueError("Legacy classification catalog exceeds reviewed mapping bound")
         legacy_rows = connection.execute(
-            "SELECT code, name, sensitivity_level "
+            "SELECT code, name, sensitivity_level, "
+            "encode(sha256(convert_to(description, 'UTF8')), 'hex') "
+            "AS description_sha256 "
             "FROM platform_gov.data_classifications ORDER BY code FOR SHARE"
         ).fetchall()
         legacy = {row["code"]: row for row in legacy_rows}
@@ -231,6 +257,7 @@ def apply_reviewed_mapping(connection: psycopg.Connection[Any], path: Path) -> i
             if (
                 row["name"] != entry["legacy_name"]
                 or row["sensitivity_level"] != entry["legacy_sensitivity_level"]
+                or row["description_sha256"] != entry["legacy_description_sha256"]
             ):
                 raise ValueError(f"Legacy meaning changed since review: {code}")
             tenant = UUID(str(entry["tenant_id"])) if entry["tenant_id"] is not None else None
@@ -275,7 +302,8 @@ def apply_reviewed_mapping(connection: psycopg.Connection[Any], path: Path) -> i
             ):
                 raise ValueError(f"Reviewed target changes legacy meaning: {code}")
             existing = connection.execute(
-                "SELECT qualified_ref, definition_id, definition_version, tenant_id "
+                "SELECT qualified_ref, definition_id, definition_version, tenant_id, "
+                "legacy_description_sha256 "
                 "FROM platform_gov.classification_legacy_mappings WHERE legacy_code = %s",
                 (code,),
             ).fetchone()
@@ -284,19 +312,22 @@ def apply_reviewed_mapping(connection: psycopg.Connection[Any], path: Path) -> i
                 existing["definition_id"],
                 existing["definition_version"],
                 existing["tenant_id"],
-            ) != (reference, definition_id, version, tenant):
+                existing["legacy_description_sha256"],
+            ) != (reference, definition_id, version, tenant, row["description_sha256"]):
                 raise ValueError(f"Existing approved mapping differs: {code}")
             if existing is None:
                 connection.execute(
                     "INSERT INTO platform_gov.classification_legacy_mappings "
                     "(legacy_code, qualified_ref, definition_id, definition_version, "
-                    "tenant_id, approved_by, evidence_reference, tenant_provenance) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    "legacy_description_sha256, tenant_id, approved_by, "
+                    "evidence_reference, tenant_provenance) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         code,
                         reference,
                         definition_id,
                         version,
+                        row["description_sha256"],
                         tenant,
                         entry["approved_by"],
                         entry["evidence_reference"],

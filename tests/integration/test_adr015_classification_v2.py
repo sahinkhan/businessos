@@ -1,6 +1,7 @@
 """Real PostgreSQL guards for the additive classification V2 boundary."""
 
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -198,9 +199,15 @@ async def test_classification_v2_grants_rls_and_tenant_identity(
             migration.execute(
                 "INSERT INTO platform_gov.classification_legacy_mappings "
                 "(legacy_code, qualified_ref, definition_id, definition_version, "
-                "tenant_id, approved_by, evidence_reference, tenant_provenance) "
-                "VALUES ('tenant-map', %s, %s, 1, %s, 'reviewer', 'review-1', 'source-1')",
-                (created.qualified_ref, created.definition_id, tenant_a),
+                "legacy_description_sha256, tenant_id, approved_by, "
+                "evidence_reference, tenant_provenance) "
+                "VALUES ('tenant-map', %s, %s, 1, %s, %s, 'reviewer', 'review-1', 'source-1')",
+                (
+                    created.qualified_ref,
+                    created.definition_id,
+                    hashlib.sha256(b"").hexdigest(),
+                    tenant_a,
+                ),
             )
 
         runtime_url = postgres_database.runtime_url.replace(
@@ -484,12 +491,14 @@ def test_reviewed_legacy_mapping_is_atomic_and_never_infers_ownership(
         assert before["status"] == "BLOCK"
         before_rows = cast(list[dict[str, Any]], before["rows"])
         assert before_rows[0]["provenance"] == "UNKNOWN_REVIEW_REQUIRED"
+        assert before_rows[0]["description_sha256"] == hashlib.sha256(b"").hexdigest()
         reviewed = {
             "reviewed_mappings": [
                 {
                     "legacy_code": "personal",
                     "legacy_name": "Personal",
                     "legacy_sensitivity_level": 3,
+                    "legacy_description_sha256": hashlib.sha256(b"").hexdigest(),
                     "qualified_ref": "core:PERSONAL",
                     "definition_id": str(definition_id),
                     "definition_version": 1,
@@ -551,6 +560,22 @@ def test_reviewed_legacy_mapping_is_atomic_and_never_infers_ownership(
         connection.commit()
         assert preflight(connection)["status"] == "PASS"
 
+        connection.execute(
+            "UPDATE platform_gov.data_classifications SET description = 'Changed meaning' "
+            "WHERE code = 'personal'"
+        )
+        connection.commit()
+        changed_preflight = preflight(connection)
+        assert changed_preflight["status"] == "BLOCK"
+        assert changed_preflight["changed_mapping_meaning_count"] == 1
+        with pytest.raises(ValueError, match="Legacy meaning changed"):
+            apply_reviewed_mapping(connection, file)
+        connection.execute(
+            "UPDATE platform_gov.data_classifications SET description = '' WHERE code = 'personal'"
+        )
+        connection.commit()
+        assert preflight(connection)["status"] == "PASS"
+
         reviewed["reviewed_mappings"][0]["definition_id"] = str(uuid4())
         file.write_text(json.dumps(reviewed), encoding="utf-8")
         with pytest.raises(ValueError, match="meaning"):
@@ -602,9 +627,9 @@ async def test_canonical_overlay_only_strengthens_controls(
         connection.execute(
             "INSERT INTO platform_gov.classification_legacy_mappings "
             "(legacy_code, qualified_ref, definition_id, definition_version, "
-            "approved_by, evidence_reference) "
-            "VALUES ('personal', 'core:PERSONAL', %s, 1, 'reviewer', 'review-1')",
-            (definition_id,),
+            "legacy_description_sha256, approved_by, evidence_reference) "
+            "VALUES ('personal', 'core:PERSONAL', %s, 1, %s, 'reviewer', 'review-1')",
+            (definition_id, hashlib.sha256(b"").hexdigest()),
         )
         connection.execute(
             "UPDATE platform_gov.classification_definitions SET name = 'Personal' WHERE id = %s",

@@ -193,6 +193,7 @@ def upgrade() -> None:
         sa.Column("qualified_ref", sa.String(100), nullable=False),
         sa.Column("definition_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("definition_version", sa.Integer(), nullable=False),
+        sa.Column("legacy_description_sha256", sa.String(64), nullable=False),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("approved_by", sa.String(200), nullable=False),
         sa.Column("evidence_reference", sa.Text(), nullable=False),
@@ -200,6 +201,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "length(approved_by) > 0 AND length(evidence_reference) > 0",
             name="ck_legacy_mapping_evidence",
+        ),
+        sa.CheckConstraint(
+            "legacy_description_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_legacy_mapping_description_sha256",
         ),
         sa.CheckConstraint(
             "tenant_id IS NULL OR "

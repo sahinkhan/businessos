@@ -71,10 +71,13 @@ version history; a legacy row never gains canonical provenance by code/name.
 The `businessos-classification-legacy preflight` command produces a bounded,
 read-only inventory of legacy rows, references, collisions, and orphans. It
 reports unresolved provenance and inconsistent or unconverted qualified
-references as blockers; it does not infer an owner. The `apply`
+references as blockers; it does not infer an owner. It emits a bounded
+description preview and SHA-256 fingerprint so review can bind the complete
+legacy description without dumping unbounded text. The `apply`
 command requires an exact, operator-reviewed JSON mapping for every legacy
-row, with target ID/version, reviewer, evidence reference, and explicit tenant
-provenance where applicable. It verifies target meaning and tenant references,
+row, with the description fingerprint, target ID/version, reviewer, evidence
+reference, and explicit tenant provenance where applicable. It verifies the
+reviewed snapshot, target name and sensitivity, and tenant references,
 then inserts mapping evidence and backfills both reference tables atomically.
 Any unresolved, changed, ambiguous, or orphaned reference blocks conversion.
 

@@ -449,6 +449,17 @@ def test_owner_provider_registration_rejects_undeclared_duplicate_and_kind() -> 
             manifest, generation, "example_owner.record", "1", "operation", malformed_operation
         )
 
+    class DeceptiveActions(frozenset[str]):
+        def __contains__(self, action: object) -> bool:
+            return action == "purge" or super().__contains__(action)
+
+    deceptive_operation = OperationProvider()
+    deceptive_operation.supported_actions = DeceptiveActions({"archive"})
+    with pytest.raises(ConfigurationError, match="supported actions"):
+        resources.register_provider(
+            manifest, generation, "example_owner.record", "1", "operation", deceptive_operation
+        )
+
 
 class FactsProvider:
     async def read_facts(

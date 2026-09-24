@@ -356,6 +356,7 @@ class ResourceOwnershipRegistry:
             raw_actions = getattr(provider, "supported_actions", None)
             if (
                 not isinstance(raw_actions, frozenset)
+                or type(cast(object, raw_actions)) is not frozenset
                 or not raw_actions
                 or any(
                     not isinstance(action, str)

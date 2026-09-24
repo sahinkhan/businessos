@@ -6,9 +6,11 @@ Decision date: 2026-09-24
 
 Approving roles required: Architecture Maintainer; Security Maintainer; Policy Maintainer; Data Governance Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Release Maintainer; Frontend Foundation Maintainer when Phase 5 UI classification consumption is contracted
 
-Approval pull request or commit: [PR #25](https://github.com/sahinkhan/businessos/pull/25) — acceptance candidate; formal authority pending final exact-SHA owner acceptance attestation and merge to `main`
+Approval pull request or commit: [PR #25](https://github.com/sahinkhan/businessos/pull/25) — MERGED as `64f70b02de9d13f7be1a203f21b732363884d3aa`
 
 Approved semantic proposal SHA: `25c9643b2a971a62e02c5e7ec15e87415f8342fc`
+
+Final acceptance candidate SHA: `a9fb65f182439895abe6f6e234396b591a60426f`
 
 Proposal owner attestation: [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/25#issuecomment-5808039324)
 
@@ -20,13 +22,23 @@ Independent technical/read-only proposal review: PERFORMED — PASS; Critical 0;
 
 Exact proposal CI: [BusinessOS run 35956530352](https://github.com/sahinkhan/businessos/actions/runs/35956530352) — PASS (`python-quality`, `windows-typing`, `web-quality`)
 
+Final owner acceptance attestation: COMPLETE — [@sahinkhan's exact-candidate attestation](https://github.com/sahinkhan/businessos/pull/25#issuecomment-5810121506)
+
+Independent technical/read-only acceptance review: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
+
+Acceptance exact-head CI: [BusinessOS run 35970830703](https://github.com/sahinkhan/businessos/actions/runs/35970830703) — PASS (`python-quality`, `windows-typing`, `web-quality`)
+
+Accepted main merge SHA: `64f70b02de9d13f7be1a203f21b732363884d3aa`
+
 Cross-ADR architecture review: PASS
 
 Accepted prerequisites: ADR-014 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN; ADR-018 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN on [main `559ae04743c4e68b09595aa94d52768b71527183`](https://github.com/sahinkhan/businessos/commit/559ae04743c4e68b09595aa94d52768b71527183). These architecture prerequisites are satisfied; their Policy V2 and Platform/SDK runtime extensions remain NOT IMPLEMENTED.
 
 Implementation/certification gates carried forward: The canonical and tenant schemas, next forward Governance migration, FORCE RLS and grant narrowing, dirty-data preflight, safe v1/v2 compatibility transition, and Phase 5 integration remain NOT IMPLEMENTED. Implementation must preserve the hybrid global-base/tenant-extension model, monotonic security overlays, qualified no-shadow identities, historical resolution, Party's frozen boundary, and the Policy-owned classification port. No historical `gov_0001` or `gov_0002` rewrite is authorized. Phases 0–3 remain FINAL PASS / FROZEN; no general frozen-phase reopening occurred.
 
-Formal authority: PENDING final exact-SHA ADR-015 owner acceptance attestation and merge to `main`
+Implementation status: Classification runtime, canonical/tenant Governance schema, the next forward Governance migration (`gov_0003` or the next available revision after graph inspection), FORCE RLS and grant narrowing, and the v1/v2 runtime transition are NOT IMPLEMENTED. The dirty-data preflight is NOT EXECUTED. ADR-014 Policy V2 and the ADR-018 Platform/SDK extension are NOT IMPLEMENTED. Phase 5 integration is NOT STARTED. The implementation/certification gates above remain active; Phases 0–3 remain FINAL PASS / FROZEN with no general reopening.
+
+Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN
 
 Supersedes: None
 

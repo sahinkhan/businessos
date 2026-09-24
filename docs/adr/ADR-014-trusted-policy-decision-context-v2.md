@@ -4,13 +4,13 @@ Status: ACCEPTED
 
 Decision date: 2026-09-24
 
-Approving roles required: Architecture Maintainer; Security Maintainer; Identity Maintainer; Policy Maintainer; SDK/Contract Maintainer; Release Maintainer; affected Owning Domain Maintainer for each adopted facts provider; Organization Maintainer where organization scope facts are contracted
+Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; Security Maintainer; Identity Maintainer; Policy Maintainer; SDK/Contract Maintainer; Release Maintainer; affected Owning Domain Maintainer for each adopted facts provider; Organization Maintainer where organization scope facts are contracted
 
 Approval pull request or commit: [PR #24](https://github.com/sahinkhan/businessos/pull/24) — acceptance candidate; formal authority pending final exact-SHA owner acceptance attestation and merge to `main`
 
 Approved semantic proposal SHA: `856726dfe856bd6db51f2efe7d393a5cfe5f2098`
 
-Proposal owner attestation: [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/24#issuecomment-5808035360)
+Proposal owner attestation: [@sahinkhan's corrected exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/24#issuecomment-5809086007) — supersedes the earlier comment solely for accountable-role evidence
 
 Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`
 
@@ -22,7 +22,7 @@ Exact proposal CI: [BusinessOS run 35956857734](https://github.com/sahinkhan/bus
 
 Cross-ADR architecture review: PASS
 
-ADR-018 prerequisite: ACCEPTED / AUTHORITATIVE on [main `21f9cb0d4e72533887640fd1517ca48d3e69b38f`](https://github.com/sahinkhan/businessos/commit/21f9cb0d4e72533887640fd1517ca48d3e69b38f). Its additive Platform/SDK boundary remains to be implemented and certified before Policy V2 can rely on it.
+Accepted dependencies: ADR-010 — ACCEPTED / AUTHORITATIVE; ADR-011 — ACCEPTED / AUTHORITATIVE; ADR-018 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN on [main `21f9cb0d4e72533887640fd1517ca48d3e69b38f`](https://github.com/sahinkhan/businessos/commit/21f9cb0d4e72533887640fd1517ca48d3e69b38f). The ADR-018 architecture prerequisite is satisfied. Its additive Platform/SDK boundary remains NOT IMPLEMENTED and must be implemented and certified before Policy V2 can rely on it.
 
 Implementation/certification gates carried forward: The ADR-018 owner provider must return locked authoritative resource facts and normalized `AuthorizationOperationFactsV2` for the exact operation committed in one active unit of work. Evaluated value and operation must equal committed value and operation. Owner and Policy authority locks must have deterministic combined ordering while ADR-010/011 concurrency rules remain intact. Provider generation and admission must remain valid through commit or rollback. Backend read enforcement must remain authoritative, not UI-only. ADR-014 acceptance does not itself implement Policy V2 or generally reopen frozen Phases 0–3.
 

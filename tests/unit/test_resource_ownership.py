@@ -509,6 +509,14 @@ class WrongFactsProvider(FactsProvider):
         return replace(correct, contract_version="other")
 
 
+class LockedFactsProvider(FactsProvider):
+    async def read_locked_facts(
+        self, locator: ResourceLocator, action: str, request: RequestContext, transaction: object
+    ) -> ResourceOwnerFacts:
+        assert action == "record.update"
+        return await self.read_facts(locator, request, transaction)
+
+
 class OperationProvider:
     supported_actions = frozenset({"archive"})
 
@@ -702,6 +710,52 @@ async def test_provider_lease_survives_method_return_until_outer_commit() -> Non
     assert gate.in_flight(owner) == 0
     with pytest.raises(ConfigurationError, match="trusted dispatcher"):
         await handle_holder[0].read_facts()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_locked_policy_facts_require_current_owner_handler() -> None:
+    gate = ContributionGate()
+    resources = ResourceOwnershipRegistry(gate)
+    owner = gate.reserve("example_owner")
+    manifest = _manifest()
+    resources.register_provider(
+        manifest, owner, "example_owner.record", "1", "facts", LockedFactsProvider()
+    )
+    resources.stage(manifest, owner)
+    gate.publish(owner)
+    spoof = gate.reserve("example_handler")
+    gate.publish(spoof)
+    completed = asyncio.Event()
+    completed.set()
+    dispatcher = MessageDispatcher(
+        FakeFactory(FakeUOW(asyncio.Event(), completed)),
+        EventBus(gate),
+        gate,
+        resources=resources,
+    )
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    request = RequestContext(tenant=tenant)
+    locator = ResourceLocator("example_owner.record", "1", uuid4(), tenant.tenant_id)
+
+    async def owner_handler(_: UseOwner, handling: HandlingContext) -> object:
+        resources.assert_owner_handler(locator, handling.request, handling.unit_of_work)
+        handle = await resources.resolve_provider(
+            locator, "facts", handling.request, handling.unit_of_work
+        )
+        assert (await handle.read_locked_facts("record.update")).record_id == locator.record_id
+        return "owner"
+
+    async def spoof_handler(_: SpoofOwner, handling: HandlingContext) -> object:
+        with pytest.raises(ConfigurationError, match="canonical owner handler"):
+            resources.assert_owner_handler(locator, handling.request, handling.unit_of_work)
+        return "denied"
+
+    dispatcher.commands.register(UseOwner, "example_owner", owner_handler, generation=owner)
+    dispatcher.commands.register(SpoofOwner, "example_handler", spoof_handler, generation=spoof)
+    container = Container()
+    async with container.request_scope() as dependencies:
+        assert await dispatcher.command(UseOwner(), request, dependencies) == "owner"
+        assert await dispatcher.command(SpoofOwner(), request, dependencies) == "denied"
 
 
 @pytest.mark.asyncio

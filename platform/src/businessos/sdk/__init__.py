@@ -36,6 +36,7 @@ from businessos.resources import (
     ResourceLocator,
     ResourceOwnerFacts,
     ResourceOwnerFactsProvider,
+    ResourceOwnerLockedFactsProvider,
     ResourceOwnerOperationProvider,
     ResourceOwnerResolver,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "ResourceLocator",
     "ResourceOwnerFacts",
     "ResourceOwnerFactsProvider",
+    "ResourceOwnerLockedFactsProvider",
     "ResourceOwnerOperationProvider",
     "ResourceOwnerResolver",
     "ResourceOwnership",

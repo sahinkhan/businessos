@@ -69,5 +69,12 @@ async def test_phase4_public_contracts_are_registered_and_versioned() -> None:
         for name, owner in expected.items():
             assert entries[name].owner == owner
             assert entries[name].value.version == "1"
+        for name in (
+            "foundation.policy.authorization.v2",
+            "foundation.policy.field-policy.v2",
+            "foundation.policy.approval-authority.v2",
+        ):
+            assert entries[name].owner == "foundation.policy"
+            assert entries[name].value.version == "2"
     finally:
         await app.shutdown()

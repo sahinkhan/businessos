@@ -7,15 +7,22 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from importlib.resources import files
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 from uuid import UUID, uuid4
 
+from businessos_identity import (
+    AUTHENTICATED_PRINCIPAL,
+    MEMBERSHIP_AUTHORITY,
+    PrincipalReference,
+    PrincipalType,
+)
 from businessos_organization import DELEGATION_ACTION_AUTHORITY
 from pydantic import Field
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from businessos.sdk import (
+    RESOURCE_OWNER_RESOLVER,
     BusinessOSError,
     Command,
     DependencyScope,
@@ -58,7 +65,6 @@ from .models import (
     FieldAccessType,
     FieldPolicyRecord,
     PermissionRecord,
-    PolicyContext,
     RecordAccessScope,
     RecordPolicyRecord,
     RolePermissionRecord,
@@ -70,6 +76,41 @@ from .models import (
     SubjectRoleAssignmentRecord,
     SupportAccessGrantRecord,
 )
+from .v2_contracts import POLICY_AUTHORIZATION_V2
+from .v2_runtime import PolicyV2Service
+
+
+class _RetiredV1Authority:
+    """Public V1 contract remains addressable but cannot grant live authority."""
+
+    version = "1"
+
+    @staticmethod
+    def deny() -> NoReturn:
+        raise BusinessOSError(
+            "policy_v1_retired",
+            "Policy V1 lacks trusted live authority; use Policy V2",
+            status_code=403,
+        )
+
+    def authorize(self, *args: object, **kwargs: object) -> None:
+        self.deny()
+
+    def evaluate_field_access(self, *args: object, **kwargs: object) -> None:
+        self.deny()
+
+    def evaluate_approval_authority(self, *args: object, **kwargs: object) -> None:
+        self.deny()
+
+    def authorize_support_access(self, *args: object, **kwargs: object) -> None:
+        self.deny()
+
+
+class _PolicyV2PublicContract:
+    """Discoverable contract; executable authority is the request-scoped port."""
+
+    version = "2"
+    dependency_key = POLICY_AUTHORIZATION_V2
 
 
 class RegisterPermissionCommand(Command):
@@ -166,6 +207,7 @@ class RevokeDelegationCommand(Command):
 class GrantSupportAccessCommand(Command):
     tenant_id: UUID
     support_principal_id: UUID
+    support_principal_type: Literal["user", "service_account", "device"]
     reason: str = Field(min_length=1, max_length=1000)
     valid_to: datetime
 
@@ -222,13 +264,20 @@ class AuthorizeSupportAccessQuery(Query):
 
 
 class PolicyModule:
-    def __init__(self, *, action_resources: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        action_resources: Mapping[str, str] | None = None,
+        v2_action_resources: Mapping[str, tuple[str, str]] | None = None,
+    ) -> None:
         data = json.loads(
             files("businessos_policy").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
         self.evaluator = PolicyEvaluationService()
+        self._v1_authority = _RetiredV1Authority()
         self.delegation_authority = PolicyDelegationActionAuthority(action_resources)
+        self._v2_action_resources = dict(v2_action_resources or {})
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.dependency(
@@ -236,9 +285,25 @@ class PolicyModule:
             lambda _resolver: self.delegation_authority,
             scope=DependencyScope.REQUEST,
         )
-        registration.contract("foundation.policy.authorization.v1", self.evaluator)
-        registration.contract("foundation.policy.field-policy.v1", self.evaluator)
-        registration.contract("foundation.policy.approval-authority.v1", self.evaluator)
+
+        async def v2_factory(resolver: Any) -> PolicyV2Service:
+            return PolicyV2Service(
+                await resolver.resolve(AUTHENTICATED_PRINCIPAL),
+                await resolver.resolve(MEMBERSHIP_AUTHORITY),
+                await resolver.resolve(RESOURCE_OWNER_RESOLVER),
+                self.delegation_authority,
+                self._v2_action_resources,
+                resolver,
+            )
+
+        registration.dependency(POLICY_AUTHORIZATION_V2, v2_factory, scope=DependencyScope.REQUEST)
+        registration.contract("foundation.policy.authorization.v1", self._v1_authority)
+        registration.contract("foundation.policy.field-policy.v1", self._v1_authority)
+        registration.contract("foundation.policy.approval-authority.v1", self._v1_authority)
+        public_v2 = _PolicyV2PublicContract()
+        registration.contract("foundation.policy.authorization.v2", public_v2)
+        registration.contract("foundation.policy.field-policy.v2", public_v2)
+        registration.contract("foundation.policy.approval-authority.v2", public_v2)
         registration.permission(
             PermissionDeclaration(
                 key="foundation.policy.read",
@@ -524,6 +589,7 @@ class PolicyModule:
         self, cmd: SetFieldPolicyCommand, ctx: HandlingContext
     ) -> FieldPolicyRecord:
         _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         if cmd.role_id is not None:
             await _require_role(ctx, cmd.tenant_id, cmd.role_id)
         now = datetime.now(UTC)
@@ -556,6 +622,7 @@ class PolicyModule:
         self, cmd: SetApprovalLimitCommand, ctx: HandlingContext
     ) -> ApprovalLimitRecord:
         _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         if cmd.role_id is not None:
             await _require_role(ctx, cmd.tenant_id, cmd.role_id)
         _validate_window(cmd.valid_from, cmd.valid_to)
@@ -781,79 +848,41 @@ class PolicyModule:
     async def _authorize_action(
         self, query: AuthorizeActionQuery, ctx: HandlingContext
     ) -> AuthorizationDecision:
-        tenant = _require_tenant(ctx.request, query.tenant_id)
-        _require_requested_scope(tenant, query)
-        # Query roles, permissions, assignments, delegations
-        roles_res = await ctx.unit_of_work.persistence.execute(
-            select(ROLES).where(ROLES.c.tenant_id == query.tenant_id)
-        )
-        roles = [RoleRecord.model_validate(dict(row)) for row in roles_res.mappings()]
-
-        assign_res = await ctx.unit_of_work.persistence.execute(
-            select(SUBJECT_ROLE_ASSIGNMENTS)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == query.tenant_id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == query.subject_id)
-        )
-        assignments = [
-            SubjectRoleAssignmentRecord.model_validate(dict(row)) for row in assign_res.mappings()
-        ]
-
-        rp_res = await ctx.unit_of_work.persistence.execute(
-            select(ROLE_PERMISSIONS).where(ROLE_PERMISSIONS.c.tenant_id == query.tenant_id)
-        )
-        role_permissions = [
-            RolePermissionRecord.model_validate(dict(row)) for row in rp_res.mappings()
-        ]
-
-        del_res = await ctx.unit_of_work.persistence.execute(
-            select(DELEGATIONS)
-            .where(DELEGATIONS.c.tenant_id == query.tenant_id)
-            .where(DELEGATIONS.c.delegatee_id == query.subject_id)
-            .where(DELEGATIONS.c.is_revoked.is_(False))
-        )
-        delegations = [
-            DelegationGrantRecord.model_validate(dict(row)) for row in del_res.mappings()
-        ]
-
-        record_res = await ctx.unit_of_work.persistence.execute(
-            select(RECORD_POLICIES)
-            .where(RECORD_POLICIES.c.tenant_id == query.tenant_id)
-            .where(RECORD_POLICIES.c.resource_type == query.resource)
-        )
-        record_policies = [
-            RecordPolicyRecord.model_validate(dict(row)) for row in record_res.mappings()
-        ]
-
-        policy_ctx = PolicyContext(
-            tenant_id=query.tenant_id,
-            subject_id=query.subject_id,
-            company_id=query.company_id,
-            legal_entity_id=query.legal_entity_id,
-            operating_site_id=query.operating_site_id,
-            business_unit_id=query.business_unit_id,
-            record_owner_id=query.record_owner_id,
-            record_scope_type=query.record_scope_type,
-            record_scope_id=query.record_scope_id,
-            client_ip=query.client_ip,
-            timestamp=query.timestamp or datetime.now(UTC),
-            attributes=query.attributes,
-        )
-
-        return self.evaluator.authorize(
-            action=query.action,
-            resource=query.resource,
-            context=policy_ctx,
-            roles=roles,
-            role_permissions=role_permissions,
-            assignments=assignments,
-            delegations=delegations,
-            record_policies=record_policies,
-        )
+        _RetiredV1Authority.deny()
 
     async def _grant_support_access(
         self, cmd: GrantSupportAccessCommand, ctx: HandlingContext
     ) -> SupportAccessGrantRecord:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
+        approver = await ctx.dependencies.resolve(AUTHENTICATED_PRINCIPAL)
+        if (
+            approver.request is not ctx.request
+            or approver.principal.tenant_id != tenant.tenant_id
+            or approver.principal.principal_id != tenant.principal_id
+            or approver.principal.principal_type not in ("user", "service_account", "device")
+        ):
+            raise BusinessOSError(
+                "principal_mismatch", "Trusted typed approver required", status_code=403
+            )
+        membership_authority = await ctx.dependencies.resolve(MEMBERSHIP_AUTHORITY)
+        approver_type: PrincipalType
+        if approver.principal.principal_type == "user":
+            approver_type = "user"
+        elif approver.principal.principal_type == "service_account":
+            approver_type = "service_account"
+        else:
+            approver_type = "device"
+        await membership_authority.lock_current(
+            ctx.unit_of_work.persistence,
+            tenant.tenant_id,
+            PrincipalReference(approver_type, approver.principal.principal_id),
+        )
+        await membership_authority.lock_current(
+            ctx.unit_of_work.persistence,
+            tenant.tenant_id,
+            PrincipalReference(cmd.support_principal_type, cmd.support_principal_id),
+        )
         now = datetime.now(UTC)
         if cmd.valid_to <= now:
             raise BusinessOSError(
@@ -867,7 +896,9 @@ class PolicyModule:
                 id=grant_id,
                 tenant_id=tenant.tenant_id,
                 support_principal_id=cmd.support_principal_id,
+                support_principal_type=cmd.support_principal_type,
                 approved_by=tenant.principal_id,
+                approved_by_type=approver.principal.principal_type,
                 reason=cmd.reason,
                 valid_from=now,
                 valid_to=cmd.valid_to,
@@ -878,7 +909,9 @@ class PolicyModule:
             id=grant_id,
             tenant_id=tenant.tenant_id,
             support_principal_id=cmd.support_principal_id,
+            support_principal_type=cmd.support_principal_type,
             approved_by=tenant.principal_id,
+            approved_by_type=approver.principal.principal_type,
             reason=cmd.reason,
             valid_from=now,
             valid_to=cmd.valid_to,
@@ -900,6 +933,7 @@ class PolicyModule:
         self, cmd: RevokeSupportAccessCommand, ctx: HandlingContext
     ) -> None:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         result = await ctx.unit_of_work.persistence.execute(
             update(SUPPORT_ACCESS_GRANTS)
             .where(SUPPORT_ACCESS_GRANTS.c.id == cmd.grant_id)
@@ -924,82 +958,17 @@ class PolicyModule:
     async def _authorize_support_access(
         self, query: AuthorizeSupportAccessQuery, ctx: HandlingContext
     ) -> AuthorizationDecision:
-        _require_tenant(ctx.request, query.tenant_id)
-        rows = await ctx.unit_of_work.persistence.execute(
-            select(SUPPORT_ACCESS_GRANTS)
-            .where(SUPPORT_ACCESS_GRANTS.c.tenant_id == query.tenant_id)
-            .where(SUPPORT_ACCESS_GRANTS.c.support_principal_id == query.support_principal_id)
-        )
-        grants = [SupportAccessGrantRecord.model_validate(dict(row)) for row in rows.mappings()]
-        return self.evaluator.authorize_support_access(
-            PolicyContext(
-                tenant_id=query.tenant_id,
-                subject_id=query.support_principal_id,
-                timestamp=query.timestamp or datetime.now(UTC),
-            ),
-            grants,
-        )
+        _RetiredV1Authority.deny()
 
     async def _evaluate_field_access(
         self, query: EvaluateFieldAccessQuery, ctx: HandlingContext
     ) -> FieldAccessDecision:
-        _require_tenant(ctx.request, query.tenant_id)
-        assign_res = await ctx.unit_of_work.persistence.execute(
-            select(SUBJECT_ROLE_ASSIGNMENTS)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == query.tenant_id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == query.subject_id)
-        )
-        role_ids = {r.role_id for r in assign_res}
-
-        fp_res = await ctx.unit_of_work.persistence.execute(
-            select(FIELD_POLICIES)
-            .where(FIELD_POLICIES.c.tenant_id == query.tenant_id)
-            .where(FIELD_POLICIES.c.resource_type == query.resource_type)
-            .where(FIELD_POLICIES.c.field_name == query.field_name)
-        )
-        policies = [FieldPolicyRecord.model_validate(dict(row)) for row in fp_res.mappings()]
-
-        policy_ctx = PolicyContext(
-            tenant_id=query.tenant_id,
-            subject_id=query.subject_id,
-            attributes=query.attributes,
-        )
-        return self.evaluator.evaluate_field_access(
-            field_name=query.field_name,
-            resource_type=query.resource_type,
-            context=policy_ctx,
-            policies=policies,
-            active_role_ids=role_ids,
-            requested_access=query.requested_access,
-        )
+        _RetiredV1Authority.deny()
 
     async def _evaluate_approval_limit(
         self, query: EvaluateApprovalLimitQuery, ctx: HandlingContext
     ) -> ApprovalAuthorityDecision:
-        _require_tenant(ctx.request, query.tenant_id)
-        assign_res = await ctx.unit_of_work.persistence.execute(
-            select(SUBJECT_ROLE_ASSIGNMENTS)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == query.tenant_id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == query.subject_id)
-        )
-        role_ids = {r.role_id for r in assign_res}
-
-        lim_res = await ctx.unit_of_work.persistence.execute(
-            select(APPROVAL_LIMITS)
-            .where(APPROVAL_LIMITS.c.tenant_id == query.tenant_id)
-            .where(APPROVAL_LIMITS.c.action_type == query.action_type)
-        )
-        limits = [ApprovalLimitRecord.model_validate(dict(row)) for row in lim_res.mappings()]
-
-        policy_ctx = PolicyContext(tenant_id=query.tenant_id, subject_id=query.subject_id)
-        return self.evaluator.evaluate_approval_authority(
-            action_type=query.action_type,
-            amount=query.amount,
-            currency=query.currency,
-            context=policy_ctx,
-            limits=limits,
-            active_role_ids=role_ids,
-        )
+        _RetiredV1Authority.deny()
 
     async def _check_sod_conflict(
         self, query: CheckSoDConflictQuery, ctx: HandlingContext
@@ -1026,22 +995,6 @@ def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> T
             status_code=403,
         )
     return request.tenant
-
-
-def _require_requested_scope(tenant: TenantContext, query: AuthorizeActionQuery) -> None:
-    requested = (
-        ("company", query.company_id, tenant.active_company_id),
-        ("legal_entity", query.legal_entity_id, tenant.legal_entity_id),
-        ("operating_site", query.operating_site_id, tenant.operating_site_id),
-        ("business_unit", query.business_unit_id, tenant.business_unit_id),
-    )
-    for name, value, active in requested:
-        if value is not None and value != active:
-            raise BusinessOSError(
-                "organization_scope_mismatch",
-                f"Requested {name} does not match the trusted active scope",
-                status_code=403,
-            )
 
 
 async def _require_role(ctx: HandlingContext, tenant_id: UUID, role_id: UUID) -> None:

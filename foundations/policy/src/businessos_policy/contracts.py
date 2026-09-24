@@ -461,3 +461,36 @@ def _condition_matches(expression: str | None, attributes: dict[str, object]) ->
         ):
             return False
     return True
+
+
+def condition_matches(expression: str | None, attributes: dict[str, object]) -> bool:
+    """V2 ABAC predicate: an absent owner fact never satisfies any operator."""
+    if expression is None:
+        return True
+    try:
+        payload = _ABACExpression.model_validate_json(expression)
+    except (TypeError, ValueError, ValidationError):
+        return False
+    for condition in payload.all:
+        if condition.attribute not in attributes:
+            return False
+        actual = attributes[condition.attribute]
+        if condition.operator == "eq" and actual != condition.value:
+            return False
+        if condition.operator == "ne" and actual == condition.value:
+            return False
+        if condition.operator == "in" and (
+            not isinstance(condition.value, list) or actual not in condition.value
+        ):
+            return False
+    return True
+
+
+def condition_is_valid(expression: str | None) -> bool:
+    if expression is None:
+        return True
+    try:
+        _ABACExpression.model_validate_json(expression)
+    except (TypeError, ValueError, ValidationError):
+        return False
+    return True

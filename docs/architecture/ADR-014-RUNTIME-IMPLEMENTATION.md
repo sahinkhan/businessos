@@ -56,6 +56,15 @@ re-read current facts after any wait. Policy-only authority writers acquire
 the tenant advisory lock before Policy rows and never later acquire an owner
 record lock. The V2 port therefore does not invert ADR-010/011's order.
 
+For classified field reads, Policy locks the canonical classification
+definition and tenant composition through the Policy-owned classification
+port, then locks the matching ADR-018 classification owner facts, **before**
+acquiring the Policy advisory lock. The locked projection carries a half-open
+effective interval; Policy checks it at the single trusted decision instant
+captured after the Identity membership lock. No Governance owner row is first
+locked after Policy authority. ADR-015's eventual provider must implement
+this same lock-first port; absent providers deny.
+
 ADR-017 destructive coordination remains a separate implementation. Its
 entity gate and subject lock precede the owner record lock. A future combined
 destructive path must place any Policy tenant lock after the owner lock and

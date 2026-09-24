@@ -295,6 +295,8 @@ class PolicyClassificationFactsV2:
     active: bool
     ambiguous: bool = False
     sensitive: bool = True
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -311,16 +313,40 @@ class PolicyClassificationFactsV2:
             )
         ):
             raise ValueError("Classification facts require exact owner provenance")
+        for instant in (self.valid_from, self.valid_until):
+            offset = instant.utcoffset() if type(instant) is datetime else None
+            if instant is not None and (
+                type(instant) is not datetime
+                or instant.tzinfo is None
+                or offset is None
+                or offset.total_seconds() != 0
+            ):
+                raise ValueError("Classification effective interval must use aware UTC")
+        if (
+            self.valid_from is not None
+            and self.valid_until is not None
+            and self.valid_from >= self.valid_until
+        ):
+            raise ValueError("Classification effective interval is empty")
+
+    def is_effective(self, instant: datetime) -> bool:
+        return (
+            self.active
+            and not self.ambiguous
+            and (self.valid_from is None or self.valid_from <= instant)
+            and (self.valid_until is None or instant < self.valid_until)
+        )
 
 
 class PolicyClassificationFactsProvider(Protocol):
-    async def resolve(
+    async def resolve_locked(
         self,
         tenant_id: UUID,
         classification_ref: str,
-        decision_at: datetime,
         transaction: HandlerTransaction,
-    ) -> PolicyClassificationFactsV2: ...
+    ) -> PolicyClassificationFactsV2:
+        """Lock the definition and tenant composition rows in this transaction."""
+        ...
 
 
 POLICY_CLASSIFICATION_FACTS_V2 = DependencyKey[PolicyClassificationFactsProvider](

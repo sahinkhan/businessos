@@ -242,6 +242,7 @@ class PolicyV2Service:
         locator: ResourceLocator,
         *,
         commit_bound: bool = False,
+        before_authority: Callable[[AuthorizationResourceFactsV2], Awaitable[bool]] | None = None,
     ) -> tuple[PrincipalReference, datetime, AuthorizationResourceFactsV2 | None, DecisionReason]:
         principal = self._principal(request)
         tenant = request.tenant
@@ -277,8 +278,25 @@ class PolicyV2Service:
             )
         except Exception:
             return principal, datetime.now(UTC), None, DecisionReason.OWNER_UNAVAILABLE
+        if before_authority is not None:
+            try:
+                if not await before_authority(facts):
+                    return (
+                        principal,
+                        datetime.now(UTC),
+                        facts,
+                        DecisionReason.CLASSIFICATION_UNAVAILABLE,
+                    )
+            except Exception:
+                return (
+                    principal,
+                    datetime.now(UTC),
+                    facts,
+                    DecisionReason.CLASSIFICATION_UNAVAILABLE,
+                )
         # ADR-010/011 tenant lock precedes Identity and Policy authority rows.
         # The owner must already hold its record lock for a commit-bound call.
+        # Field classification owner locks are also acquired before this lock.
         await self._authority.acquire(tenant.tenant_id, transaction.persistence)
         # A wait on the owner or tenant lock must not revive expired authority.
         try:
@@ -740,7 +758,21 @@ class PolicyV2Service:
         ):
             raise BusinessOSError("field_not_allowed", "Invalid field request", status_code=403)
         action = f"field.{requested_access.value}"
-        principal, instant, facts, reason = await self._begin(request, transaction, action, locator)
+        locked_classification: PolicyClassificationFactsV2 | None = None
+
+        async def lock_classification(facts: AuthorizationResourceFactsV2) -> bool:
+            nonlocal locked_classification
+            reference = facts.field_classifications.get(field_name)
+            if reference is None:
+                return False
+            locked_classification = await self._classification_locked(
+                transaction, facts.tenant_id, reference, request
+            )
+            return locked_classification is not None
+
+        principal, instant, facts, reason = await self._begin(
+            request, transaction, action, locator, before_authority=lock_classification
+        )
         access = FieldAccessType.DENY
         refs: tuple[UUID, ...] = ()
         role_ids: set[UUID] = set()
@@ -749,66 +781,55 @@ class PolicyV2Service:
                 request, transaction, principal, instant, facts, action
             )
         if reason is DecisionReason.ALLOWED and facts is not None:
-            classification_ref = facts.field_classifications.get(field_name)
-            if classification_ref is None:
+            if locked_classification is None or not locked_classification.is_effective(instant):
                 reason = DecisionReason.CLASSIFICATION_UNAVAILABLE
             else:
-                classification = await self._classification(
-                    transaction, facts.tenant_id, classification_ref, instant, request
-                )
-                if classification is None:
-                    reason = DecisionReason.CLASSIFICATION_UNAVAILABLE
-                else:
-                    policies = await self._rows(
-                        transaction,
-                        select(FIELD_POLICIES).where(
-                            FIELD_POLICIES.c.tenant_id == facts.tenant_id,
-                            FIELD_POLICIES.c.resource_type == facts.namespace,
-                            FIELD_POLICIES.c.field_name == field_name,
-                            or_(
-                                FIELD_POLICIES.c.role_id.is_(None),
-                                FIELD_POLICIES.c.role_id.in_(role_ids),
-                            ),
+                policies = await self._rows(
+                    transaction,
+                    select(FIELD_POLICIES).where(
+                        FIELD_POLICIES.c.tenant_id == facts.tenant_id,
+                        FIELD_POLICIES.c.resource_type == facts.namespace,
+                        FIELD_POLICIES.c.field_name == field_name,
+                        or_(
+                            FIELD_POLICIES.c.role_id.is_(None),
+                            FIELD_POLICIES.c.role_id.in_(role_ids),
                         ),
-                    )
-                    matching = [
-                        FieldPolicyRecord.model_validate(raw)
-                        for raw in policies
-                        if raw["role_id"] is None or raw["role_id"] in role_ids
-                    ]
-                    if any(
-                        not condition_is_valid(policy.condition_expression) for policy in matching
+                    ),
+                )
+                matching = [
+                    FieldPolicyRecord.model_validate(raw)
+                    for raw in policies
+                    if raw["role_id"] is None or raw["role_id"] in role_ids
+                ]
+                if any(not condition_is_valid(policy.condition_expression) for policy in matching):
+                    reason = DecisionReason.FIELD_NOT_ALLOWED
+                    matching = []
+                for policy in matching:
+                    if policy.access_type is FieldAccessType.DENY and condition_matches(
+                        policy.condition_expression, dict(facts.attributes)
                     ):
-                        reason = DecisionReason.FIELD_NOT_ALLOWED
-                        matching = []
-                    for policy in matching:
-                        if policy.access_type is FieldAccessType.DENY and condition_matches(
-                            policy.condition_expression, dict(facts.attributes)
-                        ):
-                            refs = (policy.id,)
-                            break
+                        refs = (policy.id,)
+                        break
+                else:
+                    allowed = [
+                        policy
+                        for policy in matching
+                        if policy.access_type is not FieldAccessType.DENY
+                        and condition_matches(policy.condition_expression, dict(facts.attributes))
+                        and (
+                            requested_access is FieldAccessType.READ
+                            or policy.access_type is FieldAccessType.WRITE
+                        )
+                    ]
+                    if allowed:
+                        selected = min(allowed, key=lambda item: item.id.bytes)
+                        access = selected.access_type
+                        refs = (selected.id, locked_classification.definition_id)
+                        reason = DecisionReason.ALLOWED
                     else:
-                        allowed = [
-                            policy
-                            for policy in matching
-                            if policy.access_type is not FieldAccessType.DENY
-                            and condition_matches(
-                                policy.condition_expression, dict(facts.attributes)
-                            )
-                            and (
-                                requested_access is FieldAccessType.READ
-                                or policy.access_type is FieldAccessType.WRITE
-                            )
-                        ]
-                        if allowed:
-                            selected = min(allowed, key=lambda item: item.id.bytes)
-                            access = selected.access_type
-                            refs = (selected.id, classification.definition_id)
-                            reason = DecisionReason.ALLOWED
-                        else:
-                            reason = DecisionReason.FIELD_NOT_ALLOWED
-                    if access is FieldAccessType.DENY:
                         reason = DecisionReason.FIELD_NOT_ALLOWED
+                if access is FieldAccessType.DENY:
+                    reason = DecisionReason.FIELD_NOT_ALLOWED
         return PolicyReadDecisionV2(
             self._evidence(
                 request,
@@ -823,23 +844,20 @@ class PolicyV2Service:
             access,
         )
 
-    async def _classification(
+    async def _classification_locked(
         self,
         transaction: HandlerTransaction,
         tenant_id: UUID,
         reference: str,
-        instant: datetime,
         request: RequestContext,
     ) -> PolicyClassificationFactsV2 | None:
         try:
             provider = await self._dependencies.resolve(POLICY_CLASSIFICATION_FACTS_V2)
-            result = await provider.resolve(tenant_id, reference, instant, transaction)
+            result = await provider.resolve_locked(tenant_id, reference, transaction)
             if (
                 type(result) is not PolicyClassificationFactsV2
                 or result.tenant_id != tenant_id
                 or result.classification_ref != reference
-                or not result.active
-                or result.ambiguous
             ):
                 return None
             binding = self._resources.resolve_owner(

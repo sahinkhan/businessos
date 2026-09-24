@@ -572,7 +572,9 @@ async def test_commit_denies_wrong_owner_handler_and_changed_owner_facts() -> No
 
 
 @pytest.mark.asyncio
-async def test_classified_field_requires_trusted_definition_and_explicit_policy() -> None:
+async def test_classified_field_requires_trusted_definition_and_explicit_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service, request, transaction, resources, _, role_id = _harness()
     locator = _locator(resources)
     tenant_id = locator.tenant_id
@@ -596,10 +598,28 @@ async def test_classified_field_requires_trusted_definition_and_explicit_policy(
         },
     )
 
+    order: list[str] = []
+    original_read = _Provider.read_locked_facts
+
+    async def tracked_read(provider: _Provider, action: str) -> ResourceOwnerFacts:
+        if action == "classification.read":
+            order.append("classification_owner")
+        return await original_read(provider, action)
+
+    monkeypatch.setattr(_Provider, "read_locked_facts", tracked_read)
+    original_authority = service._authority.acquire
+
+    async def tracked_authority(tenant_id: UUID, persistence: object) -> None:
+        order.append("policy")
+        await original_authority(tenant_id, persistence)  # type: ignore[arg-type]
+
+    service._authority.acquire = tracked_authority  # type: ignore[method-assign]
+
     class ClassificationProvider:
-        async def resolve(
-            self, tenant_id: UUID, reference: str, instant: datetime, tx: object
+        async def resolve_locked(
+            self, tenant_id: UUID, reference: str, tx: object
         ) -> PolicyClassificationFactsV2:
+            order.append("classification_projection")
             return PolicyClassificationFactsV2(
                 tenant_id, reference, "foundation.governance", definition_id, "1", True
             )
@@ -618,6 +638,7 @@ async def test_classified_field_requires_trusted_definition_and_explicit_policy(
     service._rows = rows  # type: ignore[method-assign,assignment]
     absent = await service.evaluate_field(request, transaction, locator, "secret")
     assert absent.evidence.reason is DecisionReason.FIELD_NOT_ALLOWED
+    assert order[:3] == ["classification_projection", "classification_owner", "policy"]
     policies.append(
         {
             "id": uuid4(),
@@ -649,6 +670,23 @@ def test_operation_facts_reject_float_and_mutable_payloads() -> None:
         AuthorizationOperationFactsV2("order.approve", Decimal("1"), "usd")
     with pytest.raises(ValueError, match="Unsupported Policy V2 fact shape"):
         AuthorizationOperationFactsV2("order.approve", attributes={"unsafe": ["mutable"]})
+
+
+def test_locked_classification_effective_interval_is_half_open() -> None:
+    start = datetime.now(UTC)
+    end = start + timedelta(minutes=1)
+    facts = PolicyClassificationFactsV2(
+        uuid4(),
+        "secret-v1",
+        "foundation.governance",
+        uuid4(),
+        "1",
+        True,
+        valid_from=start,
+        valid_until=end,
+    )
+    assert facts.is_effective(start)
+    assert not facts.is_effective(end)
 
 
 @pytest.mark.asyncio

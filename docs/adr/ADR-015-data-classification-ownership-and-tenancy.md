@@ -1,12 +1,32 @@
 # ADR-015: Data Classification Ownership and Tenancy
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Pending formal acceptance
+Decision date: 2026-09-24
 
 Approving roles required: Architecture Maintainer; Security Maintainer; Policy Maintainer; Data Governance Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Release Maintainer; Frontend Foundation Maintainer when Phase 5 UI classification consumption is contracted
 
-Approval pull request or commit: Pending
+Approval pull request or commit: [PR #25](https://github.com/sahinkhan/businessos/pull/25) — acceptance candidate; formal authority pending final exact-SHA owner acceptance attestation and merge to `main`
+
+Approved semantic proposal SHA: `25c9643b2a971a62e02c5e7ec15e87415f8342fc`
+
+Proposal owner attestation: [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/25#issuecomment-5808039324)
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`
+
+Independent human review: NOT PERFORMED
+
+Independent technical/read-only proposal review: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
+
+Exact proposal CI: [BusinessOS run 35956530352](https://github.com/sahinkhan/businessos/actions/runs/35956530352) — PASS (`python-quality`, `windows-typing`, `web-quality`)
+
+Cross-ADR architecture review: PASS
+
+Accepted prerequisites: ADR-014 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN; ADR-018 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN on [main `559ae04743c4e68b09595aa94d52768b71527183`](https://github.com/sahinkhan/businessos/commit/559ae04743c4e68b09595aa94d52768b71527183). These architecture prerequisites are satisfied; their Policy V2 and Platform/SDK runtime extensions remain NOT IMPLEMENTED.
+
+Implementation/certification gates carried forward: The canonical and tenant schemas, next forward Governance migration, FORCE RLS and grant narrowing, dirty-data preflight, safe v1/v2 compatibility transition, and Phase 5 integration remain NOT IMPLEMENTED. Implementation must preserve the hybrid global-base/tenant-extension model, monotonic security overlays, qualified no-shadow identities, historical resolution, Party's frozen boundary, and the Policy-owned classification port. No historical `gov_0001` or `gov_0002` rewrite is authorized. Phases 0–3 remain FINAL PASS / FROZEN; no general frozen-phase reopening occurred.
+
+Formal authority: PENDING final exact-SHA ADR-015 owner acceptance attestation and merge to `main`
 
 Supersedes: None
 

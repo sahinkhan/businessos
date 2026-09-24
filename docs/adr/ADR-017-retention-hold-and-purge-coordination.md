@@ -6,15 +6,29 @@ Decision date: 2026-09-24
 
 Approving roles required: Architecture Maintainer; Security Maintainer; Data Governance Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Release Maintainer; each affected Data Owning Domain Maintainer for its purge-facts/operation contract
 
-Approval pull request: [#27](https://github.com/sahinkhan/businessos/pull/27)
+Approval pull request: [#27](https://github.com/sahinkhan/businessos/pull/27) — MERGED as `c732c66b8cba83b2dc896c069f78b3766d4993dd`
 
 Approved semantic proposal SHA: `3fd1e2b34e727da6297f2c1346d53174e3d41d49`
 
+Final acceptance candidate SHA: `fcbc4b3fc7762652bad1502e07eaedf31e8e69ab`
+
 Proposal owner attestation: [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/27#issuecomment-5808045815) — Solo Maintainer Owner Attestation; independent human review NOT PERFORMED
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`
+
+Independent human review: NOT PERFORMED
 
 Proposal independent technical/read-only review: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
 
 Proposal exact-head CI: [35956550876](https://github.com/sahinkhan/businessos/actions/runs/35956550876) — PASS
+
+Final owner acceptance attestation: COMPLETE — [@sahinkhan's exact-candidate attestation](https://github.com/sahinkhan/businessos/pull/27#issuecomment-5813217450)
+
+Independent technical/read-only acceptance review: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
+
+Acceptance exact-head CI: [35991783982](https://github.com/sahinkhan/businessos/actions/runs/35991783982) — PASS (`python-quality`, `windows-typing`, `web-quality`)
+
+Accepted main merge SHA: `c732c66b8cba83b2dc896c069f78b3766d4993dd`
 
 Authoritative reconciliation baseline: [main `706bd1d4fffaef92cc32682c404d2c5b224ada28`](https://github.com/sahinkhan/businessos/commit/706bd1d4fffaef92cc32682c404d2c5b224ada28)
 
@@ -22,7 +36,7 @@ Accepted architecture prerequisites: ADR-014 — ACCEPTED / AUTHORITATIVE / EVID
 
 Implementation/certification gates carried forward: ADR-014 Policy V2, ADR-015 classification runtime, ADR-016 Audit V2, ADR-018 owner/provider runtime, retention-policy.v2, `RetentionSubjectFactsProvider`/`PurgeSubjectFacts`, purge-authority.v2, destructive-lifecycle.v2, entity/subject lock implementation, legal-hold serialization, v1 compatibility transition, and asynchronous external cleanup are NOT IMPLEMENTED. A new forward Governance migration is NOT CREATED; the dirty-data preflight is NOT EXECUTED. Before any destructive operation, implementation must certify trusted owner facts and exact requested action, one effective policy at the trusted UTC instant, same-UOW authority, tenant isolation, both hold/purge commit orders, and one deterministic combined lock order with ADR-010/011 and ADR-018 provider admission. V1 eligibility remains informational only and legacy destructive hooks cannot bypass v2. Historical `gov_0001`/`gov_0002` are not rewritten. Phases 0–3 remain FINAL PASS / FROZEN with no general reopening.
 
-Formal authority: PENDING final exact-SHA ADR-017 owner acceptance attestation and merge to main
+Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN
 
 Supersedes: None
 

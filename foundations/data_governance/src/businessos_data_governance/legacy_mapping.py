@@ -61,6 +61,7 @@ def preflight(connection: psycopg.Connection[Any]) -> dict[str, object]:
             (_LIMIT + 1,),
         ).fetchall()
         orphans: dict[str, int] = {}
+        inconsistent_references: dict[str, int] = {}
         for table in ("sensitive_field_tags", "retention_policies"):
             # Fixed allowlisted table names; never interpolate operator input.
             orphan_row = connection.execute(
@@ -71,6 +72,22 @@ def preflight(connection: psycopg.Connection[Any]) -> dict[str, object]:
             ).fetchone()
             assert orphan_row is not None
             orphans[table] = orphan_row["n"]
+            inconsistent_row = connection.execute(
+                f"SELECT count(*) AS n FROM platform_gov.{table} r "
+                "LEFT JOIN platform_gov.classification_legacy_mappings m "
+                "ON m.legacy_code = r.classification_code "
+                "WHERE (r.classification_code IS NOT NULL AND "
+                "(m.legacy_code IS NULL OR "
+                "r.classification_ref IS DISTINCT FROM m.qualified_ref OR "
+                "r.classification_version IS DISTINCT FROM m.definition_version OR "
+                "r.classification_definition_id IS DISTINCT FROM m.definition_id OR "
+                "(m.tenant_id IS NOT NULL AND r.tenant_id <> m.tenant_id))) "
+                "OR (r.classification_ref IS NOT NULL AND "
+                "(r.classification_version IS NULL OR "
+                "r.classification_definition_id IS NULL))"
+            ).fetchone()
+            assert inconsistent_row is not None
+            inconsistent_references[table] = inconsistent_row["n"]
         unresolved_row = connection.execute(
             "SELECT count(*) AS n FROM platform_gov.data_classifications d "
             "LEFT JOIN platform_gov.classification_legacy_mappings m "
@@ -102,11 +119,17 @@ def preflight(connection: psycopg.Connection[Any]) -> dict[str, object]:
         ]
         truncated = legacy_count > _LIMIT or len(collisions) > _LIMIT
         return {
-            "status": "BLOCK" if unresolved or collisions or any(orphans.values()) else "PASS",
+            "status": "BLOCK"
+            if unresolved
+            or collisions
+            or any(orphans.values())
+            or any(inconsistent_references.values())
+            else "PASS",
             "legacy_total": legacy_count,
             "unresolved_total": unresolved,
             "collision_sample": [dict(row) for row in collisions[:_LIMIT]],
             "orphan_counts": orphans,
+            "inconsistent_reference_counts": inconsistent_references,
             "truncated": truncated,
             "rows": output_rows,
             "note": (
@@ -284,8 +307,9 @@ def apply_reviewed_mapping(connection: psycopg.Connection[Any], path: Path) -> i
                 conflicting = connection.execute(
                     f"SELECT 1 FROM platform_gov.{table} WHERE classification_code = %s "
                     "AND classification_ref IS NOT NULL AND "
-                    "(classification_ref <> %s OR classification_version <> %s "
-                    "OR classification_definition_id <> %s) LIMIT 1",
+                    "(classification_ref IS DISTINCT FROM %s "
+                    "OR classification_version IS DISTINCT FROM %s "
+                    "OR classification_definition_id IS DISTINCT FROM %s) LIMIT 1",
                     (code, reference, version, definition_id),
                 ).fetchone()
                 if conflicting is not None:
@@ -300,7 +324,8 @@ def apply_reviewed_mapping(connection: psycopg.Connection[Any], path: Path) -> i
             if (
                 connection.execute(
                     f"SELECT 1 FROM platform_gov.{table} WHERE classification_code IS NOT NULL "
-                    "AND classification_ref IS NULL LIMIT 1"
+                    "AND (classification_ref IS NULL OR classification_version IS NULL "
+                    "OR classification_definition_id IS NULL) LIMIT 1"
                 ).fetchone()
                 is not None
             ):

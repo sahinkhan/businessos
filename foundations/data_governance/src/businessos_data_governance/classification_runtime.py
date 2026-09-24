@@ -254,6 +254,19 @@ class DataGovernanceClassificationV2:
                 raise _deny("Tenant classification changed during locked resolution")
             # The definition row serializes semantic-version writers.
             at = datetime.now(UTC)
+            if definition.base_ref is not None:
+                # A scheduled canonical version or overlay can turn over while
+                # the tenant row lock is pending. The admission locks acquired
+                # above are still held, so resolve the base again at this final
+                # instant without changing the canonical-then-tenant lock order.
+                base = await self._canonical(
+                    tenant_id,
+                    definition.base_ref,
+                    definition.base_ref[5:],
+                    transaction,
+                    at,
+                    False,
+                )
         versions = (
             await transaction.persistence.execute(
                 text(

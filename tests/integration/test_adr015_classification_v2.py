@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -27,6 +27,7 @@ from businessos_data_governance.module import (
 )
 from psycopg.rows import dict_row
 from pydantic import ValidationError
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -346,6 +347,104 @@ async def test_locked_resolution_observes_overlay_committed_while_waiting(
 
 @pytest.mark.integration
 @pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_locked_tenant_base_uses_final_instant_after_row_wait(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    tenant_id = uuid4()
+    canonical_id = uuid4()
+    tenant_definition_id = uuid4()
+    qualified_ref = f"tenant:{tenant_id}:LOCAL"
+    transition = datetime.now(UTC) + timedelta(seconds=4)
+    migration_url = postgres_database.migration_url.replace(
+        "postgresql+psycopg://", "postgresql://"
+    )
+    admin_url = postgres_database.administrator_url
+    engine = create_async_engine(postgres_database.runtime_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    backend_pid: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+    request = _context(tenant_id)
+
+    async def resolve() -> bool:
+        async with SQLAlchemyUnitOfWork(sessions, request.tenant) as uow:
+            pid = await uow.persistence.execute(text("SELECT pg_backend_pid()"))
+            backend_pid.set_result(pid.scalar_one())
+            result = await DataGovernanceClassificationV2().resolve_assignable(
+                qualified_ref, request, handler_transaction_view(uow)
+            )
+            return result.canonical_controls.mandatory_masking
+
+    task: asyncio.Task[bool] | None = None
+    try:
+        with psycopg.connect(migration_url) as writer:
+            writer.execute(
+                "INSERT INTO platform_gov.classification_definitions "
+                "(id, code, qualified_ref, name, is_active) "
+                "VALUES (%s, 'BASE', 'core:BASE', 'Base', true)",
+                (canonical_id,),
+            )
+            writer.execute(
+                "INSERT INTO platform_gov.classification_versions "
+                "(id, definition_id, version, valid_from, valid_until, "
+                "sensitivity_level, required_controls, restrictions, mandatory_masking) "
+                "VALUES (%s, %s, 1, %s, %s, 1, '{}', '{}', false)",
+                (uuid4(), canonical_id, datetime(2025, 1, 1, tzinfo=UTC), transition),
+            )
+            writer.execute(
+                "INSERT INTO platform_gov.classification_versions "
+                "(id, definition_id, version, valid_from, sensitivity_level, "
+                "required_controls, restrictions, mandatory_masking) "
+                "VALUES (%s, %s, 2, %s, 4, '{}', '{}', true)",
+                (uuid4(), canonical_id, transition),
+            )
+            writer.execute(
+                "INSERT INTO platform_gov.tenant_classifications "
+                "(id, tenant_id, code, qualified_ref, name, is_active, canonical_base_id) "
+                "VALUES (%s, %s, 'LOCAL', %s, 'Local', true, %s)",
+                (tenant_definition_id, tenant_id, qualified_ref, canonical_id),
+            )
+            writer.execute(
+                "INSERT INTO platform_gov.tenant_classification_versions "
+                "(id, tenant_id, definition_id, version, valid_from, "
+                "sensitivity_level, required_controls, restrictions, mandatory_masking) "
+                "VALUES (%s, %s, %s, 1, %s, 4, '{}', '{}', false)",
+                (uuid4(), tenant_id, tenant_definition_id, datetime(2025, 1, 1, tzinfo=UTC)),
+            )
+            writer.commit()
+            writer.execute(
+                "SELECT id FROM platform_gov.tenant_classifications WHERE id = %s FOR UPDATE",
+                (tenant_definition_id,),
+            )
+            task = asyncio.create_task(resolve())
+            pid = await asyncio.wait_for(backend_pid, timeout=10)
+            blocked = False
+            for _ in range(200):
+                with psycopg.connect(admin_url) as watcher:
+                    row = watcher.execute(
+                        "SELECT wait_event_type FROM pg_stat_activity WHERE pid = %s",
+                        (pid,),
+                    ).fetchone()
+                if row is not None and row[0] == "Lock":
+                    blocked = True
+                    break
+                await asyncio.sleep(0.02)
+            assert blocked and task is not None and not task.done()
+            await asyncio.sleep(max(0, (transition - datetime.now(UTC)).total_seconds() + 0.05))
+            writer.commit()
+        assert await asyncio.wait_for(task, timeout=10) is True
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await engine.dispose()
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
 def test_reviewed_legacy_mapping_is_atomic_and_never_infers_ownership(
     postgres_database: PostgreSQLTestDatabase, tmp_path: Path
 ) -> None:
@@ -409,6 +508,48 @@ def test_reviewed_legacy_mapping_is_atomic_and_never_infers_ownership(
             "SELECT classification_ref FROM platform_gov.sensitive_field_tags"
         ).fetchone()
         assert ref_row is not None and ref_row["classification_ref"] == "core:PERSONAL"
+
+        late_tag_id = uuid4()
+        connection.execute(
+            "INSERT INTO platform_gov.sensitive_field_tags "
+            "(id, tenant_id, entity_type, field_name, classification_code) "
+            "VALUES (%s, %s, 'record', 'late-field', 'personal')",
+            (late_tag_id, tenant_id),
+        )
+        connection.commit()
+        late_preflight = preflight(connection)
+        assert late_preflight["status"] == "BLOCK"
+        assert (
+            cast(dict[str, int], late_preflight["inconsistent_reference_counts"])[
+                "sensitive_field_tags"
+            ]
+            == 1
+        )
+        assert apply_reviewed_mapping(connection, file) == 1
+        assert preflight(connection)["status"] == "PASS"
+
+        connection.execute(
+            "UPDATE platform_gov.sensitive_field_tags "
+            "SET classification_version = NULL WHERE id = %s",
+            (late_tag_id,),
+        )
+        connection.commit()
+        partial_preflight = preflight(connection)
+        assert partial_preflight["status"] == "BLOCK"
+        assert (
+            cast(dict[str, int], partial_preflight["inconsistent_reference_counts"])[
+                "sensitive_field_tags"
+            ]
+            == 1
+        )
+        with pytest.raises(ValueError, match="conflicts"):
+            apply_reviewed_mapping(connection, file)
+        connection.execute(
+            "UPDATE platform_gov.sensitive_field_tags SET classification_version = 1 WHERE id = %s",
+            (late_tag_id,),
+        )
+        connection.commit()
+        assert preflight(connection)["status"] == "PASS"
 
         reviewed["reviewed_mappings"][0]["definition_id"] = str(uuid4())
         file.write_text(json.dumps(reviewed), encoding="utf-8")

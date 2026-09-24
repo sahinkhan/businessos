@@ -25,47 +25,107 @@ binds actor identity before computing the checksum.
 ## Proposed decision
 
 Audit publishes `foundation.audit.write-facade.v2` with a distinct
-`RecordAuditLogV2` command/result contract. The ordinary actual actor is the
-verified `(principal_type, principal_id)` in `RequestContext` through the
-frozen Identity binding. Trusted context also supplies tenant, correlation
-and trace identifiers, and the server-side event instant. If any required
-binding is missing or inconsistent, the write fails closed. Caller fields
-cannot override these values, including by repeating the same UUID with a
-different principal type. The caller supplies only event/action, bounded
-resource locator, authorized business evidence, and outcome; Audit validates
-the declared evidence shape and avoids sensitive payloads/secrets.
+`RecordAuditLogV2` boundary and two explicit ingestion paths. An ordinary
+authenticated request derives actual `(principal_type, principal_id)`, tenant,
+and authentication/session binding from verified `RequestContext` and the
+frozen Identity contract. Caller actor/type/tenant fields cannot override
+that identity; same-UUID/different-type claims fail. Audit supplies a trusted
+server event instant. The caller supplies only authorized action/resource,
+bounded business evidence, and outcome. Missing or inconsistent actor/tenant
+binding denies the write.
 
-Service account, device, job, and system events use typed identities already
-verified by the framework/Identity boundary. A caller cannot assert `system`
-or another service actor as a string. A framework-controlled bootstrap or
-internal migration event with no human actor must use an explicit trusted
-system-actor capability, scoped purpose, and recorded origin; it is never
-the default fallback for a failed identity binding.
+### Path A: current-transaction appender
+
+Audit owns and registers the public typed `AuditAppenderV2` provider port for
+modules that may depend on Audit, including Data Governance and later business
+modules. It accepts the caller's verified request/execution context, active
+restricted `HandlerTransaction`, and validated evidence, and appends an Audit
+row using **that transaction**. It does not invoke ordinary command dispatch,
+open a second unit of work, or commit. The owning handler retains the
+transaction and permission boundary; the appender verifies tenant/context,
+the calling module's declared Audit capability, and backend
+`foundation.audit.write` authority before append. Caller code cannot select
+an alternate appender provider: the framework resolves Audit ownership from
+trusted registration. If the owner rolls back, the Audit row
+and any outbox event roll back. The existing dispatcher creates a separate
+unit of work for each ordinary command, so `RecordAuditLogV2` cannot be
+implemented as a nested dispatched command for this path. The provider is
+resolved through the framework's existing dependency/provider mechanism;
+the design requires no frozen Phase 1 runtime change.
+
+### Path B: lower module outbox evidence
+
+Policy is a dependency of Audit and **must not call or depend on Audit**.
+For Policy-originated evidence, Policy emits a versioned security event into
+its own transactional outbox using the existing framework event contract.
+Audit, as an allowed downstream consumer of Policy, materializes an Audit row
+after commit with idempotency keyed to the immutable source event ID. The
+outbox event is transaction-bound evidence; the final Audit projection is
+asynchronous and cannot be described as a row committed in Policy's unit of
+work. Delivery failure leaves durable retryable outbox evidence and an
+observable materialization lag, not a fictional completed Audit row. The
+event payload carries authenticated origin provenance and a versioned schema,
+not caller-asserted actor fields. No Audit -> Governance, Policy -> Audit, or
+private cross-module import is introduced. Subject to acceptance of companion
+ADR-014, this path records Policy decisions; subject to ADR-017, Path A can
+record Governance purge actions.
+
+### Interactive, worker, and support actors
+
+The actual actor of a worker action is the **verified worker/service
+principal executing that attempt**, not the original triggering person.
+Current worker and job contexts do not themselves prove Identity binding:
+before v2 audit ingestion, an Audit/Identity-owned adapter at the consumer
+handler boundary verifies the executing service account against the
+registered Identity principal and trusted deployment credential, then binds
+it to that request/tenant through the existing Identity binding contract.
+The frozen worker's configured ID and event headers alone are insufficient;
+the adapter is a Phase 4 integration around the generic worker, not a change
+to worker context construction. If binding is absent, ingestion fails closed
+and the job/event remains retryable; no ambient `system` fallback is allowed.
+System maintenance likewise runs as a registered service-account principal
+with installation-scoped purpose from trusted runtime configuration/Identity
+registry, not a free-form `system` principal type or actor string (the frozen
+binding admits `user`, `service_account`, and `device`).
+
+An immutable internally produced event/job envelope may separately carry
+`originating_actor`, causation event ID, job/message ID, tenant, and origin
+authentication provenance. The producer binds origin from verified context
+at enqueue/publish time; an external or mutable header is not origin proof.
+Workers propagate only a verified internal envelope, and Audit validates its
+source/integrity and tenant before recording it. A retry records the current
+verified worker as actual actor and preserves the immutable origin/causation
+identity; it never invents a new human actor. One logical business event
+materializes once under event-ID idempotency; distinct attempts, if audited,
+have separate attempt IDs and outcomes without duplicating that logical
+event. The required envelope and binding are Phase 4 integration contracts,
+not a claim that frozen workers already supply them. If they cannot be
+integrated without modifying frozen runtime, implementation stops for a
+separate architecture decision.
 
 Support or administrative on-behalf-of activity records **both** the actual
-verified actor and the target `(principal_type, principal_id)` as a separate
-on-behalf-of subject. It records the authorization/grant reference, reason,
-scope, and time where the accepted support-access contract supplies them.
-The target never replaces the actual actor. Audit validates any claimed
-support context against a trusted Policy/Identity grant or framework evidence;
-unverified free text may be stored only as non-authoritative business detail.
-The v2 contract permits trusted Policy decisions proposed in
-ADR-014 and purge decisions
-proposed in ADR-017 to
-record evidence without making Audit an authorization oracle. Audit depends
-on public contracts, not private Policy, Governance, or Party tables.
+verified actor and target `(principal_type, principal_id)` separately. It
+records trusted grant reference, reason, scope, and time where the accepted
+Policy/Identity support contract supplies them. The target never replaces
+actual actor; free-text claims cannot establish a support grant. Audit may
+validate through public Policy evidence, consistent with its existing Policy
+dependency, and never reads Policy private tables.
 
-Audit appends its row in the caller's active framework-owned unit of work,
-and any published audit event uses the transactional outbox in that same
-transaction. No committed business action claims a durable audit record if
-its required audit write failed. Existing append-only/immutability controls
-remain. A versioned canonical integrity encoding includes tenant, actual
-typed actor, on-behalf-of typed subject and support references when present,
-trusted correlation/trace, action/resource/evidence, event instant, and the
-prior-chain checksum. Verification selects the correct encoding version for
-historical rows; it never recomputes legacy checksums using a new layout or
-silently treats old rows as v2 provenance. New on-behalf-of data is tamper
-evident. Secrets and raw sensitive values are excluded or minimized.
+Correlation ID and trace context are diagnostic/causal metadata, not
+authenticated principal identity or authorization authority. Inbound
+client-provided IDs may be validated/sanitized, namespaced or replaced, and
+recorded with a source marker. Their presence in trusted `RequestContext`
+does not make the original string an authenticated claim. They may be
+integrity-covered without being promoted to actor provenance.
+
+Existing append-only/immutability controls remain. A versioned deterministic
+canonical checksum encoding covers tenant/scope, actual typed actor,
+on-behalf-of subject and support reference, verified origin actor and
+causation where present, job/message/attempt identity, action/resource,
+outcome/evidence, event instant, correlation/trace values **and source**, and
+the prior-chain checksum. Verification selects the correct encoding version
+for historical rows and never rewrites or falsely upgrades legacy actor
+assurance. Secrets and raw sensitive values are excluded or minimized.
 
 ### V1 transition
 

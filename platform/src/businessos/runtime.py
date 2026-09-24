@@ -21,6 +21,7 @@ from businessos.modules import (
 )
 from businessos.permissions import PermissionRegistry
 from businessos.providers import ProviderRegistry
+from businessos.resources import ResourceOwnershipRegistry
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class FrameworkRuntime:
     metadata: MetadataRegistry
     permissions: PermissionRegistry
     providers: ProviderRegistry
+    resources: ResourceOwnershipRegistry
     features: FeatureFlagRegistry
     events: EventBus
     event_consumer: DurableEventConsumer
@@ -59,4 +61,7 @@ class FrameworkRuntime:
             jobs=self.jobs,
             gate=self.contributions,
             generation=generation,
+            manifest=self.modules.get(owner).manifest,
+            resources=self.resources,
+            coordinator_approved=self.modules.is_approved_coordinator(owner),
         )

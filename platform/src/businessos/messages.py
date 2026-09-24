@@ -24,6 +24,7 @@ from businessos.persistence import (
     UnitOfWork,
     UnitOfWorkFactory,
 )
+from businessos.resources import ResourceOwnershipRegistry, ResourceTransactionScope
 from businessos.security import Authorizer
 from businessos.telemetry import dispatch_span
 
@@ -161,6 +162,7 @@ class _OwnedHandler:
     handler: Handler
     generation: ContributionGeneration | None
     permission: str | None
+    coordinator_token: object | None = None
 
 
 class HandlerRegistry:
@@ -177,6 +179,7 @@ class HandlerRegistry:
         *,
         generation: ContributionGeneration | None = None,
         permission: str | None = None,
+        coordinator_token: object | None = None,
     ) -> None:
         if message_type in self._handlers:
             current_owner = self._handlers[message_type].owner
@@ -188,6 +191,7 @@ class HandlerRegistry:
             cast(Handler, handler),
             generation,
             permission,
+            coordinator_token,
         )
 
     def get(self, message: Message) -> Handler:
@@ -451,12 +455,16 @@ class MessageDispatcher:
         event_bus: EventBus,
         gate: ContributionGate | None = None,
         authorizer: Authorizer | None = None,
+        *,
+        resources: ResourceOwnershipRegistry | None = None,
     ) -> None:
         self.commands = HandlerRegistry("command", gate)
         self.queries = HandlerRegistry("query", gate)
         self.events = event_bus
         self._unit_of_work_factory = unit_of_work_factory
         self._authorizer = authorizer
+        self._gate = gate
+        self.resources = resources
 
     async def command(
         self,
@@ -464,17 +472,37 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
+        ResourceTransactionScope.reject_nested_dispatch_if_leased()
         with bind_request_context(context), dispatch_span("command", type(message).__name__):
             registered = self.commands.resolve(message)
             async with self.commands.admitted(registered):
                 await self._authorize(context, registered.permission)
                 unit_of_work = self._unit_of_work(context)
-                async with unit_of_work:
-                    handling = HandlingContext(
-                        context, dependencies, handler_transaction_view(unit_of_work)
-                    )
-                    result = await self.commands.invoke_registered(registered, message, handling)
-                    await unit_of_work.commit()
+                if self._gate is None:
+                    async with unit_of_work:
+                        handling = HandlingContext(
+                            context, dependencies, handler_transaction_view(unit_of_work)
+                        )
+                        result = await self.commands.invoke_registered(
+                            registered, message, handling
+                        )
+                        await unit_of_work.commit()
+                else:
+                    async with ResourceTransactionScope(
+                        self._gate,
+                        context,
+                        registered.owner,
+                        registered.generation,
+                        registered.coordinator_token,
+                    ) as resource_scope:
+                        async with unit_of_work:
+                            transaction = handler_transaction_view(unit_of_work)
+                            resource_scope.bind_transaction(transaction)
+                            handling = HandlingContext(context, dependencies, transaction)
+                            result = await self.commands.invoke_registered(
+                                registered, message, handling
+                            )
+                            await unit_of_work.commit()
                 return result
 
     async def query(
@@ -483,16 +511,30 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
+        ResourceTransactionScope.reject_nested_dispatch_if_leased()
         with bind_request_context(context), dispatch_span("query", type(message).__name__):
             registered = self.queries.resolve(message)
             async with self.queries.admitted(registered):
                 await self._authorize(context, registered.permission)
                 unit_of_work = self._unit_of_work(context)
-                async with unit_of_work:
-                    handling = HandlingContext(
-                        context, dependencies, handler_transaction_view(unit_of_work)
-                    )
-                    return await self.queries.invoke_registered(registered, message, handling)
+                if self._gate is None:
+                    async with unit_of_work:
+                        handling = HandlingContext(
+                            context, dependencies, handler_transaction_view(unit_of_work)
+                        )
+                        return await self.queries.invoke_registered(registered, message, handling)
+                async with ResourceTransactionScope(
+                    self._gate,
+                    context,
+                    registered.owner,
+                    registered.generation,
+                    registered.coordinator_token,
+                ) as resource_scope:
+                    async with unit_of_work:
+                        transaction = handler_transaction_view(unit_of_work)
+                        resource_scope.bind_transaction(transaction)
+                        handling = HandlingContext(context, dependencies, transaction)
+                        return await self.queries.invoke_registered(registered, message, handling)
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:
         if permission is None:

@@ -1,5 +1,6 @@
 """Validated, versioned module manifest contract."""
 
+import re
 from enum import StrEnum
 from typing import Self
 
@@ -46,6 +47,39 @@ class ModuleContractDeclaration(BaseModel):
         return self
 
 
+_RESOURCE_NAMESPACE = re.compile(r"[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+\Z", re.ASCII)
+
+
+class ResourceOwnership(BaseModel):
+    """Canonical, versioned entity ownership claimed by one module."""
+
+    model_config = ConfigDict(frozen=True)
+
+    resource_namespace: str
+    owner_module_id: str
+    contract_version: str
+    aliases: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_canonical_identity(self) -> Self:
+        if not _RESOURCE_NAMESPACE.fullmatch(self.resource_namespace):
+            raise ValueError("resource namespace must use canonical lowercase ASCII segments")
+        if not self.resource_namespace.startswith(self.owner_module_id + "."):
+            raise ValueError("resource namespace root must equal owner module ID")
+        try:
+            Version(self.contract_version)
+        except InvalidVersion as exc:
+            raise ValueError("resource contract version must be valid") from exc
+        if len(set(self.aliases)) != len(self.aliases):
+            raise ValueError("resource aliases must be unique")
+        for alias in self.aliases:
+            if not _RESOURCE_NAMESPACE.fullmatch(alias):
+                raise ValueError("resource alias must use canonical lowercase ASCII segments")
+            if alias == self.resource_namespace:
+                raise ValueError("resource alias cannot equal its canonical namespace")
+        return self
+
+
 class ModuleManifest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -64,6 +98,7 @@ class ModuleManifest(BaseModel):
     api_contracts: tuple[ModuleContractDeclaration, ...] = ()
     event_contracts: tuple[ModuleContractDeclaration, ...] = ()
     public_contracts: tuple[ModuleContractDeclaration, ...] = ()
+    resource_ownership: tuple[ResourceOwnership, ...] = ()
     ui_contributions: tuple[str, ...] = ()
     configuration_scopes: tuple[str, ...] = ()
     localization_resources: tuple[str, ...] = ()
@@ -110,6 +145,15 @@ class ModuleManifest(BaseModel):
             values = getattr(self, name)
             if len(values) != len(set(values)) or any(not value.strip() for value in values):
                 raise ValueError(f"{name} must contain unique nonempty values")
+        claims: set[tuple[str, str]] = set()
+        for declaration in self.resource_ownership:
+            if declaration.owner_module_id != self.module_id:
+                raise ValueError("resource owner must equal manifest module ID")
+            for namespace in (declaration.resource_namespace, *declaration.aliases):
+                key = (namespace, declaration.contract_version)
+                if key in claims:
+                    raise ValueError("duplicate or colliding resource ownership declaration")
+                claims.add(key)
         return self
 
     def supports(self, *, platform: str, sdk: str, python: str) -> bool:

@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol, runtime_checkable
 
-from businessos.activation import ContributionGate, ContributionGeneration
+from businessos.activation import ContributionGate, ContributionGeneration, ContributionState
 from businessos.context import RequestContext
 from businessos.contracts import ContractRegistry, PublicContract
 from businessos.di import (
@@ -31,6 +31,11 @@ from businessos.metadata import MetadataDeclaration, MetadataRegistry
 from businessos.modules.manifest import ModuleManifest
 from businessos.permissions import PermissionDeclaration, PermissionRegistry
 from businessos.providers import ProviderRegistry
+from businessos.resources import (
+    ResourceOwnerFactsProvider,
+    ResourceOwnerOperationProvider,
+    ResourceOwnershipRegistry,
+)
 
 RouteHandler = Callable[[Request, RequestDependencyScope], Awaitable[Response]]
 
@@ -66,6 +71,9 @@ class ModuleRegistration:
         jobs: JobHandlerRegistry,
         gate: ContributionGate,
         generation: ContributionGeneration,
+        manifest: ModuleManifest | None = None,
+        resources: ResourceOwnershipRegistry | None = None,
+        coordinator_approved: bool = False,
     ) -> None:
         self.owner = owner
         self.generation = generation
@@ -80,10 +88,20 @@ class ModuleRegistration:
         self._middleware = middleware
         self._jobs = jobs
         self._gate = gate
+        self._manifest = manifest
+        self._resources = resources
+        self._coordinator_token: object | None = None
+        if coordinator_approved:
+            if resources is None:
+                raise RuntimeError("Coordinator admission requires the resource registry")
+            self._coordinator_token = object()
+            resources.authorize_coordinator_generation(generation, self._coordinator_token)
         self._finished = False
 
     def publish(self) -> None:
         self._ensure_open()
+        if self._manifest is not None and self._resources is not None:
+            self._resources.stage(self._manifest, self.generation)
         self._gate.publish(self.generation)
 
     async def deactivate(self, *, timeout_seconds: float) -> None:
@@ -124,6 +142,8 @@ class ModuleRegistration:
         self._metadata.remove_owner_generation(self.generation)
         self._permissions.remove_owner_generation(self.generation)
         self._providers.remove_owner_generation(self.generation)
+        if self._resources is not None:
+            self._resources.remove_owner_generation(self.generation)
         self._features.remove_owner_generation(self.generation)
         self._messages.commands.remove_owner_generation(self.generation)
         self._messages.queries.remove_owner_generation(self.generation)
@@ -223,6 +243,26 @@ class ModuleRegistration:
             generation=self.generation,
         )
 
+    def resource_owner_facts(
+        self, namespace: str, version: str, provider: ResourceOwnerFactsProvider
+    ) -> None:
+        self._resource_provider(namespace, version, "facts", provider)
+
+    def resource_owner_operation(
+        self, namespace: str, version: str, provider: ResourceOwnerOperationProvider
+    ) -> None:
+        self._resource_provider(namespace, version, "operation", provider)
+
+    def _resource_provider(self, namespace: str, version: str, kind: str, provider: object) -> None:
+        self._ensure_open()
+        if self._gate.state(self.generation) is not ContributionState.STAGED:
+            raise RuntimeError("Resource providers must register before activation")
+        if self._manifest is None or self._resources is None:
+            raise RuntimeError("Resource ownership is unavailable to this registration")
+        self._resources.register_provider(
+            self._manifest, self.generation, namespace, version, kind, provider
+        )
+
     def feature(self, flag: FeatureFlag) -> None:
         self._ensure_open()
         self._features.add(self.owner, flag, generation=self.generation)
@@ -242,6 +282,7 @@ class ModuleRegistration:
             handler,
             generation=self.generation,
             permission=permission,
+            coordinator_token=self._coordinator_token,
         )
 
     def query[Q: Query](

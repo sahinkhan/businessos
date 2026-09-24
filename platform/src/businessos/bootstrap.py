@@ -14,6 +14,7 @@ from businessos.dependencies import (
     EVENT_PUBLISHER,
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE,
+    RESOURCE_OWNER_RESOLVER,
     UNIT_OF_WORK_FACTORY,
 )
 from businessos.di import Container, DependencyKey, DependencyResolver, DependencyScope
@@ -34,9 +35,11 @@ from businessos.modules import (
     ModuleRegistry,
     UpgradeCoordinator,
 )
+from businessos.modules.artifact import ApprovedModuleArtifact
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 from businessos.providers import ProviderRegistry, S3ObjectStorageProvider, tenant_bound_provider
+from businessos.resources import ResourceOwnershipRegistry
 from businessos.runtime import FrameworkRuntime
 from businessos.security import (
     Authorizer,
@@ -85,6 +88,8 @@ def create_application(
     context_resolver_factory: ContextResolverFactory | None = None,
     authorizer: Authorizer | None = None,
     infrastructure_providers: Mapping[str, object] | None = None,
+    approved_module_artifacts: Mapping[str, ApprovedModuleArtifact] | None = None,
+    resource_coordinator_ids: frozenset[str] = frozenset(),
 ) -> BusinessOSApplication:
     """Compose the protected runtime without importing business modules."""
     resolved_settings = settings or get_settings()
@@ -92,6 +97,7 @@ def create_application(
     version = resolved_settings.app_version or runtime_version()
     configure_telemetry(service_name="businessos", service_version=version)
     contributions = ContributionGate()
+    resources = ResourceOwnershipRegistry(contributions, coordinator_ids=resource_coordinator_ids)
     router = Router(contributions)
     middleware = MiddlewareRegistry(contributions)
     container = Container()
@@ -110,6 +116,7 @@ def create_application(
         event_bus,
         contributions,
         resolved_authorizer,
+        resources=resources,
     )
     event_consumer = DurableEventConsumer(unit_of_work_factory, event_bus)
     container.register(DATABASE, lambda _: database, scope=DependencyScope.SINGLETON)
@@ -123,6 +130,9 @@ def create_application(
         MESSAGE_DISPATCHER,
         lambda _: message_dispatcher,
         scope=DependencyScope.SINGLETON,
+    )
+    container.register(
+        RESOURCE_OWNER_RESOLVER, lambda _: resources, scope=DependencyScope.SINGLETON
     )
     contracts = ContractRegistry(contributions)
     metadata = MetadataRegistry(contributions)
@@ -166,7 +176,12 @@ def create_application(
                 )
     features = FeatureFlagRegistry(contributions)
     jobs = JobHandlerRegistry(contributions, resolved_authorizer)
-    module_registry = ModuleRegistry(platform_version=version, sdk_version="0.1.0")
+    module_registry = ModuleRegistry(
+        platform_version=version,
+        sdk_version="0.1.0",
+        approved_artifacts=approved_module_artifacts,
+        coordinator_ids=resource_coordinator_ids,
+    )
     for module in modules:
         module_registry.add(module)
 
@@ -192,6 +207,7 @@ def create_application(
         metadata=metadata,
         permissions=permissions,
         providers=providers,
+        resources=resources,
         features=features,
         events=event_bus,
         event_consumer=event_consumer,
@@ -207,8 +223,8 @@ def create_application(
         version,
         module_snapshot=lambda: tuple(
             {
-                "module_id": registered.module.manifest.module_id,
-                "version": registered.module.manifest.version,
+                "module_id": registered.manifest.module_id,
+                "version": registered.manifest.version,
                 "state": registered.state.value,
                 "error": registered.error,
             }

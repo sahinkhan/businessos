@@ -6,6 +6,7 @@ from businessos.modules.manifest import (
     ModuleDependency,
     ModuleExecutionType,
     ModuleManifest,
+    ResourceOwnership,
 )
 from businessos.modules.registry import (
     LifecycleManager,
@@ -25,6 +26,7 @@ __all__ = [
     "ModuleRegistration",
     "ModuleRegistry",
     "ModuleState",
+    "ResourceOwnership",
     "UpgradeCoordinator",
     "discover_context_resolver_factory",
     "discover_modules",

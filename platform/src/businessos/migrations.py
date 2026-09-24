@@ -358,7 +358,7 @@ class MigrationCoordinator:
             )
         ]
         for registered in self._modules.ordered():
-            manifest = registered.module.manifest
+            manifest = registered.manifest
             if not manifest.migrations:
                 continue
             if manifest.migration_namespace is None:  # guarded by manifest validation
@@ -1246,7 +1246,7 @@ class MigrationCoordinator:
                 )
 
     def _module_version(self, module_id: str) -> str:
-        return self._modules.get(module_id).module.manifest.version
+        return self._modules.get(module_id).manifest.version
 
     @staticmethod
     def _revision_manifest(
@@ -1279,7 +1279,7 @@ class MigrationCoordinator:
         }.issubset(columns)
 
         for registered in self._modules.entries():
-            manifest = registered.module.manifest
+            manifest = registered.manifest
             if not manifest.migrations:
                 continue
             sources = tuple(source for source in plan.sources if source.owner == manifest.module_id)

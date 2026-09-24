@@ -40,7 +40,10 @@ class ApprovedModuleArtifact:
             )
         ):
             raise ConfigurationError("Resource claim lacks matching approved installation evidence")
-        if manifest.module_id.startswith(("foundation.", "businessos.")) and not self.first_party:
+        if (
+            manifest.module_id.startswith(("foundation.", "business.", "businessos."))
+            and not self.first_party
+        ):
             raise ConfigurationError("Reserved first-party module ID requires first-party approval")
         for ownership in manifest.resource_ownership:
             for alias in ownership.aliases:

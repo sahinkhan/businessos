@@ -31,7 +31,8 @@ preserve the allocated module ID and publisher/package across process restarts,
 disablement, retirement, and upgrades. A module manifest, entry point, tenant
 API, or dynamic tenant configuration is not an approved grant source. The
 runtime rejects missing, revoked, mismatched, or reused replacement evidence.
-Reserved `foundation.*` and `businessos.*` IDs require first-party approval.
+Reserved `foundation.*`, `business.*`, and `businessos.*` IDs require
+first-party approval.
 Every alias requires a separate exact alias/canonical/version approval in the
 grant, including aliases using a legacy root.
 

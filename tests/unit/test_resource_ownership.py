@@ -148,6 +148,13 @@ def test_installation_grant_is_required_and_matches_loaded_module() -> None:
 
 
 def test_reserved_id_and_replacement_preserve_allocation() -> None:
+    business = OwnerModule("business.sales")
+    with pytest.raises(ConfigurationError, match="first-party"):
+        ModuleRegistry(
+            platform_version="0.1.0",
+            sdk_version="0.1.0",
+            approved_artifacts={"business.sales": _grant(business)},
+        ).add(business)
     first = OwnerModule("foundation.party")
     with pytest.raises(ConfigurationError, match="first-party"):
         ModuleRegistry(

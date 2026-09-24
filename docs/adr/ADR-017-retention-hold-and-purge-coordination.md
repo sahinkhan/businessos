@@ -47,58 +47,109 @@ preflight must identify existing overlaps and missing categories with record
 identifiers; it fails the migration until owners resolve them. No automatic
 winner, deletion, or shortening of an existing obligation is allowed.
 
-The record-owning module implements a versioned public
-`RetentionSubjectFactsProvider`/`PurgeSubjectFacts` port. Within its active
-unit of work it supplies trusted tenant, stable record locator, creation or
-applicable effective date, retention category/classification reference,
-current state, and whether delete/anonymize/archive is supported. Data
-Governance does not privately query another module's tables. Caller-supplied
-`record_age_days` is never authority. Age and eligibility are computed from
-owner facts and the trusted current instant using the policy's stated
-calendar/instant semantics; the implementation must define date-boundary
-tests for timezone and leap-day cases. Unknown owner facts or policy deny.
+The public `RetentionSubjectKey` identifies trusted tenant, canonical owner
+module/resource namespace, entity/resource type, and stable record ID **before**
+retention category is known. Owner identity and facts-provider registration
+are verified against the trusted module/manifest ownership map, not caller
+input. The record-owning module implements the typed public
+`RetentionSubjectFactsProvider`/`PurgeSubjectFacts` port. Within the active
+owner unit of work and under an owner-record lock or equivalent concurrency
+protection, it supplies trusted tenant/key, aware UTC `retention_anchor_at`,
+current category, lifecycle state, and supported delete/anonymize/archive
+mode. Data Governance does not privately read owner tables; caller-supplied
+`record_age_days` is never authority. Missing, mismatched, or stale owner
+facts deny.
+
+For v2's existing integer `retention_period_days`, a day is exactly 24
+elapsed hours. `eligible_at = retention_anchor_at +
+retention_period_days * 24 hours`; purge becomes time-eligible only when the
+trusted UTC decision instant is **at or after** `eligible_at`. All instants
+are aware UTC. This fixes the boundary independently of local calendar dates,
+timezones, daylight-saving changes, and leap days. Jurisdiction-specific
+calendar-period retention requires an additive/versioned semantic extension,
+not reinterpretation of v2. Unknown anchor or policy denies.
 
 The destructive owner command invokes
 `foundation.governance.purge-authority.v2` in the **same framework unit of
-work/transaction** as the delete, anonymization, or archive. The authority
-port resolves the current policy and facts, verifies retention elapsed and
-no applicable legal hold, and returns a transaction-scoped decision object
-valid only in that unit of work. The owner performs the approved action
-before that transaction commits. No Boolean or decision token is reusable
-in another transaction. Long external object-store or search cleanup uses a
-transactional outbox after committed authoritative state; failures remain
-retryable and must not falsely claim full erasure.
+work/transaction** as delete, anonymization, or archive. The authority port
+uses the restricted active `HandlerTransaction`, not nested ordinary command
+dispatch, which would open another unit of work. It resolves current policy
+and locked owner facts, verifies retention and all applicable holds, and
+returns a decision valid only for that subject, operation, and transaction.
+The owner executes exactly that mode before commit. No Boolean or decision
+token is reusable in another transaction. A worker/job carries only the
+subject key and operation/request identity; at execution it reruns full v2
+coordination. Long external object-store or search cleanup uses the
+transactional outbox after authoritative state commits, with truthful
+pending/completed status and retryable failure.
 
 ### Legal-hold serialization
 
-Policy creation/change, entity-wide hold placement/release, record hold
-placement/release, and purge all acquire a deterministic tenant/resource/
-category **scope** transaction advisory lock. Record-specific operations
-then acquire a tenant/resource/category/record lock. They lock relevant
-policy/hold rows and finally the owner record in that order. Both advisory
-keys exist even when no policy or hold row exists, so a phantom policy or
-hold insert cannot race a purge. The scope lock deliberately serializes
-destructive decisions with policy changes and entity-wide holds; throughput
-must be measured, and a finer protocol needs another reviewed decision.
-Hold placement checks the owner record under the same transaction so it
-cannot claim to protect a record already purged. If hold commits first,
-purge waits and denies. If purge
-commits first, hold waits and must reject or explicitly record a post-purge
-nonprotective outcome; it cannot claim a hold protected a deleted record.
-Rollback releases all locks. A tenant is part of every lock key, predicate,
-RLS check, and evidence record; another tenant's hold never controls the
-decision. Deadlock, timeout, and retried transaction behavior must be
-tested. No lock is held across asynchronous external cleanup.
+One mandatory lock order governs participating paths:
+
+1. A category-independent entity-scope gate keyed by trusted tenant, owner,
+   and entity type. Purges, record hold changes, and owner fact/category
+   changes take its shared transaction advisory form; an entity-wide hold placement/release takes
+   its exclusive form. Where shared advisory locking is unavailable, all
+   take the exclusive form. The gate exists without a hold row and prevents
+   an entity-wide/category-free phantom hold from racing any category purge.
+2. A category-independent transaction advisory subject lock derived only
+   from `RetentionSubjectKey`. Every destructive attempt, record hold
+   placement/release, and change to owner category, retention anchor, or
+   destruction-relevant lifecycle facts takes it before owner-row work.
+3. The owner locks the record or obtains equivalent serialization and
+   returns current facts, including category. It must re-read after any wait;
+   category cannot change concurrently because category mutators take the
+   same subject lock. Owner mutation never starts from a stale category.
+4. After category is known, the authority takes the applicable
+   tenant/resource/category policy-scope coordination lock, then locks or
+   reads current policy and applicable hold/destructive-state rows. Policy
+   create/update/deactivate takes that same policy-scope lock, so policy
+   replacement and purge have a serial order. Policy-only operations do not
+   acquire subject locks after the policy lock.
+
+An operation needing only a later lock must never acquire an earlier lock
+afterward. The implementation audit must verify the actual database lock
+graph, including ADR-010/011 Policy locks if a protected command uses both.
+No category is used to select the subject or entity gate. Entity-wide holds
+are explicit `ALL`/null-category holds and apply regardless of a record's
+category; applicable category-specific holds are checked additionally.
+An entity-wide hold operation uses the exclusive gate before changing its
+hold rows. A record hold checks the locked owner record so it cannot claim
+protection of an already purged subject. Hold-first commit makes purge wait
+then deny; purge-first commit makes a later hold reject or record an explicit
+post-purge nonprotective outcome. Release takes the same gates and only a
+committed release removes protection. Two purgers of one subject serialize
+on the subject lock; the second re-reads owner state and returns an explicit
+already removed/anonymized, not-found, or documented idempotent result rather
+than executing destruction twice. Rollback releases locks and preserves the
+pre-transaction authority state. Tenant is present in every lock key,
+predicate, RLS check, and evidence record; another tenant's hold cannot
+affect eligibility. Deadlock, timeout, retry, and cross-tenant tests are
+required. No lock spans asynchronous external cleanup.
 
 ### V1 transition and migration
 
 `foundation.governance.retention-policy.v2` publishes the effective-policy
 read/write semantics; `foundation.governance.purge-authority.v2` publishes
-the transaction-scoped destructive authority. The existing
+the transaction-scoped destructive authority. A distinct versioned
+`foundation.governance.destructive-lifecycle.v2` contract makes the owner
+mutation path explicit: Governance coordinates authority and locks, while
+the record-owning module performs delete/anonymize/archive in its own
+transaction. Governance never directly deletes another module's rows. The existing
 `retention-policy.v1`/`CheckPurgeEligibilityQuery` may remain only as a
 deprecated **informational** check. Its response cannot authorize deletion,
 anonymization, archival, or a worker job; destructive consumers must move to
-v2. If an existing v1 route is used as destructive authority and cannot be
+v2. The existing `foundation.governance.export-delete-hooks.v1` is split by
+effect: non-destructive export may remain during its ordinary compatibility
+window, but `DataGovernanceHooks.anonymize_subject` and any delete hook
+cannot execute directly as destructive authority after v2 activation. A
+v1-shaped compatibility adapter may exist only if it invokes the full v2
+transaction-bound coordinator inside the owning module's current unit of
+work; where that cannot be guaranteed, the destructive v1 operation is
+disabled and consumers migrate to `destructive-lifecycle.v2`. Neither the
+old hook result nor an old `CheckPurgeEligibility` Boolean can bypass v2.
+If an existing v1 route is used as destructive authority and cannot be
 safely constrained, Security and Release Maintainers must approve an urgent
 security/legal exception to its support window, naming affected consumers,
 mitigation, notice, and expiry. Otherwise v1 remains supported through at
@@ -109,13 +160,19 @@ exception and sets no release number.
 
 A new forward Governance revision (next available `gov_` slot) adds policy
 effective intervals, category identity, exclusion/uniqueness enforcement,
-and any coordination indexes or RLS changes. It must preserve all existing
-policy/hold rows and meanings, run the overlap/category preflight, and use
+an explicit hold `ALL`/category representation, and any coordination indexes
+or RLS changes. Existing category-free holds migrate to `ALL` without losing
+scope. It must preserve all existing policy, hold, and consent rows and
+meanings, run the overlap/category preflight, and use
 expand/contract conversion with an explicit owner-approved mapping. It does
-not rewrite `gov_0001` or `gov_0002`. Policy/hold changes and destructive
-actions emit trusted audit evidence through the v2 facade proposed by
-ADR-016 in the same transaction;
-Audit records the decision but does not grant purge authority.
+not rewrite `gov_0001` or `gov_0002`. Subject to acceptance of companion
+ADR-016, Data Governance may use Audit-owned `AuditAppenderV2` in its
+current unit of work because Governance already depends on Audit. If a
+higher owner cannot legally depend on Audit, its versioned outbox event is
+transaction-bound evidence and Audit materializes later; the proposal must
+not claim the Audit row was committed with that owner action. Audit records
+the decision but grants no purge authority, and Audit never depends on
+Governance.
 
 ## Consequences and impact
 

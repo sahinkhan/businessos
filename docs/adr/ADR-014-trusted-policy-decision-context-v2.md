@@ -48,19 +48,54 @@ effective intervals. Historical policy simulation, if needed, is a separate
 privileged versioned read contract; its result is never an authorization token
 for a live operation.
 
-Policy owns evaluation and its role/permission data. Each resource-owning
-module supplies authoritative typed facts through a versioned public
-`AuthorizationResourceFactsProvider` contract registered at the framework
-boundary. Given trusted tenant, resource type, record locator, and active unit
-of work, it resolves company, legal entity, site, business unit, owner, record
-state, classification, and other approved ABAC facts. Facts are fetched in
-the same transaction/snapshot as the protected operation where a changing
-fact could affect authorization; the owning command must re-evaluate or
-serialize a mutable decision before commit. Unknown resource types, absent
-records, stale facts, provider failures, or ambiguous scope deny. Transport
-attributes are advisory only and cannot override owner facts. The provider
-contract is owned/published by the lower Policy/SDK boundary and implemented
-by owning modules; Policy never imports Party or other private repositories.
+Policy owns evaluation, its role/permission data, and the versioned public
+`AuthorizationResourceFactsProvider` interface. A higher resource-owning
+module implements that interface; Policy imports no owner repository. Each
+protected resource namespace (for example `sales.order`) has exactly one
+canonical owner module identity established by trusted module/manifest
+registration. The framework registry binds provider registration to both the
+namespace and that canonical owner identity, and rejects a non-owner,
+duplicate, or colliding registration. Policy resolves the provider from this
+trusted registry. A request cannot select a provider ID, module ID, or owner
+identity, even when it supplies a resource locator. Missing or conflicting
+ownership/provider registration denies authorization; arbitrary SDK provider
+registration alone is not proof of resource ownership.
+
+The provider returns an immutable typed `AuthorizationResourceFactsV2`
+projection bound to the trusted tenant, namespace, resource and record IDs,
+owner module identity, and the active transaction when commit-bound. It may
+include only owner-declared authoritative company, legal entity, site,
+business unit, record owner, lifecycle state, classification reference, and
+explicitly published ABAC attributes. It is not a transport-controlled dict.
+Policy verifies the projection matches the trusted registry binding and
+requested record. Missing records, stale/mismatched projections, provider
+failures, or ambiguous scope deny. HTTP/API facts remain advisory and cannot
+replace this projection.
+
+Presentation/read decisions use verified context and owner-resolved facts,
+but need not hold a long-lived write lock. Their results are advisory for UI
+and reads, never reusable commit authorization for a mutation. For mutation
+or approval, the owner command obtains its framework-owned unit of work,
+acquires the owner-required record lock or equivalent concurrency protection,
+resolves facts inside **that same transaction**, invokes Policy v2 there,
+performs exactly the evaluated operation, and commits. The provider must use
+the caller's restricted active transaction view and cannot open another
+authority transaction. If protected facts change before commit, the owner
+re-evaluates under the lock or fails; rollback invalidates the decision. No
+decision token from another request, transaction, job, or read response is
+destructive authority. Owner record locks, Policy delegation/authority locks
+under ADR-010/011, and any other participating locks need one documented
+deterministic acquisition order at implementation review; a conflicting
+order fails the implementation gate.
+
+An immutable typed `AuthorizationOperationFactsV2` accompanies commit-bound
+decisions. The owning handler constructs it from the normalized operation it
+will actually commit, including action, amount and currency, quantity, target
+state, or other published attributes when applicable. Policy does not trust
+raw HTTP/body amounts. The owner must prove within its unit of work that the
+value evaluated equals the value committed; any subsequent change invalidates
+the decision and requires re-evaluation or failure. This applies to approval
+limits as well as ordinary authorization.
 
 ### Public contracts
 
@@ -69,18 +104,29 @@ Policy publishes `foundation.policy.authorization.v2`,
 `foundation.policy.approval-authority.v2` with distinct v2 query/result types.
 Each records the trusted typed principal, trusted tenant, decision instant,
 resolved scope/fact provenance, decision, and reason code in a bounded evidence
-shape without exposing sensitive values. Permission declarations retain their
-separate keys; a v2 marker alone grants no permission. The Policy owner and
-SDK/Contract Maintainer define the exact wire schema and compatibility range
-before implementation. Framework authorization entry points must consume v2
-for certification; they cannot silently route to v1.
+shape without exposing sensitive values. Each v2 contract distinguishes
+presentation/read evaluation from commit-bound mutation evaluation; approval
+authority protecting an operation is always commit-bound. Permission
+declarations retain their separate keys; a v2 marker alone grants no
+permission. Policy and SDK/Contract maintainers publish the concrete typed
+schema and compatibility ranges before implementation. Framework authorization
+entry points must consume v2 for certification; they cannot silently route to
+v1.
 
 For field access, an explicit allow is required for classified or sensitive
 fields. Missing, unknown, or ambiguous classification, field tag, record fact,
 or rule fails closed. An unclassified field is not assumed public merely
-because no rule was found. The Data Governance classification resolution
-contract proposed by ADR-015
-is a public typed input; Policy cannot query its private tables. Phase 3 Party
+because no rule was found. Policy owns a separate public
+`PolicyClassificationFactsProvider` port. Subject to acceptance of companion
+ADR-015, Data Governance implements and registers this port using its own
+classification resolver because it already depends on Policy. Policy accepts
+only the typed, tenant-bound effective classification projection from that
+trusted registered provider; registration is bound to the canonical
+classification owner identity from the trusted manifest, and duplicate or
+non-owner registration fails closed. It neither depends on Data Governance nor reads
+its private tables. An unavailable, ambiguous, or mismatched provider denies
+classified-field access. ADR-015 owns storage and composition, not the Policy
+port or an upward dependency. Phase 3 Party
 sensitive-field redaction and `foundation.party.sensitive.read` remain
 authoritative. A Policy decision cannot broaden that Party contract, and Party
 does not gain a private dependency on Policy.
@@ -106,7 +152,9 @@ be built, the unsafe v1 operation is disabled at the Phase 4 certification
 checkpoint; Security and Release Maintainers must explicitly approve the
 shortened behavior/support exception with affected consumers, mitigation,
 notice, and expiry. No unsafe v1 route is retained for compatibility.
-Consumers move to v2 typed context and owner-facts registration. Release notes
+Destructive consumers cannot treat any v1 presentation or cached Boolean
+decision as commit authority; they move to v2 commit-bound evaluation before
+certification. Consumers move to v2 typed context and owner-facts registration. Release notes
 identify the first v2/deprecation release and tested consumer ranges. The v1
 symbol's earliest ordinary removal is after at least the next Stable platform
 minor following replacement availability, subject to downstream regression,
@@ -134,10 +182,15 @@ later business/vertical modules without upward dependency or private imports.
 Tenant isolation and sensitive-field protection improve, while existing v1
 consumers may need code changes. No schema or data migration is mandated by
 this proposal; implementation must assess any Policy-owned migration and
-perform compatibility and tenant-isolation tests. Decision evidence may be
-written through Audit v2 as proposed by
-ADR-016; Audit must not become a
-prerequisite for Policy's authorization calculation.
+perform compatibility and tenant-isolation tests. Policy cannot depend on or
+call Audit: Audit already depends on Policy. For Policy-originated evidence,
+Policy emits a versioned event into the transactional outbox in its own unit
+of work; subject to acceptance of companion ADR-016, Audit consumes and
+materializes it after commit. The outbox record, not an immediate Audit row,
+is the transaction-bound evidence until materialization. Higher modules with
+an allowed Audit dependency may instead use the Audit-owned appender in their
+current unit of work. There is no Policy -> Audit or Policy -> Data Governance
+module edge and no Party -> Policy edge.
 
 ## Alternatives considered
 

@@ -51,7 +51,7 @@ for a live operation.
 Policy owns evaluation, its role/permission data, and the versioned public
 `AuthorizationResourceFactsProvider` interface. A higher resource-owning
 module implements that interface; Policy imports no owner repository. Each
-protected resource namespace (for example `sales.order`) has exactly one
+protected resource namespace (for example `business.sales.order`) has exactly one
 canonical owner module identity established through the neutral resource
 ownership boundary proposed in ADR-018, **subject to acceptance of ADR-018**.
 The present frozen manifest and generic provider registry do not themselves
@@ -132,9 +132,11 @@ because no rule was found. Policy owns a separate public
 ADR-015, Data Governance implements and registers this port using its own
 classification resolver because it already depends on Policy. Policy accepts
 only the typed, tenant-bound effective classification projection from that
-trusted registered provider; registration is bound to the canonical
-classification owner identity from the trusted manifest, and duplicate or
-non-owner registration fails closed. It neither depends on Data Governance nor reads
+trusted registered provider; **subject to acceptance of ADR-018**, registration
+is bound through its owner-scoped registry to the canonical classification
+owner identity and active generation, and duplicate or non-owner registration
+fails closed. The frozen manifest alone does not prove classification resource
+ownership. Policy neither depends on Data Governance nor reads
 its private tables. An unavailable, ambiguous, or mismatched provider denies
 classified-field access. ADR-015 owns storage and composition, not the Policy
 port or an upward dependency. Phase 3 Party

@@ -1,12 +1,28 @@
 # ADR-016: Trusted Audit Provenance and Write Contract V2
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Pending formal acceptance
+Decision date: 2026-09-24
 
-Approving roles required: Architecture Maintainer; Security Maintainer; Audit Owning Domain Maintainer; Identity Maintainer; SDK/Contract Maintainer; Policy Maintainer for support-access evidence; Release Maintainer; Migration Safety Reviewer if the provenance schema changes
+Approving roles required: Architecture Maintainer; Security Maintainer; Audit Owning Domain Maintainer; Identity Maintainer; SDK/Contract Maintainer; Policy Maintainer; Release Maintainer; Migration Safety Reviewer
 
-Approval pull request or commit: Pending
+Approval pull request: [#26](https://github.com/sahinkhan/businessos/pull/26)
+
+Approved semantic proposal SHA: `176cd4c49d6c787d4d841cd44bfcbd6269a29f9f`
+
+Proposal owner attestation: [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/26#issuecomment-5808042233) — Solo Maintainer Owner Attestation; independent human review NOT PERFORMED
+
+Proposal independent technical/read-only review: PASS — Critical 0; High 0; Medium 0; Low 0
+
+Proposal exact-head CI: [35953594084](https://github.com/sahinkhan/businessos/actions/runs/35953594084) — PASS
+
+Authoritative reconciliation baseline: [main `0b88bdfcc9be257096f62b07467eb61b72c6a185`](https://github.com/sahinkhan/businessos/commit/0b88bdfcc9be257096f62b07467eb61b72c6a185)
+
+Accepted prerequisites and compatibility: ADR-014 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN; ADR-015 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN; ADR-018 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN. ADR-017 remains PROPOSED and is not a current acceptance prerequisite.
+
+Implementation/certification gates carried forward: Audit write-facade v2, `AuditAppenderV2`, Policy security-outbox materialization, trusted worker/service-principal binding adapter, immutable origin/causation envelope, on-behalf-of provenance v2, checksum/integrity v2, and safe v1 shim are NOT IMPLEMENTED; a new forward Audit migration is NOT CREATED. ADR-014 Policy V2, ADR-015 classification runtime, and the ADR-018 Platform/SDK extension are NOT IMPLEMENTED. The Audit appender must use trusted provider registration and generation admission, and implementation must stop for a separate governed architecture decision if satisfying trusted binding or provider lifecycle requires a frozen runtime change. Phases 0–3 remain FINAL PASS / FROZEN with no general reopening.
+
+Formal authority: PENDING final exact-SHA ADR-016 owner acceptance attestation and merge to main
 
 Supersedes: None
 

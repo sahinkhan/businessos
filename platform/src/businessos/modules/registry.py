@@ -32,6 +32,7 @@ class ModuleState(StrEnum):
 @dataclass(slots=True)
 class RegisteredModule:
     module: BusinessOSModule
+    manifest: ModuleManifest
     state: ModuleState = ModuleState.AVAILABLE
     error: str | None = None
     registration: ModuleRegistration | None = None
@@ -175,30 +176,32 @@ class ModuleRegistry:
         self._allocations: dict[str, tuple[str, str]] = {}
 
     def add(self, module: BusinessOSModule) -> None:
-        module_id = module.manifest.module_id
+        manifest = module.manifest
+        module_id = manifest.module_id
         if module_id in self._modules:
             raise ConflictError(f"Module already registered: {module_id}")
-        if not module.manifest.supports(
+        if not manifest.supports(
             platform=str(self.platform_version),
             sdk=str(self.sdk_version),
             python=str(self.python_version),
         ):
             raise ConfigurationError(f"Module is incompatible with this runtime: {module_id}")
-        if module.manifest.resource_ownership or module_id in self._coordinator_ids:
+        if manifest.resource_ownership or module_id in self._coordinator_ids:
             grant = self._approved_artifacts.get(module_id)
             if grant is None:
                 raise ConfigurationError("Resource or coordinator claim requires approved artifact")
-            grant.verify(module, module.manifest)
+            grant.verify(module, manifest)
             allocation = (grant.publisher, grant.package_identity)
             previous = self._allocations.get(module_id)
             if previous is not None and previous != allocation:
                 raise ConfigurationError("Retired module ID allocation cannot transfer publisher")
             self._allocations[module_id] = allocation
-        self._modules[module_id] = RegisteredModule(module=module)
+        self._modules[module_id] = RegisteredModule(module=module, manifest=manifest)
 
     def replace(self, module: BusinessOSModule, artifact: ApprovedModuleArtifact) -> None:
         """Stage a disabled module's reviewed replacement under its allocated ID."""
-        module_id = module.manifest.module_id
+        manifest = module.manifest
+        module_id = manifest.module_id
         current = self.get(module_id)
         if (
             current.lock.locked()
@@ -210,20 +213,22 @@ class ModuleRegistry:
         previous_grant = self._approved_artifacts.get(module_id)
         if previous_grant is None or previous_grant.install_identity == artifact.install_identity:
             raise ConfigurationError("Replacement requires fresh approved artifact evidence")
-        artifact.verify(module, module.manifest)
+        artifact.verify(module, manifest)
         if (artifact.publisher, artifact.package_identity) != self._allocations.get(module_id):
             raise ConfigurationError("Replacement cannot transfer a module ID allocation")
-        if not module.manifest.supports(
+        if not manifest.supports(
             platform=str(self.platform_version),
             sdk=str(self.sdk_version),
             python=str(self.python_version),
         ):
             raise ConfigurationError("Replacement is incompatible with this runtime")
-        if Version(module.manifest.version) < Version(current.module.manifest.version):
+        if Version(manifest.version) < Version(current.manifest.version):
             raise ConfigurationError("Replacement cannot downgrade the module")
-        _validate_manifest_upgrade(current.module.manifest, module.manifest)
+        _validate_manifest_upgrade(current.manifest, manifest)
         self._approved_artifacts[module_id] = artifact
-        self._modules[module_id] = RegisteredModule(module=module, state=ModuleState.INSTALLED)
+        self._modules[module_id] = RegisteredModule(
+            module=module, manifest=manifest, state=ModuleState.INSTALLED
+        )
 
     def get(self, module_id: str) -> RegisteredModule:
         registered = self._modules.get(module_id)
@@ -233,7 +238,7 @@ class ModuleRegistry:
 
     def ordered(self) -> tuple[RegisteredModule, ...]:
         manifests = {
-            module_id: registered.module.manifest for module_id, registered in self._modules.items()
+            module_id: registered.manifest for module_id, registered in self._modules.items()
         }
         _validate_resource_claims(manifests.values())
         return tuple(
@@ -275,9 +280,9 @@ class LifecycleManager:
         try:
             for registered in self._registry.ordered():
                 was_enabled = registered.state is ModuleState.ENABLED
-                await self._enable(registered.module.manifest.module_id)
+                await self._enable(registered.manifest.module_id)
                 if not was_enabled and registered.state is ModuleState.ENABLED:
-                    enabled.append(registered.module.manifest.module_id)
+                    enabled.append(registered.manifest.module_id)
         except BaseException as activation_error:
             rollback_errors: list[BaseException] = []
             for module_id in reversed(enabled):
@@ -308,8 +313,10 @@ class LifecycleManager:
             registration = self._registration_factory(module_id)
             start_attempted = False
             try:
-                self._validate_active_dependencies(registered.module.manifest)
-                self._validate_capabilities(registered.module.manifest)
+                if registered.module.manifest != registered.manifest:
+                    raise ConfigurationError("Module manifest changed after artifact admission")
+                self._validate_active_dependencies(registered.manifest)
+                self._validate_capabilities(registered.manifest)
                 await registered.module.register(registration)
                 start_attempted = True
                 await registered.module.start()
@@ -370,7 +377,7 @@ class LifecycleManager:
             for registered in reversed(self._registry.ordered()):
                 try:
                     await self._disable(
-                        registered.module.manifest.module_id,
+                        registered.manifest.module_id,
                         validate_dependents=False,
                     )
                 except BaseException as exc:
@@ -463,12 +470,11 @@ class LifecycleManager:
 
     def _reject_enabled_dependents(self, module_id: str) -> None:
         dependents = tuple(
-            candidate.module.manifest.module_id
+            candidate.manifest.module_id
             for candidate in self._registry.entries()
             if candidate.state is ModuleState.ENABLED
             and any(
-                dependency.module_id == module_id
-                for dependency in candidate.module.manifest.dependencies
+                dependency.module_id == module_id for dependency in candidate.manifest.dependencies
             )
         )
         if dependents:
@@ -489,19 +495,19 @@ class UpgradeCoordinator:
         if len(target_map) != len(target_list):
             raise ConflictError("Upgrade targets must contain unique module IDs")
         current_entries = self._registry.entries()
-        current_ids = {registered.module.manifest.module_id for registered in current_entries}
+        current_ids = {registered.manifest.module_id for registered in current_entries}
         unknown = set(target_map) - current_ids
         if unknown:
             raise ConfigurationError(f"Upgrade targets contain unknown modules: {sorted(unknown)}")
         proposed = {
-            registered.module.manifest.module_id: target_map.get(
-                registered.module.manifest.module_id,
-                registered.module.manifest,
+            registered.manifest.module_id: target_map.get(
+                registered.manifest.module_id,
+                registered.manifest,
             )
             for registered in current_entries
         }
         for registered in current_entries:
-            current = registered.module.manifest
+            current = registered.manifest
             target = proposed[current.module_id]
             if Version(target.version) < Version(current.version):
                 raise ConfigurationError(

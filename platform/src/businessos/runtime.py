@@ -61,6 +61,6 @@ class FrameworkRuntime:
             jobs=self.jobs,
             gate=self.contributions,
             generation=generation,
-            manifest=self.modules.get(owner).module.manifest,
+            manifest=self.modules.get(owner).manifest,
             resources=self.resources,
         )

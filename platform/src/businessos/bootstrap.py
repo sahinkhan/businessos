@@ -223,8 +223,8 @@ def create_application(
         version,
         module_snapshot=lambda: tuple(
             {
-                "module_id": registered.module.manifest.module_id,
-                "version": registered.module.manifest.version,
+                "module_id": registered.manifest.module_id,
+                "version": registered.manifest.version,
                 "state": registered.state.value,
                 "error": registered.error,
             }

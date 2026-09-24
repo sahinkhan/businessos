@@ -258,6 +258,26 @@ async def test_owner_scoped_registration_follows_lifecycle_generation() -> None:
     await app.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_manifest_swap_after_admission_cannot_create_resource_claim() -> None:
+    module = OwnerModule()
+    module.manifest = _manifest(resource_ownership=())
+    app = create_application(
+        Settings(
+            environment="test",
+            database_url="postgresql+psycopg://test:test@db/test",
+            database_readiness_enabled=False,
+        ),
+        modules=(module,),
+    )
+    module.manifest = _manifest()
+    with pytest.raises(ConfigurationError, match="manifest changed"):
+        await app.startup()
+    assert app.runtime is not None
+    with pytest.raises(NotFoundError):
+        app.runtime.resources.resolve_owner("example_owner.record", "1")
+
+
 def test_generic_provider_is_not_resource_owner_authority() -> None:
     gate = ContributionGate()
     ordinary = ProviderRegistry(gate)

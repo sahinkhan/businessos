@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
+from pydantic import ValidationError
 
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
 from businessos.modules.artifact import ApprovedModuleArtifact
@@ -176,7 +177,10 @@ class ModuleRegistry:
         self._allocations: dict[str, tuple[str, str]] = {}
 
     def add(self, module: BusinessOSModule) -> None:
-        manifest = module.manifest
+        try:
+            manifest = ModuleManifest.model_validate(module.manifest.model_dump())
+        except ValidationError as exc:
+            raise ConfigurationError("Module manifest failed admission validation") from exc
         module_id = manifest.module_id
         if module_id in self._modules:
             raise ConflictError(f"Module already registered: {module_id}")
@@ -200,7 +204,12 @@ class ModuleRegistry:
 
     def replace(self, module: BusinessOSModule, artifact: ApprovedModuleArtifact) -> None:
         """Stage a disabled module's reviewed replacement under its allocated ID."""
-        manifest = module.manifest
+        try:
+            manifest = ModuleManifest.model_validate(module.manifest.model_dump())
+        except ValidationError as exc:
+            raise ConfigurationError(
+                "Module replacement manifest failed admission validation"
+            ) from exc
         module_id = manifest.module_id
         current = self.get(module_id)
         if (

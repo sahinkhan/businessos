@@ -164,6 +164,48 @@ def test_installation_grant_is_required_and_matches_loaded_module() -> None:
     ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0").add(ordinary)
 
 
+def test_copied_manifest_cannot_claim_another_modules_canonical_root() -> None:
+    module = OwnerModule()
+    foreign = ResourceOwnership(
+        resource_namespace="foundation.party.party",
+        owner_module_id="foundation.party",
+        contract_version="1",
+    )
+    module.manifest = module.manifest.model_copy(update={"resource_ownership": (foreign,)})
+    registry = ModuleRegistry(
+        platform_version="0.1.0",
+        sdk_version="0.1.0",
+        approved_artifacts={"example_owner": _grant(module)},
+    )
+    with pytest.raises(ConfigurationError, match="admission validation"):
+        registry.add(module)
+    assert tuple(registry.entries()) == ()
+
+    original = OwnerModule()
+    replacement_registry = ModuleRegistry(
+        platform_version="0.1.0",
+        sdk_version="0.1.0",
+        approved_artifacts={"example_owner": _grant(original)},
+    )
+    replacement_registry.add(original)
+    replacement_registry.get("example_owner").state = ModuleState.INSTALLED
+    with pytest.raises(ConfigurationError, match="admission validation"):
+        replacement_registry.replace(
+            module, _grant(module, install_identity="operator-approved-install-2")
+        )
+    assert replacement_registry.get("example_owner").module is original
+
+    gate = ContributionGate()
+    resources = ResourceOwnershipRegistry(gate)
+    generation = gate.reserve("example_owner")
+    with pytest.raises(ConfigurationError, match="canonical owner"):
+        resources.stage(module.manifest, generation)
+    with pytest.raises(ConfigurationError, match="owner's declaration"):
+        resources.register_provider(
+            module.manifest, generation, "foundation.party.party", "1", "facts", FactsProvider()
+        )
+
+
 def test_reserved_id_and_replacement_preserve_allocation() -> None:
     business = OwnerModule("business.sales")
     with pytest.raises(ConfigurationError, match="first-party"):

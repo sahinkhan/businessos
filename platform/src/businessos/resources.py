@@ -304,6 +304,11 @@ class ResourceOwnershipRegistry:
             raise ConfigurationError("Resource generation owner mismatch")
         new_names: set[tuple[str, str]] = set()
         for ownership in manifest.resource_ownership:
+            if (
+                ownership.owner_module_id != generation.owner
+                or not ownership.resource_namespace.startswith(generation.owner + ".")
+            ):
+                raise ConfigurationError("Resource declaration must belong to its canonical owner")
             for name in (ownership.resource_namespace, *ownership.aliases):
                 key = (name, ownership.contract_version)
                 if key in new_names or key in self._bindings or key in self._aliases:
@@ -336,7 +341,12 @@ class ResourceOwnershipRegistry:
             ),
             None,
         )
-        if ownership is None or generation.owner != manifest.module_id:
+        if (
+            ownership is None
+            or generation.owner != manifest.module_id
+            or ownership.owner_module_id != generation.owner
+            or not namespace.startswith(generation.owner + ".")
+        ):
             raise ConfigurationError("Resource provider requires this owner's declaration")
         required = ("read_facts",) if kind == "facts" else ("validate_operation", "apply_operation")
         if not all(callable(getattr(provider, name, None)) for name in required):

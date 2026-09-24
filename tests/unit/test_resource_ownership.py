@@ -559,6 +559,8 @@ async def test_provider_lease_survives_method_return_until_outer_commit() -> Non
         handle_holder.append(handle)
         assert (await handle.read_facts()).record_id == locator.record_id
         assert gate.in_flight(owner) == 1
+        with pytest.raises(ConfigurationError, match="Nested message dispatch"):
+            await dispatcher.query(ReadOwner(), handling.request, handling.dependencies)
         return "done"
 
     dispatcher.commands.register(

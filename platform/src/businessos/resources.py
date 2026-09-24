@@ -186,6 +186,19 @@ class ResourceTransactionScope:
             raise ConfigurationError("Resource use requires the trusted dispatcher transaction")
         return scope
 
+    @classmethod
+    def reject_nested_dispatch_if_leased(cls) -> None:
+        scope = _current_scope.get()
+        if (
+            scope is not None
+            and not scope._closed
+            and asyncio.current_task() is scope._task
+            and scope._admitted
+        ):
+            raise ConfigurationError(
+                "Nested message dispatch cannot leave an admitted resource transaction"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class AdmittedResourceProvider:

@@ -72,7 +72,9 @@ The dispatcher owns a transaction admission scope. A provider generation is
 admitted once per transaction and held through the outer unit of work's commit
 or rollback and cleanup. Disable stops new admissions and waits for those
 leases before removing contributions. Cached handles check their exact
-transaction and registration on every use.
+transaction and registration on every use. Once a resource lease is held,
+nested message dispatch in that task is rejected so owner work cannot silently
+move to a second unit of work.
 
 ## Compatibility and follow-up
 

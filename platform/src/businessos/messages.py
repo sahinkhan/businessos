@@ -472,6 +472,7 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
+        ResourceTransactionScope.reject_nested_dispatch_if_leased()
         with bind_request_context(context), dispatch_span("command", type(message).__name__):
             registered = self.commands.resolve(message)
             async with self.commands.admitted(registered):
@@ -510,6 +511,7 @@ class MessageDispatcher:
         context: RequestContext,
         dependencies: RequestDependencyScope,
     ) -> object:
+        ResourceTransactionScope.reject_nested_dispatch_if_leased()
         with bind_request_context(context), dispatch_span("query", type(message).__name__):
             registered = self.queries.resolve(message)
             async with self.queries.admitted(registered):

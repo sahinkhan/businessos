@@ -30,6 +30,20 @@ class ResourceLocator:
     record_id: UUID
     tenant_id: UUID
 
+    def __post_init__(self) -> None:
+        if not _valid_locator_identity(self):
+            raise ConfigurationError("Resource locator requires exact canonical identity types")
+
+
+def _valid_locator_identity(locator: ResourceLocator) -> bool:
+    return (
+        type(locator) is ResourceLocator
+        and type(locator.namespace) is str
+        and type(locator.contract_version) is str
+        and type(locator.record_id) is UUID
+        and type(locator.tenant_id) is UUID
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class ResourceOwnerFacts:
@@ -42,6 +56,15 @@ class ResourceOwnerFacts:
     facts: Mapping[str, object]
 
     def __post_init__(self) -> None:
+        if (
+            type(self.tenant_id) is not UUID
+            or type(self.namespace) is not str
+            or type(self.record_id) is not UUID
+            or type(self.owner_module_id) is not str
+            or type(self.contract_version) is not str
+            or type(self.lifecycle) is not str
+        ):
+            raise ConfigurationError("Owner facts require exact canonical identity types")
         object.__setattr__(self, "facts", _freeze_facts(self.facts))
 
 
@@ -221,8 +244,17 @@ class AdmittedResourceProvider:
         self._registry.verify_locator(self._locator, self._request, self.binding)
 
     def _check_facts(self, facts: ResourceOwnerFacts) -> ResourceOwnerFacts:
-        if not isinstance(cast(object, facts), ResourceOwnerFacts):
+        if type(facts) is not ResourceOwnerFacts:
             raise ConfigurationError("Owner facts provider returned an invalid projection")
+        if (
+            type(facts.tenant_id) is not UUID
+            or type(facts.namespace) is not str
+            or type(facts.record_id) is not UUID
+            or type(facts.owner_module_id) is not str
+            or type(facts.contract_version) is not str
+            or type(facts.lifecycle) is not str
+        ):
+            raise ConfigurationError("Owner facts require exact canonical identity types")
         ownership = self.binding.ownership
         if (
             facts.tenant_id != self._locator.tenant_id
@@ -404,6 +436,8 @@ class ResourceOwnershipRegistry:
         if kind not in {"facts", "operation"}:
             raise NotFoundError("Unsupported resource provider kind")
         scope = ResourceTransactionScope.current(request, transaction)
+        if not _valid_locator_identity(locator):
+            raise ConfigurationError("Resource locator requires exact canonical identity types")
         binding = self.resolve_owner(locator.namespace, locator.contract_version)
         self.verify_locator(locator, request, binding)
         key = (binding.ownership.resource_namespace, locator.contract_version, kind)
@@ -442,6 +476,8 @@ class ResourceOwnershipRegistry:
     def verify_locator(
         self, locator: ResourceLocator, request: RequestContext, binding: ResourceOwnerBinding
     ) -> None:
+        if not _valid_locator_identity(locator):
+            raise ConfigurationError("Resource locator requires exact canonical identity types")
         ownership = binding.ownership
         if (
             request.tenant is None

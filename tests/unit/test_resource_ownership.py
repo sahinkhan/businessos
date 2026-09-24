@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import replace
 from types import TracebackType
 from typing import Self, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -521,6 +521,50 @@ class OperationProvider:
         self, locator: ResourceLocator, action: str, request: RequestContext, transaction: object
     ) -> None:
         return None
+
+
+def test_resource_identity_rejects_equality_spoofing() -> None:
+    record_a = uuid4()
+    record_b = uuid4()
+    tenant_id = uuid4()
+
+    class DeceptiveRecordId(UUID):
+        def __hash__(self) -> int:
+            return hash(record_a)
+
+        def __eq__(self, other: object) -> bool:
+            return other == record_a or super().__eq__(other)
+
+    deceptive_id = DeceptiveRecordId(str(record_b))
+    assert deceptive_id == record_a
+    assert UUID(str(deceptive_id)) == record_b
+    with pytest.raises(ConfigurationError, match="exact canonical identity"):
+        ResourceLocator("example_owner.record", "1", deceptive_id, tenant_id)
+    with pytest.raises(ConfigurationError, match="exact canonical identity"):
+        ResourceOwnerFacts(
+            tenant_id=tenant_id,
+            namespace="example_owner.record",
+            record_id=deceptive_id,
+            owner_module_id="example_owner",
+            contract_version="1",
+            lifecycle="current",
+            facts={},
+        )
+
+    forged = object.__new__(ResourceLocator)
+    object.__setattr__(forged, "namespace", "example_owner.record")
+    object.__setattr__(forged, "contract_version", "1")
+    object.__setattr__(forged, "record_id", deceptive_id)
+    object.__setattr__(forged, "tenant_id", tenant_id)
+    gate = ContributionGate()
+    resources = ResourceOwnershipRegistry(gate)
+    owner = gate.reserve("example_owner")
+    resources.stage(_manifest(), owner)
+    gate.publish(owner)
+    request = RequestContext(tenant=TenantContext(uuid4(), tenant_id, uuid4()))
+    with pytest.raises(ConfigurationError, match="exact canonical identity"):
+        binding = resources.resolve_owner("example_owner.record", "1")
+        resources.verify_locator(forged, request, binding)
 
 
 class UseOwner(Command):

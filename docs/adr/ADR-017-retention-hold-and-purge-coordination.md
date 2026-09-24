@@ -50,10 +50,11 @@ winner, deletion, or shortening of an existing obligation is allowed.
 The public `RetentionSubjectKey` identifies trusted tenant, canonical owner
 module/resource namespace, entity/resource type, and stable record ID **before**
 retention category is known. Owner identity and facts-provider registration
-are verified against the trusted module/manifest ownership map, not caller
-input. The record-owning module implements the typed public
+are verified through the neutral canonical resource ownership boundary
+proposed in ADR-018, **subject to acceptance of ADR-018**, not caller input
+or the frozen generic provider registry alone. The record-owning module implements the typed public
 `RetentionSubjectFactsProvider`/`PurgeSubjectFacts` port. Within the active
-owner unit of work and under an owner-record lock or equivalent concurrency
+coordinator unit of work and under an owner-record lock or equivalent concurrency
 protection, it supplies trusted tenant/key, aware UTC `retention_anchor_at`,
 current category, lifecycle state, and supported delete/anonymize/archive
 mode. Data Governance does not privately read owner tables; caller-supplied
@@ -69,19 +70,39 @@ timezones, daylight-saving changes, and leap days. Jurisdiction-specific
 calendar-period retention requires an additive/versioned semantic extension,
 not reinterpretation of v2. Unknown anchor or policy denies.
 
-The destructive owner command invokes
-`foundation.governance.purge-authority.v2` in the **same framework unit of
-work/transaction** as delete, anonymization, or archive. The authority port
-uses the restricted active `HandlerTransaction`, not nested ordinary command
-dispatch, which would open another unit of work. It resolves current policy
-and locked owner facts, verifies retention and all applicable holds, and
-returns a decision valid only for that subject, operation, and transaction.
-The owner executes exactly that mode before commit. No Boolean or decision
-token is reusable in another transaction. A worker/job carries only the
+The destructive lifecycle request enters a Data Governance-owned coordinator,
+not a universal owner command calling Governance. Subject to acceptance of
+ADR-018, Governance resolves and admits the canonical owner's neutral
+operation provider. This avoids Party -> Governance -> Policy -> Party: Party
+implements the lower neutral owner contract without importing Governance.
+The coordinator invokes `foundation.governance.purge-authority.v2` in the
+**same framework unit of work/transaction** as archive, anonymization, or
+purge. The authority port and owner provider use the restricted active
+`HandlerTransaction`, not nested ordinary command dispatch, which would open
+another unit of work. The owner provider locks its own record and returns
+current facts; Governance resolves current policy and holds and authorizes
+only the requested operation for that subject and transaction. The owner
+validates its own lifecycle/invariants and executes exactly that operation
+before the outer commit. Governance does not issue SQL against owner-private
+tables. No Boolean or decision token is reusable in another transaction. A
+worker/job carries only the
 subject key and operation/request identity; at execution it reruns full v2
 coordination. Long external object-store or search cleanup uses the
 transactional outbox after authoritative state commits, with truthful
 pending/completed status and retryable failure.
+
+The requested operation uses the current `ExpiryAction` values `archive`,
+`anonymize`, and `purge` (`purge` is the destructive delete action). Time
+eligibility is necessary but does not authorize another action. The locked
+effective policy's `action_on_expiry` **must equal** the requested operation;
+an approved versioned policy compatibility/substitution rule would have to be
+explicit and separately reviewed. There is no implicit escalation:
+`archive` policy plus `purge` request denies, as does `anonymize` policy plus
+`purge` request. A `purge` policy plus `purge` request continues only after
+all other eligibility checks. The owner provider must independently confirm
+that the exact requested action is supported for the locked record's current
+lifecycle. Both policy permission **and** owner capability are required;
+either mismatch denies.
 
 ### Legal-hold serialization
 
@@ -135,8 +156,9 @@ read/write semantics; `foundation.governance.purge-authority.v2` publishes
 the transaction-scoped destructive authority. A distinct versioned
 `foundation.governance.destructive-lifecycle.v2` contract makes the owner
 mutation path explicit: Governance coordinates authority and locks, while
-the record-owning module performs delete/anonymize/archive in its own
-transaction. Governance never directly deletes another module's rows. The existing
+the record-owning module performs delete/anonymize/archive against its own
+data in that same transaction through the ADR-018 neutral owner-operation boundary. Governance
+never directly deletes another module's rows. The existing
 `retention-policy.v1`/`CheckPurgeEligibilityQuery` may remain only as a
 deprecated **informational** check. Its response cannot authorize deletion,
 anonymization, archival, or a worker job; destructive consumers must move to
@@ -144,9 +166,9 @@ v2. The existing `foundation.governance.export-delete-hooks.v1` is split by
 effect: non-destructive export may remain during its ordinary compatibility
 window, but `DataGovernanceHooks.anonymize_subject` and any delete hook
 cannot execute directly as destructive authority after v2 activation. A
-v1-shaped compatibility adapter may exist only if it invokes the full v2
-transaction-bound coordinator inside the owning module's current unit of
-work; where that cannot be guaranteed, the destructive v1 operation is
+v1-shaped compatibility adapter may exist only if it enters the full v2
+Governance-owned coordinator, including the ADR-018 owner provider, in one
+framework unit of work; where that cannot be guaranteed, the destructive v1 operation is
 disabled and consumers migrate to `destructive-lifecycle.v2`. Neither the
 old hook result nor an old `CheckPurgeEligibility` Boolean can bypass v2.
 If an existing v1 route is used as destructive authority and cannot be
@@ -166,11 +188,12 @@ scope. It must preserve all existing policy, hold, and consent rows and
 meanings, run the overlap/category preflight, and use
 expand/contract conversion with an explicit owner-approved mapping. It does
 not rewrite `gov_0001` or `gov_0002`. Subject to acceptance of companion
-ADR-016, Data Governance may use Audit-owned `AuditAppenderV2` in its
-current unit of work because Governance already depends on Audit. If a
-higher owner cannot legally depend on Audit, its versioned outbox event is
-transaction-bound evidence and Audit materializes later; the proposal must
-not claim the Audit row was committed with that owner action. Audit records
+ADR-016, Data Governance may use Audit-owned `AuditAppenderV2` in the
+coordinator's current unit of work because Governance already depends on
+Audit. The owner provider does not import Audit. For a different permitted
+entry path without an Audit dependency, its versioned outbox event is
+transaction-bound evidence and Audit materializes later; that path must not
+claim an Audit row was committed with the owner action. Audit records
 the decision but grants no purge authority, and Audit never depends on
 Governance.
 
@@ -178,7 +201,7 @@ Governance.
 
 Deletion waits for a serially valid hold decision and an unambiguous current
 policy. Governance owns policy/hold data and the public coordination port;
-the record owner owns facts and its destructive command. The generic kernel
+the record owner owns facts and its operation provider/mutation. The generic kernel
 still owns unit-of-work and transaction machinery. Later document, HR,
 healthcare, localization, privacy, and marketplace modules can participate
 without direct Governance-table access or reverse frozen-layer dependencies.

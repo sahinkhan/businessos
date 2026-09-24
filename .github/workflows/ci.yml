@@ -60,8 +60,16 @@ jobs:
       - name: Phase 0 architecture governance gate
         run: python scripts/check_phase0_architecture.py
 
+      - name: Build pinned MinIO test image
+        run: docker compose build object-storage
+
       - name: Start pinned infrastructure
         run: docker compose up --detach --wait postgres redis nats object-storage
+
+      - name: Verify exact MinIO release and readiness
+        run: |
+          docker compose exec -T object-storage /usr/local/bin/minio --version | grep -F RELEASE.2025-09-07T16-13-09Z
+          curl --fail --silent --show-error --retry 20 --retry-delay 2 http://localhost:9000/minio/health/ready
 
       - name: Install constrained framework and proof module
         run: |
@@ -89,6 +97,9 @@ jobs:
         run: |
           mypy platform/src foundations tests examples/proof_module/src
           pyright platform/src foundations examples/proof_module/src
+
+      - name: S3 provider smoke
+        run: pytest -q tests/integration/test_infrastructure_providers.py -k s3
 
       - name: Unit tests
         run: pytest -q tests/unit
@@ -123,7 +134,7 @@ jobs:
 
       - name: Stop infrastructure
         if: always()
-        run: docker compose down
+        run: docker compose down --volumes
 
   web-quality:
     runs-on: ubuntu-latest

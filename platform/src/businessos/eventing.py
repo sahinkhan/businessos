@@ -30,8 +30,9 @@ from businessos.persistence import (
     UnitOfWorkFactory,
 )
 from businessos.providers import EventPublisher
+from businessos.security import Authorizer
 from businessos.telemetry import consumer_span
-from businessos.workload import WorkloadAdmissionDenied, subscriber_permission_admission
+from businessos.workload import WorkloadAdmissionDenied
 
 type SubscriberAdmission = Callable[
     [UnitOfWork, HandlerTransaction, str], AbstractAsyncContextManager[object]
@@ -156,9 +157,15 @@ class Inbox:
 class DurableEventConsumer:
     """Deliver each subscriber once under its inbox and tenant transaction."""
 
-    def __init__(self, unit_of_work_factory: UnitOfWorkFactory, events: EventBus) -> None:
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        events: EventBus,
+        subscriber_authorizer: Authorizer | None = None,
+    ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._events = events
+        self._subscriber_authorizer = subscriber_authorizer
 
     async def consume(
         self,
@@ -185,18 +192,17 @@ class DurableEventConsumer:
                                 admission, unit_of_work, transaction, subscriber.subscriber
                             ) as binding:
                                 if admission is not None:
-                                    if subscriber.permission is None or binding is None:
-                                        raise WorkloadAdmissionDenied(
-                                            "Durable subscriber permission or binding is missing"
-                                        )
-                                    with subscriber_permission_admission(
-                                        tenant.principal_id,
-                                        tenant.tenant_id,
-                                        subscriber.permission,
+                                    if (
+                                        subscriber.permission is None
+                                        or binding is None
+                                        or self._subscriber_authorizer is None
                                     ):
-                                        await self._events.authorize(
-                                            traced_context, subscriber.permission
+                                        raise WorkloadAdmissionDenied(
+                                            "Durable subscriber admission is incomplete"
                                         )
+                                    await self._subscriber_authorizer.require(
+                                        traced_context, subscriber.permission
+                                    )
                                 else:
                                     await self._events.authorize(
                                         traced_context, subscriber.permission

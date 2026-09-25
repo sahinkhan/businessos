@@ -123,6 +123,7 @@ async def test_binding_is_one_task_one_transaction_and_expires_on_exit() -> None
         assert binding.source_event_id == event
         assert binding.attempt_id == attempt
         assert not hasattr(binding.workload, "_issuer")
+        assert secret not in repr(binding).encode()
         binding.assert_active(cast(Any, transaction))
         with pytest.raises(InvalidWorkloadCredential):
             async with authority.bind(

@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from businessos_identity import DatabaseWorkloadExecutionAuthority, IdentityModule
@@ -60,6 +60,20 @@ async def test_workload_revocation_serializes_with_tenant_transaction(
                 },
             )
             await unit.commit()
+
+        async with ops.system() as unit:
+            row = (
+                await unit.persistence.execute(
+                    text(
+                        "SELECT credential_digest, credential_reference FROM "
+                        "platform_identity.installation_workloads "
+                        "WHERE installation_id=:installation AND workload_id=:workload"
+                    ),
+                    {"installation": installation_id, "workload": workload_id},
+                )
+            ).one()
+            assert bytes(row.credential_digest) == hashlib.sha256(secret).digest()
+            assert secret not in repr(row).encode()
 
         # Identical UUIDs are legal in the distinct tenant and installation namespaces.
         migrator = Database(Settings(database_url=postgres_database.migration_url))
@@ -177,6 +191,54 @@ async def test_workload_revocation_serializes_with_tenant_transaction(
                     )
                     assert result.scalars().all() == [expected_account]
                     await unit.commit()
+
+        # Distinct registered subscribers can hold simultaneous authority
+        # locks while retaining separate task, transaction and RLS contexts.
+        both_started = (asyncio.Event(), asyncio.Event())
+        release_subscribers = asyncio.Event()
+
+        async def concurrent_subscriber(
+            current_tenant: UUID, expected_account: UUID, subscriber: str, started: asyncio.Event
+        ) -> None:
+            async with app.for_tenant(
+                TenantContext(installation_id, current_tenant, uuid4())
+            ) as unit:
+                transaction = object()
+                async with authority.bind(
+                    unit.persistence,
+                    verified=verified,
+                    tenant_id=current_tenant,
+                    source_event_id=uuid4(),
+                    subscriber=subscriber,
+                    attempt_id=uuid4(),
+                    transaction=transaction,  # type: ignore[arg-type]
+                ) as binding:
+                    binding.assert_active(transaction)  # type: ignore[arg-type]
+                    result = await unit.persistence.execute(
+                        text("SELECT id FROM platform_identity.service_accounts")
+                    )
+                    assert result.scalars().all() == [expected_account]
+                    started.set()
+                    await release_subscribers.wait()
+                    await unit.commit()
+
+        concurrent = (
+            asyncio.create_task(
+                concurrent_subscriber(tenant_id, workload_id, "test.concurrent-a", both_started[0])
+            ),
+            asyncio.create_task(
+                concurrent_subscriber(
+                    tenant_b_id, tenant_b_account, "test.concurrent-b", both_started[1]
+                )
+            ),
+        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(started.wait() for started in both_started)), timeout=5
+            )
+        finally:
+            release_subscribers.set()
+            await asyncio.gather(*concurrent)
 
         update_started = asyncio.Event()
         update_finished = asyncio.Event()

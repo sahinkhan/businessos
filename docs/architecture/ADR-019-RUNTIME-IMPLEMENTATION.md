@@ -58,10 +58,11 @@ source before decoding or invoking a subscriber. Each subscriber gets a fresh
 transaction lock and an Identity binding before the declared permission check,
 inbox claim, and handler invocation. Deployment configured permissions only
 narrow the registered subscriber permission; proof does not grant arbitrary
-business access. A missing permission fails admission. The worker's permission
-policy permits the specific registered subscriber check only while that check
-is running; subsequent command/query authorizations in the handler cannot use
-the deployment permission list. An admitted subscriber or operational batch has a 45 second
+business access. A missing permission fails admission. A separate subscriber
+authorizer checks only registered durable subscribers against the deployment
+permission list; the worker's general command/query authorizer denies all.
+Handlers therefore cannot use the deployment list for business commands or
+queries. An admitted subscriber or operational batch has a 45 second
 execution bound so its authority lock cannot remain held indefinitely.
 
 The source verifier reads committed `eventing.outbox_messages` through the

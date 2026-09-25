@@ -361,6 +361,53 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
             select(PROOF_RECORDS.c.description).where(PROOF_RECORDS.c.command_id == command_id)
         )
     assert description == "object-storage-projection"
+
+    # One verified installation worker also processes another tenant through
+    # a separate event, binding, inbox receipt and RLS-scoped transaction.
+    tenant_b = TenantContext(
+        tenant.installation_id, uuid4(), tenant.principal_id, authentication_strength="test"
+    )
+    command_b, record_b = uuid4(), uuid4()
+    event_b = ProofStored(
+        tenant_id=tenant_b.tenant_id,
+        correlation_id="event-worker-tenant-b",
+        record_id=record_b,
+        command_id=command_b,
+        value="tenant-b",
+    )
+    async with inspection_factory.for_tenant(tenant_b) as unit_of_work:
+        await unit_of_work.persistence.execute(
+            insert(PROOF_RECORDS).values(
+                id=record_b,
+                tenant_id=tenant_b.tenant_id,
+                command_id=command_b,
+                value="tenant-b",
+            )
+        )
+        unit_of_work.add_outbox(event_b.to_outbox())
+        await unit_of_work.commit()
+    assert (
+        len(
+            await _wait_for_inbox_receipt_count(
+                inspection_factory, tenant_b, event_b.event_id, expected=1
+            )
+        )
+        == 1
+    )
+    async with inspection_factory.for_tenant(tenant_b) as unit_of_work:
+        result = await unit_of_work.persistence.execute(
+            select(PROOF_RECORDS.c.description).where(PROOF_RECORDS.c.command_id == command_b)
+        )
+        assert result.scalar_one() == "object-storage-projection"
+        result = await unit_of_work.persistence.execute(
+            select(PROOF_RECORDS.c.id).where(PROOF_RECORDS.c.command_id == command_id)
+        )
+        assert result.scalar_one_or_none() is None
+    async with inspection_factory.for_tenant(tenant) as unit_of_work:
+        result = await unit_of_work.persistence.execute(
+            select(PROOF_RECORDS.c.id).where(PROOF_RECORDS.c.command_id == command_b)
+        )
+        assert result.scalar_one_or_none() is None
     await first_worker.stop()
 
     second_module = _RetryingProofModule()

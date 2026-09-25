@@ -49,7 +49,6 @@ from businessos.workload import (
     VerifiedWorkerProof,
     WorkerWorkloadAdmission,
     WorkloadAdmissionDenied,
-    subscriber_permission_is_admitted,
 )
 
 _MAX_ADMITTED_OPERATION_SECONDS = 45
@@ -160,11 +159,7 @@ class _WorkerPermissionPolicy:
         tenant: TenantContext,
         permission: str,
     ) -> bool:
-        return (
-            principal_id == self.principal_id
-            and permission in self.permissions
-            and subscriber_permission_is_admitted(principal_id, tenant.tenant_id, permission)
-        )
+        return principal_id == self.principal_id and permission in self.permissions
 
 
 class _CommonBrokerEvent(BaseModel):
@@ -253,10 +248,10 @@ class EventWorker:
                 async with self._operations_uow.system() as startup_uow:
                     verified = await self._verify_workload(startup_uow, "worker-startup")
                     authority = self._require_workload_authority()
-                    async with authority.operation(
-                        startup_uow.persistence, verified=verified, purpose="worker-startup"
-                    ):
-                        async with asyncio.timeout(_MAX_ADMITTED_OPERATION_SECONDS):
+                    async with asyncio.timeout(_MAX_ADMITTED_OPERATION_SECONDS):
+                        async with authority.operation(
+                            startup_uow.persistence, verified=verified, purpose="worker-startup"
+                        ):
                             await self._synchronize_subscriber_obligations()
                             self._subscription = await self._broker.subscribe(
                                 f"{self._subject_prefix}.tenant.>",
@@ -525,16 +520,16 @@ class EventWorker:
                                 proof = await self._verify_workload(renewal_uow, "event-delivery")
                                 await renewal_uow.commit()
                         authority = self._require_workload_authority()
-                        async with authority.bind(
-                            unit_of_work.persistence,
-                            verified=proof,
-                            tenant_id=tenant_id,
-                            source_event_id=event_id,
-                            subscriber=subscriber,
-                            attempt_id=uuid4(),
-                            transaction=transaction,
-                        ) as binding:
-                            async with asyncio.timeout(_MAX_ADMITTED_OPERATION_SECONDS):
+                        async with asyncio.timeout(_MAX_ADMITTED_OPERATION_SECONDS):
+                            async with authority.bind(
+                                unit_of_work.persistence,
+                                verified=proof,
+                                tenant_id=tenant_id,
+                                source_event_id=event_id,
+                                subscriber=subscriber,
+                                attempt_id=uuid4(),
+                                transaction=transaction,
+                            ) as binding:
                                 yield binding
 
                     await runtime.event_consumer.consume(
@@ -581,10 +576,10 @@ class EventWorker:
             async with self._operations_uow.system() as unit_of_work:
                 verified = await self._verify_workload(unit_of_work, "subscriber-sync")
                 authority = self._require_workload_authority()
-                async with authority.operation(
-                    unit_of_work.persistence, verified=verified, purpose="subscriber-sync"
-                ):
-                    async with asyncio.timeout(_MAX_ADMITTED_OPERATION_SECONDS):
+                async with asyncio.timeout(_MAX_ADMITTED_OPERATION_SECONDS):
+                    async with authority.operation(
+                        unit_of_work.persistence, verified=verified, purpose="subscriber-sync"
+                    ):
                         if declarations:
                             await unit_of_work.persistence.execute(
                                 insert(EventSubscriberObligation)
@@ -618,10 +613,10 @@ class EventWorker:
     async def _admit_publisher(self, unit_of_work: SQLAlchemyUnitOfWork) -> AsyncGenerator[None]:
         verified = await self._verify_workload(unit_of_work, "event-publisher")
         authority = self._require_workload_authority()
-        async with authority.operation(
-            unit_of_work.persistence, verified=verified, purpose="event-publisher"
-        ):
-            async with asyncio.timeout(_MAX_ADMITTED_OPERATION_SECONDS):
+        async with asyncio.timeout(_MAX_ADMITTED_OPERATION_SECONDS):
+            async with authority.operation(
+                unit_of_work.persistence, verified=verified, purpose="event-publisher"
+            ):
                 yield
 
     def _require_workload_authority(self) -> WorkerWorkloadAdmission:
@@ -696,7 +691,7 @@ def create_event_worker(
         approved_module_artifacts=approved_artifacts_from_operator_inventory(
             loaded_modules, inventory=operator_inventory
         ),
-        authorizer=Authorizer(
+        durable_subscriber_authorizer=Authorizer(
             _WorkerPermissionPolicy(settings.principal_id, settings.allowed_permissions)
         ),
         infrastructure_providers=providers,

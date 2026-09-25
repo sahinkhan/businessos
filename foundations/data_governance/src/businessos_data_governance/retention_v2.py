@@ -90,6 +90,7 @@ HOLDS_V2 = Table(
     Column("is_active", Boolean, nullable=False, server_default="true"),
     CheckConstraint(
         "(hold_scope = 'ALL' AND record_id IS NULL AND retention_category IS NULL) OR "
+        "(hold_scope = 'CATEGORY' AND record_id IS NULL AND retention_category IS NOT NULL) OR "
         "(hold_scope = 'RECORD' AND record_id IS NOT NULL)",
         name="ck_hold_v2_scope",
     ),
@@ -179,6 +180,7 @@ def normalize_owner_facts(key: RetentionSubjectKey, value: ResourceOwnerFacts) -
 
 class HoldScope(StrEnum):
     ALL = "all"
+    CATEGORY = "category"
     RECORD = "record"
 
 
@@ -235,6 +237,8 @@ class PlaceRetentionHoldV2(Command):
     def valid_scope(self) -> PlaceRetentionHoldV2:
         if self.scope is HoldScope.ALL and self.retention_category is not None:
             raise ValueError("ALL hold must be category-free")
+        if self.scope is HoldScope.CATEGORY and not self.retention_category:
+            raise ValueError("CATEGORY hold requires a retention category")
         return self
 
 
@@ -648,6 +652,8 @@ class RetentionRuntimeV2:
                     HOLDS_V2.c.is_active.is_(True),
                     or_(
                         HOLDS_V2.c.hold_scope == HoldScope.ALL.value.upper(),
+                        (HOLDS_V2.c.hold_scope == HoldScope.CATEGORY.value.upper())
+                        & (HOLDS_V2.c.retention_category == facts.retention_category),
                         (HOLDS_V2.c.hold_scope == HoldScope.RECORD.value.upper())
                         & (HOLDS_V2.c.record_id == key.record_id),
                     ),

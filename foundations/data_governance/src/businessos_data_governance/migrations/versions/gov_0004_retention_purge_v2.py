@@ -122,6 +122,7 @@ def upgrade() -> None:
         sa.CheckConstraint("reason <> ''", name="ck_hold_v2_reason"),
         sa.CheckConstraint(
             "(hold_scope = 'ALL' AND record_id IS NULL AND retention_category IS NULL) OR "
+            "(hold_scope = 'CATEGORY' AND record_id IS NULL AND retention_category IS NOT NULL) OR "
             "(hold_scope = 'RECORD' AND record_id IS NOT NULL)",
             name="ck_hold_v2_scope",
         ),

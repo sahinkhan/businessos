@@ -479,6 +479,43 @@ async def test_destructive_lifecycle_uses_owner_facts_policy_holds_and_one_uow(
             ReleaseRetentionHoldV2(tenant_id=key.tenant_id, hold_id=all_hold_id),
             context,
         )
+        category_hold_id = await _command(
+            app,
+            PlaceRetentionHoldV2(
+                subject=key,
+                scope=HoldScope.CATEGORY,
+                retention_category="other_category",
+                reason="category-wide",
+            ),
+            context,
+        )
+        with psycopg.connect(_url(postgres_database.administrator_url)) as connection:
+            assert connection.execute(
+                "SELECT hold_scope, record_id, retention_category "
+                "FROM platform_gov.legal_holds_v2 WHERE id=%s",
+                (category_hold_id,),
+            ).fetchone() == ("CATEGORY", None, "other_category")
+        with pytest.raises(BusinessOSError, match="Active legal hold"):
+            await _command(
+                app,
+                ExecuteDestructiveLifecycleV2(subject=category_other, action=ExpiryAction.PURGE),
+                context,
+            )
+        unaffected = key.model_copy(update={"record_id": uuid4()})
+        _seed_owner(postgres_database, unaffected, anchor)
+        assert isinstance(
+            await _command(
+                app,
+                ExecuteDestructiveLifecycleV2(subject=unaffected, action=ExpiryAction.PURGE),
+                context,
+            ),
+            UUID,
+        )
+        await _command(
+            app,
+            ReleaseRetentionHoldV2(tenant_id=key.tenant_id, hold_id=category_hold_id),
+            context,
+        )
         with pytest.raises(BusinessOSError, match="Owner did not declare"):
             await _command(
                 app,

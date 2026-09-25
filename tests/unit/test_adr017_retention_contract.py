@@ -95,6 +95,10 @@ def test_all_hold_cannot_be_narrowed_by_category() -> None:
             retention_category="customer",
             reason="would falsely claim all-category protection",
         )
+    with pytest.raises(ValidationError, match="CATEGORY hold requires"):
+        PlaceRetentionHoldV2(
+            subject=_key(), scope=HoldScope.CATEGORY, reason="category not specified"
+        )
 
 
 @pytest.mark.asyncio

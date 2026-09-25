@@ -4,11 +4,11 @@ Status: ACCEPTED
 
 Decision date: 2026-09-25
 
-Acceptance stage: Formal acceptance candidate; decision authority is pending final exact-SHA owner attestation and merge to `main`
+Acceptance stage: COMPLETE
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; Identity Maintainer; Security Maintainer; SDK/Contract Maintainer; Audit Owning Domain Maintainer; Release Maintainer; Migration Safety Reviewer
 
-Approval pull request or commit: [PR #38](https://github.com/sahinkhan/businessos/pull/38) — OPEN / UNMERGED formal acceptance candidate
+Approval pull request or commit: [PR #38](https://github.com/sahinkhan/businessos/pull/38) — MERGED
 
 Approved semantic proposal SHA: `33ed51422d6845373c4877bb3e94220e6f3e0cfa`
 
@@ -22,21 +22,23 @@ Proposal independent technical/read-only architecture review: PERFORMED — PASS
 
 Proposal exact-head CI: [BusinessOS run 36091055099](https://github.com/sahinkhan/businessos/actions/runs/36091055099) — PASS (`python-quality`, `windows-typing`, `web-quality`)
 
-Formal acceptance candidate SHA: The exact [PR #38 head](https://github.com/sahinkhan/businessos/pull/38) recorded in its acceptance evidence; a commit cannot embed its own SHA.
+Formal acceptance candidate SHA: `3871616573ef1da260ea054c1fea22d2d191ffb3`
 
-Formal acceptance exact-head CI: Fresh run required on that PR head; exact run and result are recorded in [PR #38 acceptance evidence](https://github.com/sahinkhan/businessos/pull/38) before owner attestation.
+Formal acceptance exact-head CI: [BusinessOS run 36092922086](https://github.com/sahinkhan/businessos/actions/runs/36092922086) — PASS (`python-quality`, `windows-typing`, `web-quality`)
 
-Formal acceptance independent technical/read-only review: Fresh exact-head audit required; result and finding counts are recorded in [PR #38 acceptance evidence](https://github.com/sahinkhan/businessos/pull/38) before owner attestation.
+Formal acceptance independent technical/read-only review: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
 
-Formal acceptance owner attestation: PENDING personal exact-SHA attestation by `@sahinkhan`
+Formal acceptance owner attestation: COMPLETE — [@sahinkhan's exact-candidate attestation](https://github.com/sahinkhan/businessos/pull/38#issuecomment-5826640389)
 
-Architecture state: ACCEPTANCE CANDIDATE; installation workload identity, tenant execution binding, and EventWorker additive binding are NOT IMPLEMENTED; Identity forward migration is NOT CREATED; ADR-016 Audit V2 runtime remains BLOCKED on ADR-019 runtime implementation and certification; ADR-017 is NOT IMPLEMENTED; V1 retirement is NOT PERFORMED. Architecture acceptance alone does not certify Audit V2 runtime. Required order: ADR-019 runtime certification, then ADR-016 implementation and certification under ADR-019 authority.
+Accepted main merge SHA: `6c3d8635fa01d62a3d37fe4296fd4bdbc3ade864`
+
+Architecture state: ACCEPTED; ADR-018 Resource Ownership, ADR-014 Policy V2, and ADR-015 Classification V2 runtimes are IMPLEMENTED / CERTIFIED / MERGED. ADR-019 installation workload identity, tenant execution binding, and EventWorker additive binding are NOT IMPLEMENTED; Identity workload forward migration is NOT CREATED. Audit V2 runtime is NOT IMPLEMENTED and remains blocked on ADR-019 runtime implementation and certification; ADR-017 is NOT IMPLEMENTED; V1 retirement is NOT PERFORMED. Architecture acceptance alone does not certify Audit V2 runtime. Required order: ADR-019 runtime certification, then Audit V2 implementation and certification under ADR-019 authority.
 
 Frozen-phase state: Phases 0–3 remain FINAL PASS / FROZEN. This decision authorizes only the narrow additive Platform/Kernel and Identity integration required for Phase 4; it does not generally reopen Phase 1 or Phase 2.
 
-Formal authority: PENDING final exact-SHA owner acceptance attestation and merge to `main`
+Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN
 
-Supersedes: [ADR-016 — Trusted Audit Provenance and Write Contract V2](ADR-016-trusted-audit-provenance-v2.md) upon formal acceptance on `main`; all ADR-016 decisions except its worker-binding model are incorporated and preserved in this successor.
+Supersedes: [ADR-016 — Trusted Audit Provenance and Write Contract V2](ADR-016-trusted-audit-provenance-v2.md); all ADR-016 decisions except its worker-binding model are incorporated and preserved in this successor.
 
 Superseded by: None
 

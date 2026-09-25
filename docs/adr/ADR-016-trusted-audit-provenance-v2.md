@@ -4,7 +4,7 @@ Status: SUPERSEDED
 
 Decision date: 2026-09-24
 
-Supersession date: 2026-09-25 (formal ADR-019 acceptance candidate; effective on merge to `main`)
+Supersession date: 2026-09-25
 
 Approving roles required: Architecture Maintainer; Security Maintainer; Audit Owning Domain Maintainer; Identity Maintainer; SDK/Contract Maintainer; Policy Maintainer; Release Maintainer; Migration Safety Reviewer
 
@@ -38,11 +38,13 @@ Accepted prerequisites and compatibility: ADR-014 — ACCEPTED / AUTHORITATIVE /
 
 Implementation/certification gates carried forward: Audit write-facade v2, `AuditAppenderV2`, Policy security-outbox materialization, trusted worker/service-principal binding adapter, immutable origin/causation envelope, on-behalf-of provenance v2, checksum/integrity v2, and safe v1 shim are NOT IMPLEMENTED; a new forward Audit migration is NOT CREATED. ADR-014 Policy V2, ADR-015 classification runtime, and the ADR-018 Platform/SDK extension are NOT IMPLEMENTED. The Audit appender must use trusted provider registration and generation admission, and implementation must stop for a separate governed architecture decision if satisfying trusted binding or provider lifecycle requires a frozen runtime change. Phases 0–3 remain FINAL PASS / FROZEN with no general reopening.
 
-Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN until the exact ADR-019 acceptance candidate receives final owner attestation and is merged; then SUPERSEDED by ADR-019. ADR-019 incorporates every ADR-016 Audit V2 decision except the worker-binding model it replaces. ADR-016 Audit V2 runtime remains BLOCKED until ADR-019 workload identity runtime is implemented and certified.
+Superseding merge: `6c3d8635fa01d62a3d37fe4296fd4bdbc3ade864`
+
+Formal authority: SUPERSEDED BY ADR-019. ADR-019 incorporates every ADR-016 Audit V2 decision except the worker-binding model it replaces. ADR-016 Audit V2 runtime remains BLOCKED until ADR-019 workload identity runtime is implemented and certified.
 
 Supersedes: None
 
-Superseded by: [ADR-019 — Trusted Workload Identity and Tenant-Bound Worker Execution](ADR-019-trusted-workload-identity-and-worker-execution.md) upon formal acceptance on `main`
+Superseded by: [ADR-019 — Trusted Workload Identity and Tenant-Bound Worker Execution](ADR-019-trusted-workload-identity-and-worker-execution.md)
 
 ## Context
 

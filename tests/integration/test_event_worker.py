@@ -238,7 +238,7 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     request: pytest.FixtureRequest,
     tmp_path: Path,
 ) -> None:
-    runtime_url = postgres_database.runtime_url
+    runtime_url = postgres_database.worker_url
     operations_url = postgres_database.operations_url
     migration_modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
     migration_modules.add(TenantModule())
@@ -501,7 +501,7 @@ async def test_subscriber_obligations_survive_worker_recreation(
         )
         durable_name = f"businessos-obligations-{uuid4().hex}"
         settings = EventWorkerSettings(
-            runtime_database_url=postgres_database.runtime_url,
+            runtime_database_url=postgres_database.worker_url,
             operations_database_url=postgres_database.operations_url,
             nats_url=_required_env("BOS_TEST_NATS_URL"),
             installation_id=tenant.installation_id,
@@ -633,7 +633,7 @@ async def test_worker_stop_retains_real_uow_cleanup_until_backend_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = EventWorkerSettings(
-        runtime_database_url=postgres_database.runtime_url,
+        runtime_database_url=postgres_database.worker_url,
         operations_database_url=postgres_database.operations_url,
         installation_id=uuid4(),
         principal_id=uuid4(),

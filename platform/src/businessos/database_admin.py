@@ -11,6 +11,7 @@ from psycopg.rows import tuple_row
 MIGRATOR_ROLE = "businessos_migrator"
 APPLICATION_ROLE = "businessos_app"
 OPERATIONS_ROLE = "businessos_ops"
+WORKER_ROLE = "businessos_worker"
 TRANSITION_LOCK = "businessos.database-role-transition.v1"
 
 
@@ -23,6 +24,7 @@ class DatabaseRolePasswords:
     migrator: str
     application: str
     operations: str
+    worker: str
 
 
 def _role_exists(connection: psycopg.Connection[tuple[object, ...]], role: str) -> bool:
@@ -36,15 +38,17 @@ def _ensure_role(
     password: str,
     *,
     bypass_rls: bool,
+    inherit: bool = False,
 ) -> None:
     identifier = sql.Identifier(role)
     if not _role_exists(connection, role):
         connection.execute(sql.SQL("CREATE ROLE {} LOGIN").format(identifier))
     bypass = sql.SQL("BYPASSRLS") if bypass_rls else sql.SQL("NOBYPASSRLS")
+    inheritance = sql.SQL("INHERIT") if inherit else sql.SQL("NOINHERIT")
     connection.execute(
         sql.SQL(
-            "ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT {} PASSWORD {}"
-        ).format(identifier, bypass, sql.Literal(password))
+            "ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE {} {} PASSWORD {}"
+        ).format(identifier, inheritance, bypass, sql.Literal(password))
     )
 
 
@@ -250,6 +254,7 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
             _ensure_role(connection, MIGRATOR_ROLE, passwords.migrator, bypass_rls=False)
             _ensure_role(connection, APPLICATION_ROLE, passwords.application, bypass_rls=False)
             _ensure_role(connection, OPERATIONS_ROLE, passwords.operations, bypass_rls=True)
+            _ensure_role(connection, WORKER_ROLE, passwords.worker, bypass_rls=False, inherit=True)
             connection.execute(
                 sql.SQL("REVOKE {}, {} FROM {}").format(
                     sql.Identifier(MIGRATOR_ROLE),
@@ -258,16 +263,29 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
                 )
             )
             connection.execute(
+                sql.SQL("REVOKE {}, {} FROM {}").format(
+                    sql.Identifier(MIGRATOR_ROLE),
+                    sql.Identifier(OPERATIONS_ROLE),
+                    sql.Identifier(WORKER_ROLE),
+                )
+            )
+            connection.execute(
+                sql.SQL("GRANT {} TO {}").format(
+                    sql.Identifier(APPLICATION_ROLE), sql.Identifier(WORKER_ROLE)
+                )
+            )
+            connection.execute(
                 sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(
                     sql.Identifier(database_name)
                 )
             )
             connection.execute(
-                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}").format(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}, {}").format(
                     sql.Identifier(database_name),
                     sql.Identifier(MIGRATOR_ROLE),
                     sql.Identifier(APPLICATION_ROLE),
                     sql.Identifier(OPERATIONS_ROLE),
+                    sql.Identifier(WORKER_ROLE),
                 )
             )
             connection.execute(

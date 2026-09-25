@@ -146,6 +146,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
         migrator=make_url(migration_base).password or "",
         application=make_url(runtime_base).password or "",
         operations=make_url(operations_base).password or "",
+        worker="businessos-worker",
     )
 
     with psycopg.connect(admin_base, autocommit=True) as connection:
@@ -258,7 +259,8 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
             )
             roles = connection.execute(
                 "SELECT rolname, rolsuper, rolbypassrls, rolinherit FROM pg_roles "
-                "WHERE rolname IN ('businessos_migrator', 'businessos_app', 'businessos_ops') "
+                "WHERE rolname IN ('businessos_migrator', 'businessos_app', "
+                "'businessos_ops', 'businessos_worker') "
                 "ORDER BY rolname"
             ).fetchall()
             app_can_assume_ops = connection.execute(
@@ -297,6 +299,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
             ("businessos_app", False, False, False),
             ("businessos_migrator", False, False, False),
             ("businessos_ops", False, True, False),
+            ("businessos_worker", False, False, True),
         ]
         assert app_can_assume_ops == (False,)
         assert all(owner == "businessos_migrator" for _, _, owner in owners)

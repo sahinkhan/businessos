@@ -77,7 +77,7 @@ docker compose --profile events up --build event-worker
 
 The development profile provisions only its local MinIO bucket. Production object-storage buckets
 remain deployment-managed. The event worker is a separate process: it receives both the
-`businessos_app` URL for tenant-scoped consumer transactions and the `businessos_ops` URL for
+`businessos_worker` URL for tenant-scoped consumer transactions and the `businessos_ops` URL for
 cross-tenant outbox publication. Never add the operations URL to the `app` service. Worker event
 permissions are an explicit comma-separated allowlist; an empty allowlist denies every protected
 subscriber. The Identity workload ID and mounted credential authenticate the installation
@@ -120,6 +120,8 @@ The development database uses separate roles:
   the explicit `database-bootstrap` operation and test-database provisioning.
 - `businessos_migrator` owns the database and schema objects and is used only by migrations.
 - `businessos_app` is the `NOSUPERUSER`, `NOBYPASSRLS`, non-owner application role.
+- `businessos_worker` inherits tenant/RLS application privileges and alone receives
+  workload admission EXECUTE; supply its separate credential only to the event worker.
 - `businessos_ops` has explicit cross-tenant eventing privileges for approved operational workers; the application never uses it.
 
 The checked-in credentials are local-development values only. Production deployments must supply these roles and credentials through deployment secrets.
@@ -177,11 +179,13 @@ BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_admin:businessos-administrat
 BOS_TEST_DATABASE_MIGRATION_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
 BOS_TEST_DATABASE_RUNTIME_URL=postgresql://businessos_app:businessos-application@localhost:5432/postgres \
 BOS_TEST_DATABASE_OPERATIONS_URL=postgresql://businessos_ops:businessos-operations@localhost:5432/postgres \
+BOS_TEST_DATABASE_WORKER_URL=postgresql://businessos_worker:businessos-worker@localhost:5432/postgres \
   pytest -q tests/integration -m postgres
 BOS_TEST_DATABASE_ADMIN_URL=postgresql://businessos_admin:businessos-administration@localhost:5432/postgres \
 BOS_TEST_DATABASE_MIGRATION_URL=postgresql://businessos_migrator:businessos-migration@localhost:5432/postgres \
 BOS_TEST_DATABASE_RUNTIME_URL=postgresql://businessos_app:businessos-application@localhost:5432/postgres \
 BOS_TEST_DATABASE_OPERATIONS_URL=postgresql://businessos_ops:businessos-operations@localhost:5432/postgres \
+BOS_TEST_DATABASE_WORKER_URL=postgresql://businessos_worker:businessos-worker@localhost:5432/postgres \
   pytest -q tests/conformance
 git diff --check
 ```

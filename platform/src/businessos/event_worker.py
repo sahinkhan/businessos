@@ -100,8 +100,8 @@ class EventWorkerSettings(BaseSettings):
         operations_url = make_url(self.operations_database_url)
         runtime_role = runtime_url.username
         operations_role = operations_url.username
-        if runtime_role is None or operations_role is None or runtime_role == operations_role:
-            raise ValueError("runtime and operations database roles must be separate")
+        if runtime_role != "businessos_worker" or operations_role != "businessos_ops":
+            raise ValueError("event worker requires businessos_worker and businessos_ops roles")
         if (
             runtime_url.drivername,
             runtime_url.host,

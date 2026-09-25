@@ -17,10 +17,20 @@ separate from tenant owned `service_accounts`. Its row carries active/revoked
 state, process class, allowed purposes, a credential reference, credential
 generation, a SHA-256 verifier for a high entropy deployment secret, and
 creation/change timestamps. No raw credential is stored. `businessos_ops` can
-provision and change the row; `businessos_app` has no direct table access. The
-application role can invoke only a narrow `admit_workload` function, which
+provision and change the row; `businessos_app` has no direct table or admission
+function access. A dedicated `businessos_worker` login inherits only the
+ordinary application tenant/RLS privileges and receives the narrow
+`admit_workload` function grant, which
 checks current authority and holds a shared row lock in the caller's transaction.
-Downgrade refuses to discard a nonempty workload registry.
+It does not inherit operations or migrator privileges. The administrator role
+transition provisions this login before migrations. `identity_0005` revokes
+the candidate `identity_0004` application grant and grants worker admission;
+the unmerged `identity_0004` revision was left unchanged because repository
+governance does not explicitly permit rewriting candidate migrations. Downgrade
+of this privilege boundary refuses while workloads exist. On an empty registry
+it revokes worker admission without restoring the unsafe app grant, allowing
+the earlier revision to drop the empty registry. Registry downgrade also
+refuses to discard a nonempty workload registry.
 
 Identity exports immutable `VerifiedWorkloadIdentity`, non-admissible
 `WorkloadIdentityFacts`, and `TenantExecutionBinding` contracts, the `WorkloadCredentialVerifier` and

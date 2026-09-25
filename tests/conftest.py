@@ -16,6 +16,7 @@ class PostgreSQLTestDatabase:
     migration_url: str
     runtime_url: str
     operations_url: str
+    worker_url: str
 
 
 def _database_url(base_url: str, database_name: str, *, sqlalchemy: bool = False) -> str:
@@ -36,6 +37,9 @@ def postgres_database() -> Iterator[PostgreSQLTestDatabase]:
     operations_url = os.getenv("BOS_TEST_DATABASE_OPERATIONS_URL")
     if operations_url is None:
         pytest.skip("BOS_TEST_DATABASE_OPERATIONS_URL is not configured")
+    worker_url = os.getenv("BOS_TEST_DATABASE_WORKER_URL")
+    if worker_url is None:
+        pytest.skip("BOS_TEST_DATABASE_WORKER_URL is not configured")
     migration_url = os.getenv("BOS_TEST_DATABASE_MIGRATION_URL")
     if migration_url is None:
         pytest.skip("BOS_TEST_DATABASE_MIGRATION_URL is not configured")
@@ -54,9 +58,9 @@ def postgres_database() -> Iterator[PostgreSQLTestDatabase]:
             sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(sql.Identifier(database_name))
         )
         connection.execute(
-            sql.SQL("GRANT CONNECT ON DATABASE {} TO businessos_app, businessos_ops").format(
-                sql.Identifier(database_name)
-            )
+            sql.SQL(
+                "GRANT CONNECT ON DATABASE {} TO businessos_app, businessos_ops, businessos_worker"
+            ).format(sql.Identifier(database_name))
         )
 
     try:
@@ -65,6 +69,7 @@ def postgres_database() -> Iterator[PostgreSQLTestDatabase]:
             migration_url=_database_url(migration_url, database_name, sqlalchemy=True),
             runtime_url=_database_url(runtime_url, database_name, sqlalchemy=True),
             operations_url=_database_url(operations_url, database_name, sqlalchemy=True),
+            worker_url=_database_url(worker_url, database_name, sqlalchemy=True),
         )
     finally:
         with psycopg.connect(admin_url, autocommit=True) as connection:

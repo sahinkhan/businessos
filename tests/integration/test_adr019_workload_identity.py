@@ -2,9 +2,11 @@
 
 import asyncio
 import hashlib
+import threading
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 from businessos_identity import DatabaseWorkloadExecutionAuthority, IdentityModule
 from businessos_identity.contracts import InvalidWorkloadCredential
@@ -38,9 +40,11 @@ async def test_workload_revocation_serializes_with_tenant_transaction(
     tenant_b_id, tenant_b_account = uuid4(), uuid4()
     secret = b"a" * 32
     operations = Database(Settings(database_url=postgres_database.operations_url))
-    runtime = Database(Settings(database_url=postgres_database.runtime_url))
+    runtime = Database(Settings(database_url=postgres_database.worker_url))
+    web_runtime = Database(Settings(database_url=postgres_database.runtime_url))
     ops = SQLAlchemyUnitOfWorkFactory(operations.sessions, system_sessions=operations.sessions)
     app = SQLAlchemyUnitOfWorkFactory(runtime.sessions)
+    web = SQLAlchemyUnitOfWorkFactory(web_runtime.sessions)
     authority = DatabaseWorkloadExecutionAuthority()
     monkeypatch.setenv("BOS_OPERATIONS_DATABASE_URL", postgres_database.operations_url)
     try:
@@ -74,6 +78,79 @@ async def test_workload_revocation_serializes_with_tenant_transaction(
             ).one()
             assert bytes(row.credential_digest) == hashlib.sha256(secret).digest()
             assert secret not in repr(row).encode()
+
+        with psycopg.connect(postgres_database.administrator_url) as connection:
+            role_boundary = connection.execute(
+                "SELECT pg_has_role('businessos_worker', 'businessos_app', 'USAGE'), "
+                "pg_has_role('businessos_app', 'businessos_worker', 'MEMBER'), "
+                "pg_has_role('businessos_worker', 'businessos_ops', 'MEMBER'), "
+                "has_function_privilege('businessos_app', "
+                "'platform_identity.admit_workload(uuid, uuid, bigint, text, text)', 'EXECUTE'), "
+                "has_function_privilege('businessos_worker', "
+                "'platform_identity.admit_workload(uuid, uuid, bigint, text, text)', 'EXECUTE')"
+            ).fetchone()
+        assert role_boundary == (True, False, False, False, True)
+
+        # A normal web role cannot acquire the row lock by calling the narrow
+        # SECURITY DEFINER function with public identifiers.
+        async with web.for_tenant(TenantContext(installation_id, tenant_id, uuid4())) as unit:
+            with pytest.raises(DBAPIError):
+                await unit.persistence.execute(
+                    text(
+                        "SELECT platform_identity.admit_workload("
+                        ":i, :w, 1, 'event-worker', 'event-delivery')"
+                    ),
+                    {"i": installation_id, "w": workload_id},
+                )
+
+        # Keep an ordinary application transaction open after its denied call.
+        # Operator revocation of a separate row must complete without waiting.
+        lock_test_id = uuid4()
+        async with ops.system() as unit:
+            await unit.persistence.execute(
+                text(
+                    "INSERT INTO platform_identity.installation_workloads "
+                    "(installation_id, workload_id, name, process_class, allowed_purposes, "
+                    "credential_reference, credential_digest, credential_generation) "
+                    "VALUES (:i, :w, 'ordinary-lock-test', 'event-worker', "
+                    "ARRAY['event-delivery'], 'file-v1', :digest, 1)"
+                ),
+                {
+                    "i": installation_id,
+                    "w": lock_test_id,
+                    "digest": hashlib.sha256(secret).digest(),
+                },
+            )
+            await unit.commit()
+        app_started = threading.Event()
+        app_release = threading.Event()
+
+        def denied_app_transaction() -> None:
+            url = postgres_database.runtime_url.replace("postgresql+psycopg://", "postgresql://", 1)
+            with psycopg.connect(url) as connection:
+                connection.execute("SAVEPOINT denied_admission")
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    connection.execute(
+                        "SELECT platform_identity.admit_workload("
+                        "%s, %s, 1, 'event-worker', 'event-delivery')",
+                        (installation_id, lock_test_id),
+                    )
+                connection.execute("ROLLBACK TO SAVEPOINT denied_admission")
+                app_started.set()
+                assert app_release.wait(timeout=5)
+
+        denied_transaction = asyncio.create_task(asyncio.to_thread(denied_app_transaction))
+        try:
+            assert await asyncio.to_thread(app_started.wait, 5)
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    operator_main, ["disable", str(installation_id), str(lock_test_id)]
+                ),
+                timeout=3,
+            )
+        finally:
+            app_release.set()
+            await denied_transaction
 
         # Identical UUIDs are legal in the distinct tenant and installation namespaces.
         migrator = Database(Settings(database_url=postgres_database.migration_url))
@@ -119,6 +196,14 @@ async def test_workload_revocation_serializes_with_tenant_transaction(
                 await unit.commit()
         finally:
             await migrator.close()
+
+        # The operator role administers workloads but has no ordinary tenant
+        # business-table SELECT privilege.
+        async with ops.system() as unit:
+            with pytest.raises(DBAPIError):
+                await unit.persistence.execute(
+                    text("SELECT id FROM platform_identity.service_accounts")
+                )
 
         async with ops.system() as unit:
             verified = await authority.verify(
@@ -415,5 +500,6 @@ async def test_workload_revocation_serializes_with_tenant_transaction(
                     credential=replacement,
                 )
     finally:
+        await web_runtime.close()
         await runtime.close()
         await operations.close()

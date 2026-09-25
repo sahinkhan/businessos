@@ -68,7 +68,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
         "audit_0002",
         "geography_0003",
         "gov_0003",
-        "identity_0004",
+        "identity_0005",
         "organization_0003",
         "party_0002",
         "policy_0004",
@@ -84,6 +84,8 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["identity_0001"] == ("tenant_0001",)
     assert parents["identity_0002"] == ("identity_0001",)
     assert parents["identity_0003"] == ("identity_0002",)
+    assert parents["identity_0004"] == ("identity_0003",)
+    assert parents["identity_0005"] == ("identity_0004",)
     assert parents["organization_0001"] == ("identity_0001",)
     assert parents["organization_0002"] == ("organization_0001", "identity_0002")
     assert parents["organization_0003"] == ("organization_0002",)

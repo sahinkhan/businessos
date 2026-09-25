@@ -46,7 +46,7 @@ services:
       target: development
     profiles: [events]
     environment:
-      BOS_EVENT_WORKER_RUNTIME_DATABASE_URL: postgresql+psycopg://businessos_app:businessos-application@postgres:5432/businessos
+      BOS_EVENT_WORKER_RUNTIME_DATABASE_URL: postgresql+psycopg://businessos_worker:businessos-worker@postgres:5432/businessos
       BOS_EVENT_WORKER_OPERATIONS_DATABASE_URL: postgresql+psycopg://businessos_ops:businessos-operations@postgres:5432/businessos
       BOS_EVENT_WORKER_NATS_URL: nats://nats:4222
       BOS_EVENT_WORKER_INSTALLATION_ID: 00000000-0000-0000-0000-000000000001
@@ -86,6 +86,7 @@ services:
       BOS_MIGRATOR_PASSWORD: ${BOS_MIGRATOR_PASSWORD:-businessos-migration}
       BOS_APPLICATION_PASSWORD: ${BOS_APPLICATION_PASSWORD:-businessos-application}
       BOS_OPERATIONS_PASSWORD: ${BOS_OPERATIONS_PASSWORD:-businessos-operations}
+      BOS_WORKER_PASSWORD: ${BOS_WORKER_PASSWORD:-businessos-worker}
     command: ["businessos", "database", "transition-roles"]
     volumes:
       - .:/app

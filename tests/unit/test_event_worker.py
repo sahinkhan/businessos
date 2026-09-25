@@ -58,7 +58,7 @@ def transport_only_worker_harness(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _settings() -> EventWorkerSettings:
     return EventWorkerSettings(
-        runtime_database_url="postgresql+psycopg://businessos_app:runtime-secret@db/app",
+        runtime_database_url="postgresql+psycopg://businessos_worker:runtime-secret@db/app",
         operations_database_url="postgresql+psycopg://businessos_ops:ops-secret@db/app",
         installation_id=uuid4(),
         principal_id=uuid4(),
@@ -147,7 +147,7 @@ def test_event_worker_configuration_redacts_role_credentials() -> None:
 def test_event_worker_requires_separate_runtime_and_operations_roles() -> None:
     runtime_url = "postgresql+psycopg://same:runtime-secret@db/app"
     operations_url = "postgresql+psycopg://same:operations-secret@db/app?application_name=ops"
-    with pytest.raises(ValidationError, match="roles must be separate"):
+    with pytest.raises(ValidationError, match="businessos_worker and businessos_ops"):
         EventWorkerSettings(
             runtime_database_url=runtime_url,
             operations_database_url=operations_url,
@@ -159,7 +159,7 @@ def test_event_worker_requires_separate_runtime_and_operations_roles() -> None:
 def test_event_worker_requires_one_source_database() -> None:
     with pytest.raises(ValidationError, match="same source database"):
         EventWorkerSettings(
-            runtime_database_url="postgresql+psycopg://businessos_app:a@db/installation_a",
+            runtime_database_url="postgresql+psycopg://businessos_worker:a@db/installation_a",
             operations_database_url="postgresql+psycopg://businessos_ops:b@db/installation_b",
             installation_id=uuid4(),
             principal_id=uuid4(),
@@ -364,7 +364,7 @@ async def test_invalid_event_envelope_is_rejected_before_tenant_transaction() ->
         await worker._consume_delivery(delivery)
 
     assert worker.application.settings.database_url.startswith(
-        "postgresql+psycopg://businessos_app:"
+        "postgresql+psycopg://businessos_worker:"
     )
     assert "ops-secret" not in repr(worker.application.settings)
     await worker.stop()

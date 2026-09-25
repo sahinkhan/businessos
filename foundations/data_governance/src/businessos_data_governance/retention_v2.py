@@ -89,7 +89,7 @@ HOLDS_V2 = Table(
     Column("released_at", DateTime(timezone=True)),
     Column("is_active", Boolean, nullable=False, server_default="true"),
     CheckConstraint(
-        "(hold_scope = 'ALL' AND record_id IS NULL) OR "
+        "(hold_scope = 'ALL' AND record_id IS NULL AND retention_category IS NULL) OR "
         "(hold_scope = 'RECORD' AND record_id IS NOT NULL)",
         name="ck_hold_v2_scope",
     ),
@@ -230,6 +230,12 @@ class PlaceRetentionHoldV2(Command):
     scope: HoldScope
     reason: str = Field(min_length=1, max_length=1000)
     retention_category: str | None = None
+
+    @model_validator(mode="after")
+    def valid_scope(self) -> PlaceRetentionHoldV2:
+        if self.scope is HoldScope.ALL and self.retention_category is not None:
+            raise ValueError("ALL hold must be category-free")
+        return self
 
 
 class ReleaseRetentionHoldV2(Command):

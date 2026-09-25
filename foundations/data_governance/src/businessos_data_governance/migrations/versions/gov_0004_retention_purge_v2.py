@@ -121,7 +121,7 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
         sa.CheckConstraint("reason <> ''", name="ck_hold_v2_reason"),
         sa.CheckConstraint(
-            "(hold_scope = 'ALL' AND record_id IS NULL) OR "
+            "(hold_scope = 'ALL' AND record_id IS NULL AND retention_category IS NULL) OR "
             "(hold_scope = 'RECORD' AND record_id IS NOT NULL)",
             name="ck_hold_v2_scope",
         ),

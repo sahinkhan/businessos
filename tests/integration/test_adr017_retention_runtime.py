@@ -356,6 +356,28 @@ def test_forward_preflight_blocks_unmapped_policies_and_preserves_legacy_holds(
 
 @pytest.mark.integration
 @pytest.mark.postgres
+def test_governance_advisory_lock_timeout_and_holder_rollback(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    # The same canonical entity gate must fail within the configured database
+    # timeout, and rollback of the holder must make a fresh attempt possible.
+    key = "\x1f".join(("adr017", "entity", str(uuid4()), "example.retention_owner", "proof"))
+    lock_sql = "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))"
+    with psycopg.connect(_url(postgres_database.runtime_url)) as holder:
+        holder.execute(lock_sql, (key,))
+        with psycopg.connect(_url(postgres_database.runtime_url)) as waiter:
+            waiter.execute("SET LOCAL lock_timeout = '200ms'")
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                waiter.execute(lock_sql, (key,))
+            waiter.rollback()
+        holder.rollback()
+        with psycopg.connect(_url(postgres_database.runtime_url)) as retry:
+            retry.execute("SET LOCAL lock_timeout = '1s'")
+            retry.execute(lock_sql, (key,))
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_destructive_lifecycle_uses_owner_facts_policy_holds_and_one_uow(
     postgres_database: PostgreSQLTestDatabase,
@@ -428,6 +450,35 @@ async def test_destructive_lifecycle_uses_owner_facts_policy_holds_and_one_uow(
         )
         policy_id = await _command(app, policy, context)
         assert isinstance(policy_id, UUID)
+        await _command(
+            app,
+            policy.model_copy(update={"retention_category": "other_category"}),
+            context,
+        )
+        category_other = key.model_copy(update={"record_id": uuid4()})
+        _seed_owner(postgres_database, category_other, anchor, category="other_category")
+        all_hold_id = await _command(
+            app,
+            PlaceRetentionHoldV2(subject=key, scope=HoldScope.ALL, reason="entity-wide"),
+            context,
+        )
+        with psycopg.connect(_url(postgres_database.administrator_url)) as connection:
+            assert connection.execute(
+                "SELECT hold_scope, record_id, retention_category "
+                "FROM platform_gov.legal_holds_v2 WHERE id=%s",
+                (all_hold_id,),
+            ).fetchone() == ("ALL", None, None)
+        with pytest.raises(BusinessOSError, match="Active legal hold"):
+            await _command(
+                app,
+                ExecuteDestructiveLifecycleV2(subject=category_other, action=ExpiryAction.PURGE),
+                context,
+            )
+        await _command(
+            app,
+            ReleaseRetentionHoldV2(tenant_id=key.tenant_id, hold_id=all_hold_id),
+            context,
+        )
         with pytest.raises(BusinessOSError, match="Owner did not declare"):
             await _command(
                 app,
@@ -559,9 +610,17 @@ async def test_destructive_lifecycle_uses_owner_facts_policy_holds_and_one_uow(
                 "AND payload ->> 'decision_id'=%s",
                 (key.tenant_id, str(decision_id)),
             ).fetchone()
+            audit_evidence = connection.execute(
+                "SELECT action, evidence_v3 -> 'details' ->> 'policy_id', "
+                "evidence_v3 -> 'details' ->> 'decision_id' "
+                "FROM platform_audit.audit_logs WHERE tenant_id=%s AND resource_id=%s "
+                "AND action='governance.destructive.purge'",
+                (key.tenant_id, str(key.record_id)),
+            ).fetchone()
         assert row == ("purge",)
         assert decision == ("pending",)
         assert cleanup_event == ("governance.destructive.cleanup_requested.v2",)
+        assert audit_evidence == ("governance.destructive.purge", str(policy_id), str(decision_id))
 
         # Hold-first: the hold commits while purge waits at the entity gate.
         hold_first = key.model_copy(update={"record_id": uuid4()})
@@ -659,6 +718,34 @@ async def test_destructive_lifecycle_uses_owner_facts_policy_holds_and_one_uow(
         assert isinstance(await asyncio.wait_for(first, 10), UUID)
         with pytest.raises(BusinessOSError, match="current resource state"):
             await asyncio.wait_for(second, 10)
+        owner.pause_validate = None
+
+        # Distinct subjects under the same entity gate both complete after the
+        # first owner operation releases its transaction locks.
+        subject_a = key.model_copy(update={"record_id": uuid4()})
+        subject_b = key.model_copy(update={"record_id": uuid4()})
+        _seed_owner(postgres_database, subject_a, anchor)
+        _seed_owner(postgres_database, subject_b, anchor)
+        entered, release = asyncio.Event(), asyncio.Event()
+        owner.pause_validate = (entered, release)
+        first_subject = asyncio.create_task(
+            _command(
+                app,
+                ExecuteDestructiveLifecycleV2(subject=subject_a, action=ExpiryAction.PURGE),
+                context,
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 10)
+        second_subject = asyncio.create_task(
+            _command(
+                app,
+                ExecuteDestructiveLifecycleV2(subject=subject_b, action=ExpiryAction.PURGE),
+                context,
+            )
+        )
+        release.set()
+        assert isinstance(await asyncio.wait_for(first_subject, 10), UUID)
+        assert isinstance(await asyncio.wait_for(second_subject, 10), UUID)
         owner.pause_validate = None
 
         releasing_key = key.model_copy(update={"record_id": uuid4()})

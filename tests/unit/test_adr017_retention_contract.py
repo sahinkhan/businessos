@@ -8,6 +8,8 @@ import pytest
 from businessos_data_governance.contracts import DataGovernanceHooks
 from businessos_data_governance.models import ExpiryAction
 from businessos_data_governance.retention_v2 import (
+    HoldScope,
+    PlaceRetentionHoldV2,
     RetentionSubjectKey,
     SetRetentionPolicyV2,
     normalize_owner_facts,
@@ -83,6 +85,16 @@ def test_policy_interval_is_half_open_utc() -> None:
     for invalid in (start, start - timedelta(seconds=1), start.replace(tzinfo=None)):
         with pytest.raises(ValidationError):
             SetRetentionPolicyV2(**fields, valid_until=invalid)
+
+
+def test_all_hold_cannot_be_narrowed_by_category() -> None:
+    with pytest.raises(ValidationError, match="ALL hold must be category-free"):
+        PlaceRetentionHoldV2(
+            subject=_key(),
+            scope=HoldScope.ALL,
+            retention_category="customer",
+            reason="would falsely claim all-category protection",
+        )
 
 
 @pytest.mark.asyncio

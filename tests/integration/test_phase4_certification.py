@@ -151,7 +151,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
         assert heads == {
             "audit_0003",
             "geography_0003",
-            "gov_0003",
+            "gov_0004",
             "identity_0005",
             "organization_0003",
             "party_0002",
@@ -162,7 +162,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
         assert len(rls) >= 17
         assert all(row[2] and row[3] for row in rls)
     finally:
-        with pytest.raises(Exception, match="gov_0003 downgrade refused"):
+        with pytest.raises(Exception, match="gov_0004 downgrade refused"):
             app.runtime.migrations.downgrade(postgres_database.migration_url)
 
 
@@ -307,5 +307,5 @@ async def test_governance_retention_legal_hold_and_consent_lifecycle(
         assert not revoked_consent.has_consent
     finally:
         await app.shutdown()
-        with pytest.raises(Exception, match="gov_0003 downgrade refused"):
+        with pytest.raises(Exception, match="gov_0004 downgrade refused"):
             app.runtime.migrations.downgrade(postgres_database.migration_url)

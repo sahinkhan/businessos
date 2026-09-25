@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+import pytest
 from businessos_audit import compute_audit_checksum
 from businessos_data_governance import DataGovernanceHooks
 from businessos_policy import (
@@ -663,7 +664,7 @@ def test_audit_v2_integrity_covers_evidence_payload() -> None:
     assert original != changed
 
 
-async def test_governance_export_and_anonymization_hooks_are_deterministic() -> None:
+async def test_governance_export_remains_and_v1_destructive_hook_fails_closed() -> None:
     calls: list[str] = []
 
     class Hook:
@@ -681,5 +682,6 @@ async def test_governance_export_and_anonymization_hooks_are_deterministic() -> 
     tenant_id = uuid4()
     subject_id = uuid4()
     assert await hooks.export_tenant_data(tenant_id) == {"module": {"ok": True}}
-    await hooks.anonymize_subject(tenant_id, subject_id)
-    assert calls == [f"export:{tenant_id}", f"anonymize:{tenant_id}:{subject_id}"]
+    with pytest.raises(PermissionError, match=r"destructive-lifecycle\.v2"):
+        await hooks.anonymize_subject(tenant_id, subject_id)
+    assert calls == [f"export:{tenant_id}"]

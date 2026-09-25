@@ -27,7 +27,8 @@
     "foundation.governance.manage",
     "foundation.governance.classification.history.read",
     "foundation.governance.hold",
-    "foundation.governance.erase"
+    "foundation.governance.erase",
+    "foundation.governance.cleanup.report"
   ],
   "migrations": ["python://businessos_data_governance/migrations/versions"],
   "migration_namespace": "foundation_data_governance",

@@ -257,15 +257,15 @@ def _verify_global_geography_read_only(database_url: str) -> None:
                 raise RuntimeError(f"unsafe runtime privileges on global Geography {table}")
 
 
-def _expect_safe_classification_downgrade_refusal(run: Callable[[Sequence[str]], str]) -> None:
+def _expect_safe_governance_downgrade_refusal(run: Callable[[Sequence[str]], str]) -> None:
     try:
         run(("migrate", "downgrade", "base"))
     except subprocess.CalledProcessError as exc:
-        if "gov_0003 downgrade refused" not in (exc.stderr or ""):
+        if "gov_0004 downgrade refused" not in (exc.stderr or ""):
             raise RuntimeError("migration downgrade failed for an unexpected reason") from exc
-        print("classification V2 downgrade safely refused")
+        print("governance V2 downgrade safely refused")
     else:
-        raise RuntimeError("destructive classification V2 downgrade unexpectedly succeeded")
+        raise RuntimeError("destructive governance V2 downgrade unexpectedly succeeded")
 
 
 def main() -> None:
@@ -360,7 +360,7 @@ def main() -> None:
             _verify_installed_plan(run(("migrate", "plan", "--check-database")), plan)
             _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
             before_currency = _currency_rows(_url(migration_base, database_name, sqlalchemy=False))
-            _expect_safe_classification_downgrade_refusal(run)
+            _expect_safe_governance_downgrade_refusal(run)
             _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
             if (
                 _currency_rows(_url(migration_base, database_name, sqlalchemy=False))

@@ -695,6 +695,7 @@ def create_event_worker(
             _WorkerPermissionPolicy(settings.principal_id, settings.allowed_permissions)
         ),
         infrastructure_providers=providers,
+        resource_coordinator_ids=frozenset({"foundation.data_governance"}),
     )
     operations_database = Database(Settings(database_url=settings.operations_database_url))
     return EventWorker(

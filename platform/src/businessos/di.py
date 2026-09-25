@@ -13,6 +13,7 @@ from types import TracebackType
 from typing import Any, Protocol, TypeVar, cast
 
 from businessos.activation import ContributionGate, ContributionGeneration
+from businessos.dependency_entitlement import internal_valid_restricted_dependency_entitlement
 from businessos.errors import ConfigurationError, ConflictError
 
 T = TypeVar("T")
@@ -23,6 +24,7 @@ class DependencyKey[T]:
     """Typed identifier that keeps dependencies explicit across module boundaries."""
 
     name: str
+    required_owner: str | None = None
 
 
 class DependencyResolver(Protocol):
@@ -169,9 +171,17 @@ class Container:
         owner: str | None = None,
         generation: ContributionGeneration | None = None,
         gate: ContributionGate | None = None,
+        _owner_restricted_entitlement: object | None = None,
     ) -> None:
         if self._closed:
             raise ConfigurationError("Dependency container is closed")
+        if key.required_owner is not None:
+            if owner != key.required_owner:
+                raise ConfigurationError("Dependency key is reserved to another module owner")
+            if not internal_valid_restricted_dependency_entitlement(
+                _owner_restricted_entitlement, key.required_owner, generation
+            ):
+                raise ConfigurationError("Reserved dependency requires approved artifact")
         if key in self._registrations:
             raise ConflictError(f"Dependency already registered: {key.name}")
         self._registrations[key] = _Registration(

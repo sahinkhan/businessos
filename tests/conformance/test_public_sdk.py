@@ -3,12 +3,18 @@ import tomllib
 from pathlib import Path
 
 from businessos.sdk import (
+    DependencyKey,
+    HandlerInvocationBinding,
+    HandlerInvocationDependency,
+    HandlerInvocationKind,
+    HandlingContext,
     ModuleManifest,
     ResourceLocator,
     ResourceOwnerFacts,
     ResourceOwnerFactsProvider,
     ResourceOwnerOperationProvider,
     ResourceOwnership,
+    validate_handler_invocation,
 )
 
 
@@ -49,3 +55,16 @@ def test_resource_owner_contracts_are_available_through_stable_sdk() -> None:
     assert "read_facts" in ResourceOwnerFactsProvider.__dict__
     assert "validate_operation" in ResourceOwnerOperationProvider.__dict__
     assert "apply_operation" in ResourceOwnerOperationProvider.__dict__
+
+
+def test_handler_invocation_contract_is_additive_and_public() -> None:
+    assert HandlerInvocationBinding.__module__ == "businessos.handler_invocation"
+    assert HandlerInvocationDependency.__module__ == "businessos.handler_invocation"
+    assert HandlerInvocationKind.COMMAND.value == "command"
+    assert HandlerInvocationKind.QUERY.value == "query"
+    assert callable(validate_handler_invocation)
+    assert "invocation" in HandlingContext.__dataclass_fields__
+    assert DependencyKey[object]("example.key").required_owner is None
+    assert DependencyKey[object]("example.key", required_owner="example.owner").required_owner == (
+        "example.owner"
+    )

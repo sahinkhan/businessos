@@ -18,6 +18,14 @@ from businessos.activation import ContributionGate, ContributionGeneration, Cont
 from businessos.context import RequestContext, bind_request_context
 from businessos.di import RequestDependencyScope
 from businessos.errors import ConflictError, DeliveryUnavailableError, NotFoundError
+from businessos.handler_invocation import (
+    HandlerInvocationBinding,
+    HandlerInvocationDependency,
+    HandlerInvocationKind,
+    internal_issue_handler_invocation,
+    internal_trusted_handler_dependencies,
+    internal_without_handler_invocation,
+)
 from businessos.persistence import (
     PendingOutboxMessage,
     TransactionalPersistence,
@@ -130,6 +138,7 @@ class HandlingContext:
     dependencies: RequestDependencyScope
     unit_of_work: HandlerTransaction
     _events: list[DomainEvent] = field(default_factory=list[DomainEvent])
+    invocation: HandlerInvocationBinding | None = None
 
     def emit(self, event: DomainEvent) -> None:
         if self.request.tenant is None or event.tenant_id != self.request.tenant.tenant_id:
@@ -164,6 +173,7 @@ class _OwnedHandler:
     generation: ContributionGeneration | None
     permission: str | None
     coordinator_token: object | None = None
+    direct_dependencies: tuple[HandlerInvocationDependency, ...] | None = None
 
 
 class HandlerRegistry:
@@ -181,6 +191,7 @@ class HandlerRegistry:
         generation: ContributionGeneration | None = None,
         permission: str | None = None,
         coordinator_token: object | None = None,
+        _provenance: object | None = None,
     ) -> None:
         if message_type in self._handlers:
             current_owner = self._handlers[message_type].owner
@@ -193,6 +204,7 @@ class HandlerRegistry:
             generation,
             permission,
             coordinator_token,
+            internal_trusted_handler_dependencies(_provenance, owner, generation),
         )
 
     def get(self, message: Message) -> Handler:
@@ -474,19 +486,23 @@ class MessageDispatcher:
         dependencies: RequestDependencyScope,
     ) -> object:
         ResourceTransactionScope.reject_nested_dispatch_if_leased()
-        with bind_request_context(context), dispatch_span("command", type(message).__name__):
+        with (
+            internal_without_handler_invocation(),
+            bind_request_context(context),
+            dispatch_span("command", type(message).__name__),
+        ):
             registered = self.commands.resolve(message)
             async with self.commands.admitted(registered):
                 await self._authorize(context, registered.permission)
                 unit_of_work = self._unit_of_work(context)
                 if self._gate is None:
                     async with unit_of_work:
-                        handling = HandlingContext(
-                            context, dependencies, handler_transaction_view(unit_of_work)
-                        )
-                        result = await self.commands.invoke_registered(
-                            registered, message, handling
-                        )
+                        transaction = handler_transaction_view(unit_of_work)
+                        handling = HandlingContext(context, dependencies, transaction)
+                        with internal_without_handler_invocation():
+                            result = await self.commands.invoke_registered(
+                                registered, message, handling
+                            )
                         await unit_of_work.commit()
                 else:
                     async with ResourceTransactionScope(
@@ -500,9 +516,27 @@ class MessageDispatcher:
                             transaction = handler_transaction_view(unit_of_work)
                             resource_scope.bind_transaction(transaction)
                             handling = HandlingContext(context, dependencies, transaction)
-                            result = await self.commands.invoke_registered(
-                                registered, message, handling
-                            )
+                            if (
+                                registered.direct_dependencies is None
+                                or registered.generation is None
+                            ):
+                                with internal_without_handler_invocation():
+                                    result = await self.commands.invoke_registered(
+                                        registered, message, handling
+                                    )
+                            else:
+                                with internal_issue_handler_invocation(
+                                    owner_module_id=registered.owner,
+                                    generation=registered.generation,
+                                    invocation_kind=HandlerInvocationKind.COMMAND,
+                                    direct_dependencies=registered.direct_dependencies,
+                                    request=context,
+                                    transaction=transaction,
+                                ) as invocation:
+                                    handling.invocation = invocation
+                                    result = await self.commands.invoke_registered(
+                                        registered, message, handling
+                                    )
                             await unit_of_work.commit()
                 return result
 
@@ -513,17 +547,23 @@ class MessageDispatcher:
         dependencies: RequestDependencyScope,
     ) -> object:
         ResourceTransactionScope.reject_nested_dispatch_if_leased()
-        with bind_request_context(context), dispatch_span("query", type(message).__name__):
+        with (
+            internal_without_handler_invocation(),
+            bind_request_context(context),
+            dispatch_span("query", type(message).__name__),
+        ):
             registered = self.queries.resolve(message)
             async with self.queries.admitted(registered):
                 await self._authorize(context, registered.permission)
                 unit_of_work = self._unit_of_work(context)
                 if self._gate is None:
                     async with unit_of_work:
-                        handling = HandlingContext(
-                            context, dependencies, handler_transaction_view(unit_of_work)
-                        )
-                        return await self.queries.invoke_registered(registered, message, handling)
+                        transaction = handler_transaction_view(unit_of_work)
+                        handling = HandlingContext(context, dependencies, transaction)
+                        with internal_without_handler_invocation():
+                            return await self.queries.invoke_registered(
+                                registered, message, handling
+                            )
                 async with ResourceTransactionScope(
                     self._gate,
                     context,
@@ -535,7 +575,23 @@ class MessageDispatcher:
                         transaction = handler_transaction_view(unit_of_work)
                         resource_scope.bind_transaction(transaction)
                         handling = HandlingContext(context, dependencies, transaction)
-                        return await self.queries.invoke_registered(registered, message, handling)
+                        if registered.direct_dependencies is None or registered.generation is None:
+                            with internal_without_handler_invocation():
+                                return await self.queries.invoke_registered(
+                                    registered, message, handling
+                                )
+                        with internal_issue_handler_invocation(
+                            owner_module_id=registered.owner,
+                            generation=registered.generation,
+                            invocation_kind=HandlerInvocationKind.QUERY,
+                            direct_dependencies=registered.direct_dependencies,
+                            request=context,
+                            transaction=transaction,
+                        ) as invocation:
+                            handling.invocation = invocation
+                            return await self.queries.invoke_registered(
+                                registered, message, handling
+                            )
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:
         if permission is None:

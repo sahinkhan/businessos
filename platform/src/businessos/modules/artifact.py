@@ -7,6 +7,13 @@ module entry point, tenant API, or tenant configuration.
 
 from dataclasses import dataclass
 
+from businessos.activation import ContributionGeneration
+from businessos.dependency_entitlement import (
+    InternalRestrictedDependencyEntitlement,
+)
+from businessos.dependency_entitlement import (
+    internal_issue_restricted_dependency_entitlement as _issue_entitlement,
+)
 from businessos.errors import ConfigurationError
 from businessos.modules.manifest import ModuleManifest
 
@@ -53,3 +60,15 @@ class ApprovedModuleArtifact:
                     ownership.contract_version,
                 ) not in self.approved_aliases:
                     raise ConfigurationError("Resource alias lacks protected operator approval")
+
+
+def internal_issue_restricted_dependency_entitlement(
+    grant: ApprovedModuleArtifact,
+    module: object,
+    manifest: ModuleManifest,
+    generation: ContributionGeneration,
+) -> InternalRestrictedDependencyEntitlement:
+    grant.verify(module, manifest)
+    if not grant.first_party or generation.owner != manifest.module_id:
+        raise ConfigurationError("Reserved dependency requires approved first-party artifact")
+    return _issue_entitlement(manifest.module_id, generation)

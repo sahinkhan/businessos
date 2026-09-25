@@ -14,6 +14,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
 from uuid import UUID
 
+from sqlalchemy import text
+
 from businessos.activation import ContributionGate, ContributionGeneration, ContributionState
 from businessos.context import RequestContext
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
@@ -33,6 +35,42 @@ class ResourceLocator:
     def __post_init__(self) -> None:
         if not _valid_locator_identity(self):
             raise ConfigurationError("Resource locator requires exact canonical identity types")
+
+
+async def lock_resource_subject_facts(
+    locator: ResourceLocator,
+    owner_module_id: str,
+    entity_type: str,
+    request: RequestContext,
+    transaction: HandlerTransaction,
+) -> None:
+    """Neutral entity/subject lock order for owner fact mutations.
+
+    Owner modules use this before locking a row whose category, anchor, or
+    destruction lifecycle may change. The current dispatcher UOW owns both
+    advisory locks; callers cannot carry them across transactions.
+    """
+    active_scope = ResourceTransactionScope.current(request, transaction)
+    if (
+        request.tenant is None
+        or locator.tenant_id != request.tenant.tenant_id
+        or not owner_module_id
+        or not entity_type
+        or active_scope.handler_owner != owner_module_id
+        or not locator.namespace.startswith(owner_module_id + ".")
+    ):
+        raise ConfigurationError("Resource fact lock requires trusted tenant and owner")
+    for scope, parts in (
+        ("entity", (locator.tenant_id, owner_module_id, entity_type)),
+        (
+            "subject",
+            (locator.tenant_id, owner_module_id, locator.namespace, entity_type, locator.record_id),
+        ),
+    ):
+        key = "\x1f".join(("adr017", scope, *(str(part) for part in parts)))
+        await transaction.persistence.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key}
+        )
 
 
 def _valid_locator_identity(locator: ResourceLocator) -> bool:
@@ -137,6 +175,7 @@ class _ProviderEntry:
     kind: str
     provider: object
     supported_actions: frozenset[str] = frozenset()
+    declared_entity_types: frozenset[str] = frozenset()
 
 
 _current_scope: ContextVar[ResourceTransactionScope | None] = ContextVar(
@@ -248,6 +287,11 @@ class AdmittedResourceProvider:
     @property
     def binding(self) -> ResourceOwnerBinding:
         return self._entry.binding
+
+    @property
+    def declared_entity_types(self) -> frozenset[str]:
+        self._check("facts")
+        return self._entry.declared_entity_types
 
     def _check(self, kind: str) -> None:
         ResourceTransactionScope.current(self._request, self._transaction)
@@ -414,6 +458,17 @@ class ResourceOwnershipRegistry:
         if not all(callable(getattr(provider, name, None)) for name in required):
             raise ConfigurationError("Resource provider does not implement its typed contract")
         supported_actions: frozenset[str] = frozenset()
+        declared_entity_types: frozenset[str] = frozenset()
+        if kind == "facts":
+            empty_types: frozenset[str] = frozenset()
+            raw_types: object = getattr(provider, "declared_entity_types", empty_types)
+            if type(raw_types) is not frozenset or any(
+                type(entity_type) is not str
+                or not re.fullmatch(r"[a-z][a-z0-9_.-]*", entity_type, re.ASCII)
+                for entity_type in cast(frozenset[object], raw_types)
+            ):
+                raise ConfigurationError("Owner facts provider entity types must be canonical")
+            declared_entity_types = cast(frozenset[str], raw_types)
         if kind == "operation":
             raw_actions = getattr(provider, "supported_actions", None)
             if (
@@ -436,6 +491,7 @@ class ResourceOwnershipRegistry:
             kind,
             provider,
             supported_actions,
+            declared_entity_types,
         )
 
     def authorize_coordinator_generation(

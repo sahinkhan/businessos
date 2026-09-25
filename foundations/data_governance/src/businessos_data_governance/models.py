@@ -72,6 +72,7 @@ LEGAL_HOLDS = Table(
     Column("reason", Text(), nullable=False),
     Column("entity_type", String(100), nullable=False),
     Column("entity_id", String(255), nullable=True),
+    Column("hold_scope", String(10), nullable=False),
     Column("placed_by", String(100), nullable=False),
     Column("placed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("released_by", String(100), nullable=True),
@@ -203,6 +204,7 @@ class PurgeEligibilityResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     can_purge: bool
+    authoritative: bool = False
     reason: str
     active_holds: list[str] = Field(default_factory=list)
 

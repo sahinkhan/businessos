@@ -45,6 +45,7 @@ from businessos.resources import (
     ResourceOwnerLockedFactsProvider,
     ResourceOwnerOperationProvider,
     ResourceOwnerResolver,
+    lock_resource_subject_facts,
 )
 from businessos.security import (
     Principal,
@@ -101,5 +102,6 @@ __all__ = [
     "UnitOfWork",
     "UnitOfWorkFactory",
     "WorkloadAdmissionDenied",
+    "lock_resource_subject_facts",
     "validate_handler_invocation",
 ]

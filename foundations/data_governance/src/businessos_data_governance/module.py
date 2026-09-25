@@ -57,6 +57,17 @@ from .models import (
     RetentionPolicyRecord,
     SensitiveFieldTagRecord,
 )
+from .retention_v2 import (
+    DECISIONS_V2,
+    ExecuteDestructiveLifecycleV2,
+    PlaceRetentionHoldV2,
+    RecordDestructiveCleanupResultV2,
+    ReleaseRetentionHoldV2,
+    ReplaceRetentionPolicyV2,
+    RetentionRuntimeV2,
+    SetRetentionPolicyV2,
+    lock_governance_scope,
+)
 
 
 class RegisterDataClassificationCommand(Command):
@@ -205,6 +216,7 @@ class DataGovernanceModule:
         self.manifest = ModuleManifest.model_validate(data)
         self.hooks = DataGovernanceHooks()
         self.classification_v2 = DataGovernanceClassificationV2()
+        self.retention_v2 = RetentionRuntimeV2()
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.contract(
@@ -220,6 +232,9 @@ class DataGovernanceModule:
         )
         registration.contract("foundation.governance.retention-policy.v1", self)
         registration.contract("foundation.governance.export-delete-hooks.v1", self.hooks)
+        registration.contract("foundation.governance.retention-policy.v2", self.retention_v2)
+        registration.contract("foundation.governance.purge-authority.v2", self.retention_v2)
+        registration.contract("foundation.governance.destructive-lifecycle.v2", self.retention_v2)
         registration.permission(
             PermissionDeclaration(
                 key="foundation.governance.read",
@@ -247,6 +262,12 @@ class DataGovernanceModule:
             PermissionDeclaration(
                 key="foundation.governance.erase",
                 description="Authorize and execute subject data erasure",
+            )
+        )
+        registration.permission(
+            PermissionDeclaration(
+                key="foundation.governance.cleanup.report",
+                description="Report externally verified destructive cleanup result",
             )
         )
 
@@ -284,6 +305,36 @@ class DataGovernanceModule:
             CreateRetentionPolicyV2Command,
             self._create_retention_policy_v2,
             permission="foundation.governance.manage",
+        )
+        registration.command(
+            SetRetentionPolicyV2,
+            self.retention_v2.set_policy,
+            permission="foundation.governance.manage",
+        )
+        registration.command(
+            ReplaceRetentionPolicyV2,
+            self.retention_v2.replace_policy,
+            permission="foundation.governance.manage",
+        )
+        registration.command(
+            PlaceRetentionHoldV2,
+            self.retention_v2.place_hold,
+            permission="foundation.governance.hold",
+        )
+        registration.command(
+            ReleaseRetentionHoldV2,
+            self.retention_v2.release_hold,
+            permission="foundation.governance.hold",
+        )
+        registration.command(
+            ExecuteDestructiveLifecycleV2,
+            self.retention_v2.execute,
+            permission="foundation.governance.erase",
+        )
+        registration.command(
+            RecordDestructiveCleanupResultV2,
+            self.retention_v2.record_cleanup_result,
+            permission="foundation.governance.cleanup.report",
         )
         registration.query(
             ResolveClassificationV2Query,
@@ -693,6 +744,28 @@ class DataGovernanceModule:
         self, cmd: PlaceLegalHoldCommand, ctx: HandlingContext
     ) -> LegalHoldRecord:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        await lock_governance_scope(
+            ctx.unit_of_work, "legacy-hold-entity", cmd.tenant_id, cmd.entity_type
+        )
+        if cmd.entity_id is not None:
+            try:
+                record_id = UUID(cmd.entity_id)
+            except ValueError:
+                record_id = None
+            if record_id is not None:
+                prior = await ctx.unit_of_work.persistence.execute(
+                    select(DECISIONS_V2.c.id).where(
+                        DECISIONS_V2.c.tenant_id == cmd.tenant_id,
+                        DECISIONS_V2.c.entity_type == cmd.entity_type,
+                        DECISIONS_V2.c.record_id == record_id,
+                    )
+                )
+                if prior.first() is not None:
+                    raise BusinessOSError(
+                        "post_destruction_hold",
+                        "A hold cannot protect an already destroyed record",
+                        status_code=409,
+                    )
         now = datetime.now(UTC)
         hold_id = uuid4()
         stmt = insert(LEGAL_HOLDS).values(
@@ -703,6 +776,7 @@ class DataGovernanceModule:
             reason=cmd.reason,
             entity_type=cmd.entity_type,
             entity_id=cmd.entity_id,
+            hold_scope="ALL" if cmd.entity_id is None else "RECORD",
             placed_by=cmd.placed_by,
             placed_at=now,
             is_active=True,
@@ -734,6 +808,18 @@ class DataGovernanceModule:
 
     async def _release_legal_hold(self, cmd: ReleaseLegalHoldCommand, ctx: HandlingContext) -> None:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
+        hint_result = await ctx.unit_of_work.persistence.execute(
+            select(LEGAL_HOLDS.c.entity_type).where(
+                LEGAL_HOLDS.c.id == cmd.hold_id,
+                LEGAL_HOLDS.c.tenant_id == cmd.tenant_id,
+            )
+        )
+        hint = hint_result.first()
+        if hint is None:
+            raise BusinessOSError("not_found", "Legal hold not found", status_code=404)
+        await lock_governance_scope(
+            ctx.unit_of_work, "legacy-hold-entity", cmd.tenant_id, hint.entity_type
+        )
         now = datetime.now(UTC)
         stmt = (
             update(LEGAL_HOLDS)
@@ -928,8 +1014,9 @@ class DataGovernanceModule:
         return PurgeEligibilityResult(
             can_purge=True,
             reason=(
-                f"Eligible for {policy.action_on_expiry}: record age "
-                f"{query.record_age_days} exceeds {policy.retention_period_days} days"
+                f"Informational estimate only for {policy.action_on_expiry}: record age "
+                f"{query.record_age_days} exceeds {policy.retention_period_days} days; "
+                "destructive authority requires destructive-lifecycle.v2"
             ),
             active_holds=[],
         )

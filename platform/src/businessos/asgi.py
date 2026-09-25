@@ -19,4 +19,5 @@ application = create_application(
     approved_module_artifacts=approved_artifacts_from_operator_inventory(
         loaded_modules, inventory=operator_inventory
     ),
+    resource_coordinator_ids=frozenset({"foundation.data_governance"}),
 )

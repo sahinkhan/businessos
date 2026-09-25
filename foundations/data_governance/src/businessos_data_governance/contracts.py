@@ -87,5 +87,7 @@ class DataGovernanceHooks:
         }
 
     async def anonymize_subject(self, tenant_id: UUID, subject_id: UUID) -> None:
-        for _owner, hook in sorted(self._anonymization_hooks.items()):
-            await hook.anonymize_subject(tenant_id, subject_id)
+        raise PermissionError(
+            "V1 destructive hooks cannot authorize anonymization; "
+            "use foundation.governance.destructive-lifecycle.v2"
+        )

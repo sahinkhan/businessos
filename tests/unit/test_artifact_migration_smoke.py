@@ -67,7 +67,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert plan.heads == (
         "audit_0003",
         "geography_0003",
-        "gov_0003",
+        "gov_0004",
         "identity_0005",
         "organization_0003",
         "party_0002",
@@ -109,6 +109,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["gov_0001"] == ("audit_0001",)
     assert parents["gov_0002"] == ("gov_0001",)
     assert parents["gov_0003"] == ("gov_0002",)
+    assert parents["gov_0004"] == ("gov_0003",)
     smoke._verify_installed_plan(_plan_json(plan), plan)
     smoke._verify_state(set(plan.heads), _inventory(plan), plan)
 

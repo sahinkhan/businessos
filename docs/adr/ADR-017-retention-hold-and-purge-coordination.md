@@ -30,11 +30,11 @@ Acceptance exact-head CI: [35991783982](https://github.com/sahinkhan/businessos/
 
 Accepted main merge SHA: `c732c66b8cba83b2dc896c069f78b3766d4993dd`
 
-Authoritative reconciliation baseline: [main `706bd1d4fffaef92cc32682c404d2c5b224ada28`](https://github.com/sahinkhan/businessos/commit/706bd1d4fffaef92cc32682c404d2c5b224ada28)
+Authoritative runtime implementation baseline: [main `485e80ab183fae69c7ce2b0c531d893111f3c414`](https://github.com/sahinkhan/businessos/commit/485e80ab183fae69c7ce2b0c531d893111f3c414)
 
-Accepted architecture prerequisites: ADR-014 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN; ADR-015 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN; ADR-016 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN; ADR-018 — ACCEPTED / AUTHORITATIVE / EVIDENCE CLEAN. ADR-018's architecture prerequisite is satisfied, but its owner/provider runtime extension is NOT IMPLEMENTED.
+Certified runtime prerequisites on the baseline: ADR-014, ADR-015, ADR-018, ADR-019, ADR-020, and Audit V2 — IMPLEMENTED / CERTIFIED / MERGED. Audit V2 merge: `485e80ab183fae69c7ce2b0c531d893111f3c414`. ADR-016 is SUPERSEDED by ADR-019 for its worker-binding model; its remaining Audit V2 requirements are implemented under the certified ADR-019/ADR-020 path.
 
-Implementation/certification gates carried forward: ADR-014 Policy V2, ADR-015 classification runtime, ADR-016 Audit V2, ADR-018 owner/provider runtime, retention-policy.v2, `RetentionSubjectFactsProvider`/`PurgeSubjectFacts`, purge-authority.v2, destructive-lifecycle.v2, entity/subject lock implementation, legal-hold serialization, v1 compatibility transition, and asynchronous external cleanup are NOT IMPLEMENTED. A new forward Governance migration is NOT CREATED; the dirty-data preflight is NOT EXECUTED. Before any destructive operation, implementation must certify trusted owner facts and exact requested action, one effective policy at the trusted UTC instant, same-UOW authority, tenant isolation, both hold/purge commit orders, and one deterministic combined lock order with ADR-010/011 and ADR-018 provider admission. V1 eligibility remains informational only and legacy destructive hooks cannot bypass v2. Historical `gov_0001`/`gov_0002` are not rewritten. Phases 0–3 remain FINAL PASS / FROZEN with no general reopening.
+ADR-017 runtime certification: the `phase4/adr017-retention-purge-runtime` implementation is a CANDIDATE pending exact-head CI, independent audit, and owner attestation. This header records current prerequisite evidence; it does not certify this candidate or change the accepted decision below. Historical `gov_0001`/`gov_0002`/`gov_0003` remain immutable. Phases 0–3 remain FINAL PASS / FROZEN with no general reopening.
 
 Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN
 

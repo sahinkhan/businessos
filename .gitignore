@@ -12,6 +12,7 @@ build/
 
 # Local configuration and coverage
 .env
+.secrets/
 .coverage
 coverage.xml
 htmlcov/

@@ -51,7 +51,25 @@ Start Uvicorn with source reload:
 docker compose up --build app
 ```
 
-Start the standalone durable event worker after role bootstrap and migrations:
+Provision the local installation workload after role bootstrap and migrations.
+Generate the secret only once; `.secrets/` is excluded from Git. The operator
+CLI persists only a digest and cannot be called with the application role:
+
+```bash
+mkdir -p .secrets
+python -c "from pathlib import Path; import secrets; Path('.secrets/event-worker').write_bytes(secrets.token_bytes(48))"
+docker compose run --rm --no-deps \
+  -e BOS_OPERATIONS_DATABASE_URL=postgresql+psycopg://businessos_ops:businessos-operations@postgres:5432/businessos \
+  database-bootstrap python -m businessos_identity.workload_operator register \
+  00000000-0000-0000-0000-000000000001 00000000-0000-0000-0000-000000000003 \
+  --name local-event-worker --process-class event-worker \
+  --purpose worker-startup --purpose event-delivery \
+  --purpose subscriber-sync --purpose event-publisher \
+  --credential-reference development-file-v1 \
+  --credential-file /app/.secrets/event-worker
+```
+
+Start the standalone durable event worker:
 
 ```bash
 docker compose --profile events up --build event-worker
@@ -62,8 +80,10 @@ remain deployment-managed. The event worker is a separate process: it receives b
 `businessos_app` URL for tenant-scoped consumer transactions and the `businessos_ops` URL for
 cross-tenant outbox publication. Never add the operations URL to the `app` service. Worker event
 permissions are an explicit comma-separated allowlist; an empty allowlist denies every protected
-subscriber. Installation and principal UUIDs identify the trusted worker service account until the
-later identity foundation supplies that deployment integration. The worker's shutdown timeout
+subscriber. The Identity workload ID and mounted credential authenticate the installation
+worker. The principal UUID is routing metadata only and grants no permission outside the
+registered subscriber check. The runtime and operations URLs must name the same database;
+the deployment binds that database to one installation ID. The worker's shutdown timeout
 bounds each subscription, publisher, application and database cleanup step while still attempting
 all later finalizers after an earlier timeout. Mandatory cleanup retains ownership until it reaches
 a terminal result. The `businessos events run` supervisor provides the hard process deadline and

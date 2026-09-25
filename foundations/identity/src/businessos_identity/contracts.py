@@ -1,6 +1,7 @@
 """Public identity, membership and federation contracts."""
 
-from dataclasses import dataclass
+from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal, Protocol
@@ -8,9 +9,123 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from businessos.sdk import DependencyKey, TransactionalPersistence
+from businessos.sdk import (
+    DependencyKey,
+    HandlerTransaction,
+    TransactionalPersistence,
+    WorkloadAdmissionDenied,
+)
 
 type PrincipalType = Literal["user", "service_account", "device"]
+
+
+class InvalidWorkloadCredential(WorkloadAdmissionDenied):
+    """Non-secret authentication failure; never classify as a poison event."""
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedWorkloadIdentity:
+    installation_id: UUID
+    workload_id: UUID
+    principal_type: Literal["service_account"]
+    purpose: str
+    process_class: str
+    credential_reference: str
+    credential_generation: int
+    verification_method: str
+    verification_reference: UUID
+    valid_from: datetime
+    valid_until: datetime
+    _issuer: object = field(repr=False, compare=False)
+
+
+@dataclass(slots=True)
+class _BindingLease:
+    active: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class WorkloadIdentityFacts:
+    """Visible provenance without the authority's reusable admission proof."""
+
+    installation_id: UUID
+    workload_id: UUID
+    principal_type: Literal["service_account"]
+    purpose: str
+    process_class: str
+    credential_reference: str
+    credential_generation: int
+    verification_method: str
+    verification_reference: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class TenantExecutionBinding:
+    workload: WorkloadIdentityFacts
+    tenant_id: UUID
+    source_event_id: UUID
+    subscriber: str
+    attempt_id: UUID
+    purpose: Literal["event-delivery"]
+    transaction_id: int
+    valid_from: datetime
+    valid_until: datetime
+    _task_id: int = field(repr=False, compare=False)
+    _lease: _BindingLease = field(repr=False, compare=False)
+
+    def assert_active(self, transaction: HandlerTransaction) -> None:
+        import asyncio
+
+        task = asyncio.current_task()
+        if (
+            not self._lease.active
+            or id(transaction) != self.transaction_id
+            or task is None
+            or id(task) != self._task_id
+            or datetime.now(self.valid_until.tzinfo) >= self.valid_until
+        ):
+            raise InvalidWorkloadCredential("Workload execution binding is not active")
+
+
+class WorkloadCredentialVerifier(Protocol):
+    async def verify(
+        self,
+        persistence: TransactionalPersistence,
+        *,
+        installation_id: UUID,
+        workload_id: UUID,
+        process_class: str,
+        purpose: str,
+        credential_reference: str,
+        credential: bytes,
+    ) -> VerifiedWorkloadIdentity: ...
+
+
+class WorkloadExecutionAuthority(WorkloadCredentialVerifier, Protocol):
+    def bind(
+        self,
+        persistence: TransactionalPersistence,
+        *,
+        verified: VerifiedWorkloadIdentity,
+        tenant_id: UUID,
+        source_event_id: UUID,
+        subscriber: str,
+        attempt_id: UUID,
+        transaction: HandlerTransaction,
+    ) -> AbstractAsyncContextManager[TenantExecutionBinding]: ...
+
+    def operation(
+        self,
+        persistence: TransactionalPersistence,
+        *,
+        verified: VerifiedWorkloadIdentity,
+        purpose: str,
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
+WORKLOAD_EXECUTION_AUTHORITY = DependencyKey[WorkloadExecutionAuthority](
+    "businessos.identity.workload_execution_authority.v1"
+)
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -139,7 +254,7 @@ class ActiveScopeSelection(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class IdentityContract:
-    version: str = "1.2"
+    version: str = "1.3"
     membership_query: str = "businessos_identity.GetMembership"
     active_scope_contract: str = "businessos_identity.ActiveScopeSelection"
     oidc_resolver: str = "businessos_identity.OIDCContextResolver"
@@ -148,3 +263,4 @@ class IdentityContract:
     session_revoke_command: str = "businessos_identity.RevokeAuthenticationSession"
     session_query: str = "businessos_identity.GetAuthenticationSession"
     session_validation_query: str = "businessos_identity.ValidateAuthenticationSession"
+    workload_execution_authority: str = "businessos.identity.workload_execution_authority.v1"

@@ -152,7 +152,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
             "audit_0002",
             "geography_0003",
             "gov_0003",
-            "identity_0003",
+            "identity_0004",
             "organization_0003",
             "party_0002",
             "policy_0004",

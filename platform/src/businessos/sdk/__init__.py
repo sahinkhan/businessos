@@ -46,6 +46,7 @@ from businessos.security import (
     RequestIdentity,
     TrustedContextResolver,
 )
+from businessos.workload import WorkloadAdmissionDenied
 
 __all__ = [
     "MESSAGE_DISPATCHER",
@@ -89,4 +90,5 @@ __all__ = [
     "TrustedContextResolver",
     "UnitOfWork",
     "UnitOfWorkFactory",
+    "WorkloadAdmissionDenied",
 ]

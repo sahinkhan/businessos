@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 from uuid import uuid4
 
@@ -10,10 +12,17 @@ from pydantic import ValidationError
 import businessos.__main__ as cli
 from businessos.context import current_request_context
 from businessos.errors import BusinessOSError, DeliveryUnavailableError
-from businessos.event_worker import EventWorkerSettings, create_event_worker
+from businessos.event_source import CommittedOutboxSourceVerifier
+from businessos.event_worker import (
+    EventWorker,
+    EventWorkerSettings,
+    _WorkerPermissionPolicy,
+    create_event_worker,
+)
 from businessos.logging import JsonFormatter
 from businessos.messages import DomainEvent
 from businessos.providers import BrokerEvent, PermanentDeliveryError
+from businessos.workload import subscriber_permission_admission
 
 
 class _Broker:
@@ -29,6 +38,20 @@ class _Broker:
 
 class _UnknownEvent(DomainEvent):
     event_type: ClassVar[str] = "future.event"
+
+
+@pytest.fixture(autouse=True)
+def transport_only_worker_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep legacy envelope tests focused on transport after trusted admission."""
+
+    async def verified(_: EventWorker, __: object, ___: str) -> object:
+        return SimpleNamespace(valid_until=datetime.now(UTC) + timedelta(minutes=1))
+
+    async def source_verified(_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr(EventWorker, "_verify_workload", verified)
+    monkeypatch.setattr(CommittedOutboxSourceVerifier, "verify", source_verified)
 
 
 def _settings() -> EventWorkerSettings:
@@ -63,7 +86,9 @@ async def test_worker_delivery_logs_bind_correlation_tenant_and_restore_context(
     async def synchronize() -> None:
         return None
 
-    async def consume(event: _UnknownEvent, context: object, dependencies: object) -> None:
+    async def consume(
+        event: _UnknownEvent, context: object, dependencies: object, **_: object
+    ) -> None:
         logging.getLogger("businessos.event-worker").info("handler log")
         if event.correlation_id == "first-delivery":
             raise RuntimeError("delivery failed")
@@ -127,6 +152,51 @@ def test_event_worker_requires_separate_runtime_and_operations_roles() -> None:
             installation_id=uuid4(),
             principal_id=uuid4(),
         )
+
+
+def test_event_worker_requires_one_source_database() -> None:
+    with pytest.raises(ValidationError, match="same source database"):
+        EventWorkerSettings(
+            runtime_database_url="postgresql+psycopg://businessos_app:a@db/installation_a",
+            operations_database_url="postgresql+psycopg://businessos_ops:b@db/installation_b",
+            installation_id=uuid4(),
+            principal_id=uuid4(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_worker_permission_is_only_for_registered_subscriber_check() -> None:
+    from businessos.context import TenantContext
+
+    principal_id, tenant_id = uuid4(), uuid4()
+    policy = _WorkerPermissionPolicy(principal_id, frozenset({"test.consume"}))
+    tenant = TenantContext(uuid4(), tenant_id, principal_id)
+    assert not await policy.is_allowed(principal_id, tenant, "test.consume")
+    with subscriber_permission_admission(principal_id, tenant_id, "test.consume"):
+        assert await policy.is_allowed(principal_id, tenant, "test.consume")
+        assert not await policy.is_allowed(principal_id, tenant, "test.manage")
+        assert not await policy.is_allowed(
+            principal_id, TenantContext(uuid4(), uuid4(), principal_id), "test.consume"
+        )
+    assert not await policy.is_allowed(principal_id, tenant, "test.consume")
+
+
+@pytest.mark.asyncio
+async def test_quarantine_closes_subscription() -> None:
+    worker = create_event_worker(_settings(), modules=(), broker=cast(Any, _Broker()))
+    closed = asyncio.Event()
+
+    class Subscription:
+        async def close(self) -> None:
+            closed.set()
+
+    worker._subscription = cast(Any, Subscription())
+    worker._quarantine()
+    await asyncio.wait_for(closed.wait(), timeout=1)
+    assert worker._quarantined
+    assert worker._subscription is None
+    assert worker._stop_publisher.is_set()
+    await worker.stop()
 
 
 @pytest.mark.asyncio

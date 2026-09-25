@@ -68,7 +68,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
         "audit_0002",
         "geography_0003",
         "gov_0003",
-        "identity_0003",
+        "identity_0004",
         "organization_0003",
         "party_0002",
         "policy_0004",

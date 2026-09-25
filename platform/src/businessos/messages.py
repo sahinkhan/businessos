@@ -154,6 +154,7 @@ class EventHandlingContext:
     request: RequestContext
     dependencies: RequestDependencyScope
     unit_of_work: HandlerTransaction
+    workload_binding: object | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,11 +3,13 @@
 from .authority import DatabaseMembershipAuthority, lock_membership_for_authority
 from .contracts import (
     MEMBERSHIP_AUTHORITY,
+    WORKLOAD_EXECUTION_AUTHORITY,
     ActiveScopeSelection,
     AuthenticationSessionRecord,
     AuthenticationStrength,
     BreakGlassCredentialValidator,
     IdentityContract,
+    InvalidWorkloadCredential,
     MembershipAuthority,
     MembershipRecord,
     MembershipStatus,
@@ -15,6 +17,11 @@ from .contracts import (
     PrincipalReference,
     PrincipalType,
     SAMLAssertionValidator,
+    TenantExecutionBinding,
+    VerifiedWorkloadIdentity,
+    WorkloadCredentialVerifier,
+    WorkloadExecutionAuthority,
+    WorkloadIdentityFacts,
 )
 from .module import (
     AuthenticationSessionRevoked,
@@ -45,10 +52,12 @@ from .oidc import (
     VerifiedOIDCClaims,
 )
 from .principal_binding import AUTHENTICATED_PRINCIPAL, AuthenticatedPrincipalBinding
+from .workload_authority import DatabaseWorkloadExecutionAuthority
 
 __all__ = [
     "AUTHENTICATED_PRINCIPAL",
     "MEMBERSHIP_AUTHORITY",
+    "WORKLOAD_EXECUTION_AUTHORITY",
     "ActiveScopeSelection",
     "AuthenticatedPrincipalBinding",
     "AuthenticationSessionRecord",
@@ -59,11 +68,13 @@ __all__ = [
     "ConfigureOIDCProvider",
     "CreateUser",
     "DatabaseMembershipAuthority",
+    "DatabaseWorkloadExecutionAuthority",
     "GetAuthenticationSession",
     "GetMembership",
     "GrantMembership",
     "IdentityContract",
     "IdentityModule",
+    "InvalidWorkloadCredential",
     "MapExternalIdentity",
     "MembershipAuthority",
     "MembershipGranted",
@@ -85,7 +96,12 @@ __all__ = [
     "SetMFAPolicy",
     "SigningKeyResolver",
     "StartAuthenticationSession",
+    "TenantExecutionBinding",
     "ValidateAuthenticationSession",
     "VerifiedOIDCClaims",
+    "VerifiedWorkloadIdentity",
+    "WorkloadCredentialVerifier",
+    "WorkloadExecutionAuthority",
+    "WorkloadIdentityFacts",
     "lock_membership_for_authority",
 ]

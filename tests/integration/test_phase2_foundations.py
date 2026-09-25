@@ -1645,8 +1645,14 @@ async def test_phase2_rls_cross_tenant_writes_and_missing_context_fail_closed(
         app_role = connection.execute(
             "SELECT rolsuper, rolbypassrls, rolinherit FROM pg_roles WHERE rolname='businessos_app'"
         ).fetchone()
-    assert len(rls) == 26
-    assert all(row[2] and row[3] and row[4] == "businessos_migrator" for row in rls)
+    assert len(rls) == 27
+    assert all(row[4] == "businessos_migrator" for row in rls)
+    assert all(
+        not row[2] and not row[3]
+        if (row[0], row[1]) == ("platform_identity", "installation_workloads")
+        else row[2] and row[3]
+        for row in rls
+    )
     assert app_role == (False, False, False)
 
     await runtime.close()
@@ -1662,7 +1668,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
     app = create_application(_settings(postgres_database.runtime_url), modules=_modules())
     assert app.runtime is not None
     plan = app.runtime.migrations.plan()
-    assert set(plan.heads) == {"organization_0003", "identity_0003", "tenant_0002"}
+    assert set(plan.heads) == {"organization_0003", "identity_0004", "tenant_0002"}
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     tenant_id = uuid4()
     _seed_tenant(postgres_database.migration_url, tenant_id, "constraint-tenant")
@@ -1696,7 +1702,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
                 "SELECT module_id FROM platform_module.installed_module_migrations"
             )
         }
-    assert heads == {"organization_0003", "identity_0003", "tenant_0002"}
+    assert heads == {"organization_0003", "identity_0004", "tenant_0002"}
     assert inventory == {
         "foundation.tenant",
         "foundation.identity",
@@ -1808,7 +1814,7 @@ def test_identity_migration_rejects_existing_cross_tenant_device_principal(
             "FROM platform_identity.devices WHERE id = %s",
             (device_id,),
         ).fetchone()
-    assert heads == {"organization_0003", "identity_0003", "tenant_0002"}
+    assert heads == {"organization_0003", "identity_0004", "tenant_0002"}
     assert migrated_device == (principal_tenant_id, principal_id, "user")
     migrations.downgrade(postgres_database.migration_url)
 

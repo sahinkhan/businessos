@@ -23,6 +23,7 @@ class DependencyKey[T]:
     """Typed identifier that keeps dependencies explicit across module boundaries."""
 
     name: str
+    required_owner: str | None = None
 
 
 class DependencyResolver(Protocol):
@@ -172,6 +173,8 @@ class Container:
     ) -> None:
         if self._closed:
             raise ConfigurationError("Dependency container is closed")
+        if key.required_owner is not None and owner != key.required_owner:
+            raise ConfigurationError("Dependency key is reserved to another module owner")
         if key in self._registrations:
             raise ConflictError(f"Dependency already registered: {key.name}")
         self._registrations[key] = _Registration(

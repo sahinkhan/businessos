@@ -16,6 +16,7 @@ from businessos.di import (
     RequestDependencyScope,
 )
 from businessos.features import FeatureFlag, FeatureFlagRegistry
+from businessos.handler_invocation import _capture_handler_provenance
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import CallNext, Middleware, MiddlewareRegistry
 from businessos.jobs import Job, JobHandlerRegistry
@@ -28,6 +29,7 @@ from businessos.messages import (
     Query,
 )
 from businessos.metadata import MetadataDeclaration, MetadataRegistry
+from businessos.modules.artifact import _valid_restricted_dependency_entitlement
 from businessos.modules.manifest import ModuleManifest
 from businessos.permissions import PermissionDeclaration, PermissionRegistry
 from businessos.providers import ProviderRegistry
@@ -74,6 +76,7 @@ class ModuleRegistration:
         manifest: ModuleManifest | None = None,
         resources: ResourceOwnershipRegistry | None = None,
         coordinator_approved: bool = False,
+        owner_restricted_entitlement: object | None = None,
     ) -> None:
         self.owner = owner
         self.generation = generation
@@ -89,6 +92,8 @@ class ModuleRegistration:
         self._jobs = jobs
         self._gate = gate
         self._manifest = manifest
+        self._handler_provenance = _capture_handler_provenance(manifest, owner, generation)
+        self._owner_restricted_entitlement = owner_restricted_entitlement
         self._resources = resources
         self._coordinator_token: object | None = None
         if coordinator_approved:
@@ -213,6 +218,15 @@ class ModuleRegistration:
         scope: DependencyScope = DependencyScope.TRANSIENT,
     ) -> None:
         self._ensure_open()
+        if key.required_owner is not None:
+            if self._gate.state(self.generation) is not ContributionState.STAGED:
+                raise RuntimeError("Reserved dependencies must register before activation")
+            if self.owner != key.required_owner:
+                raise PermissionError("Dependency key is reserved to another module owner")
+            if not _valid_restricted_dependency_entitlement(
+                self._owner_restricted_entitlement, self.owner, self.generation
+            ):
+                raise PermissionError("Reserved dependency requires approved first-party artifact")
         self._container.register(
             key,
             provider,
@@ -283,6 +297,11 @@ class ModuleRegistration:
             generation=self.generation,
             permission=permission,
             coordinator_token=self._coordinator_token,
+            _provenance=(
+                self._handler_provenance
+                if self._gate.state(self.generation) is ContributionState.STAGED
+                else None
+            ),
         )
 
     def query[Q: Query](
@@ -300,6 +319,11 @@ class ModuleRegistration:
             handler,
             generation=self.generation,
             permission=permission,
+            _provenance=(
+                self._handler_provenance
+                if self._gate.state(self.generation) is ContributionState.STAGED
+                else None
+            ),
         )
 
     def event[E: DomainEvent](

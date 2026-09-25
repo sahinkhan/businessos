@@ -10,6 +10,12 @@ from businessos.dependencies import (
 from businessos.di import DependencyKey, DependencyScope, RequestDependencyScope
 from businessos.errors import BusinessOSError
 from businessos.features import FeatureFlag
+from businessos.handler_invocation import (
+    HandlerInvocationBinding,
+    HandlerInvocationDependency,
+    HandlerInvocationKind,
+    validate_handler_invocation,
+)
 from businessos.http import Request, Response
 from businessos.http.middleware import Middleware
 from businessos.jobs import Job
@@ -62,6 +68,9 @@ __all__ = [
     "EventHandlingContext",
     "FeatureFlag",
     "HandlerTransaction",
+    "HandlerInvocationBinding",
+    "HandlerInvocationDependency",
+    "HandlerInvocationKind",
     "HandlingContext",
     "Job",
     "MetadataDeclaration",
@@ -91,4 +100,5 @@ __all__ = [
     "UnitOfWork",
     "UnitOfWorkFactory",
     "WorkloadAdmissionDenied",
+    "validate_handler_invocation",
 ]

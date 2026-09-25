@@ -10,8 +10,13 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 from pydantic import ValidationError
 
+from businessos.activation import ContributionGeneration
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
-from businessos.modules.artifact import ApprovedModuleArtifact
+from businessos.modules.artifact import (
+    ApprovedModuleArtifact,
+    _RestrictedDependencyEntitlement,
+    _issue_restricted_dependency_entitlement,
+)
 from businessos.modules.manifest import ModuleContractDeclaration, ModuleManifest
 from businessos.modules.sdk import BusinessOSModule, ModuleRegistration
 from businessos.providers import ProviderRegistry
@@ -247,6 +252,18 @@ class ModuleRegistry:
 
     def is_approved_coordinator(self, module_id: str) -> bool:
         return module_id in self._coordinator_ids and module_id in self._approved_artifacts
+
+    def restricted_dependency_entitlement(
+        self, module_id: str, generation: ContributionGeneration
+    ) -> _RestrictedDependencyEntitlement | None:
+        """Issue only from protected inventory and the exact admitted module artifact."""
+        grant = self._approved_artifacts.get(module_id)
+        if grant is None or not grant.first_party:
+            return None
+        registered = self.get(module_id)
+        return _issue_restricted_dependency_entitlement(
+            grant, registered.module, registered.manifest, generation
+        )
 
     def ordered(self) -> tuple[RegisteredModule, ...]:
         manifests = {

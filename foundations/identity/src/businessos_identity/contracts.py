@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal, Protocol
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
 from pydantic import BaseModel, ConfigDict
 
@@ -59,7 +60,7 @@ class WorkloadIdentityFacts:
     verification_reference: UUID
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True, eq=False)
 class TenantExecutionBinding:
     workload: WorkloadIdentityFacts
     tenant_id: UUID
@@ -78,13 +79,21 @@ class TenantExecutionBinding:
 
         task = asyncio.current_task()
         if (
-            not self._lease.active
+            self not in _issued_execution_bindings
+            or not self._lease.active
             or id(transaction) != self.transaction_id
             or task is None
             or id(task) != self._task_id
             or datetime.now(self.valid_until.tzinfo) >= self.valid_until
         ):
             raise InvalidWorkloadCredential("Workload execution binding is not active")
+
+
+_issued_execution_bindings: WeakKeyDictionary[TenantExecutionBinding, object] = WeakKeyDictionary()
+
+
+def _issue_tenant_execution_binding(binding: TenantExecutionBinding) -> None:  # pyright: ignore[reportUnusedFunction]
+    _issued_execution_bindings[binding] = binding._lease  # pyright: ignore[reportPrivateUsage]
 
 
 class WorkloadCredentialVerifier(Protocol):

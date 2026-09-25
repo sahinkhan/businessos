@@ -19,6 +19,7 @@ from .contracts import (
     VerifiedWorkloadIdentity,
     WorkloadIdentityFacts,
     _BindingLease,  # pyright: ignore[reportPrivateUsage]
+    _issue_tenant_execution_binding,  # pyright: ignore[reportPrivateUsage]
 )
 from .models import INSTALLATION_WORKLOADS
 
@@ -171,6 +172,7 @@ class DatabaseWorkloadExecutionAuthority:
             _task_id=id(task),
             _lease=lease,
         )
+        _issue_tenant_execution_binding(binding)
         try:
             yield binding
         finally:

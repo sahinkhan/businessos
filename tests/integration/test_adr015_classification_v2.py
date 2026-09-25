@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from businessos_audit import AuditModule
 from businessos_data_governance import (
     ClassificationResolutionV2,
     DataGovernanceModule,
@@ -72,6 +73,7 @@ def _application(database: PostgreSQLTestDatabase) -> BusinessOSApplication:
         if module.manifest.module_id.startswith("foundation.")
     )
     governance = next(module for module in modules if isinstance(module, DataGovernanceModule))
+    audit = next(module for module in modules if isinstance(module, AuditModule))
     grant = ApprovedModuleArtifact(
         loaded_module=governance,
         module_id="foundation.data_governance",
@@ -94,7 +96,18 @@ def _application(database: PostgreSQLTestDatabase) -> BusinessOSApplication:
         Settings(environment="test", database_url=database.runtime_url),
         modules=modules,
         authorizer=Authorizer(_AllowAllPolicy()),
-        approved_module_artifacts={"foundation.data_governance": grant},
+        approved_module_artifacts={
+            "foundation.data_governance": grant,
+            "foundation.audit": ApprovedModuleArtifact(
+                loaded_module=audit,
+                module_id="foundation.audit",
+                publisher="BusinessOS",
+                package_identity="businessos-foundation-audit",
+                loaded_type="businessos_audit.module:AuditModule",
+                install_identity="adr019-test-operator-grant",
+                first_party=True,
+            ),
+        },
     )
 
 

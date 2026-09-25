@@ -55,7 +55,7 @@ services:
       BOS_EVENT_WORKER_WORKLOAD_ID: 00000000-0000-0000-0000-000000000003
       BOS_EVENT_WORKER_WORKLOAD_CREDENTIAL_REFERENCE: development-file-v1
       BOS_EVENT_WORKER_WORKLOAD_CREDENTIAL_FILE: /run/secrets/businessos-event-worker
-      BOS_EVENT_WORKER_PERMISSIONS: example.phase1-proof.read,example.phase1-proof.write,foundation.tenant.manage
+      BOS_EVENT_WORKER_PERMISSIONS: example.phase1-proof.read,example.phase1-proof.write,foundation.tenant.manage,foundation.audit.write
       BOS_EVENT_WORKER_SHUTDOWN_TIMEOUT_SECONDS: "10"
       BOS_EVENT_WORKER_PROCESS_SHUTDOWN_TIMEOUT_SECONDS: "60"
       BOS_EVENT_WORKER_S3_BUCKET: businessos-development

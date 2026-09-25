@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from datetime import UTC, datetime
+import re
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from typing import Any
 from uuid import UUID, uuid4
 
+from businessos_identity import TenantExecutionBinding
+from businessos_policy import PolicyDecisionRecordedV2
 from pydantic import Field
 from sqlalchemy import insert, select, text
 
 from businessos.sdk import (
     BusinessOSError,
     Command,
+    DependencyResolver,
+    DependencyScope,
+    EventHandlingContext,
+    HandlerTransaction,
     HandlingContext,
     ModuleManifest,
     ModuleRegistration,
@@ -23,13 +34,15 @@ from businessos.sdk import (
     TenantContext,
 )
 
-from .contracts import AuditEventRecorded
 from .models import (
     AUDIT_LOGS,
     AuditRecord,
     AuditVerificationResult,
     compute_audit_checksum,
+    compute_audit_checksum_v3,
 )
+from .v2_contracts import AUDIT_APPENDER_V2, AuditAppenderV2, AuditEvidenceV2, RecordAuditLogV2
+from .v2_runtime import AuditAppenderProvider, trusted_interactive_actor
 
 
 class RecordAuditLogCommand(Command):
@@ -76,6 +89,7 @@ class AuditModule:
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.contract("foundation.audit.write-facade.v1", self)
+        registration.contract("foundation.audit.write-facade.v2", self)
         registration.permission(
             PermissionDeclaration(
                 key="foundation.audit.read", description="Read audit logs and verify integrity"
@@ -95,6 +109,18 @@ class AuditModule:
         registration.command(
             RecordAuditLogCommand, self._record_audit_log, permission="foundation.audit.write"
         )
+        registration.command(
+            RecordAuditLogV2, self._record_audit_log_v2, permission="foundation.audit.write"
+        )
+        registration.dependency(
+            AUDIT_APPENDER_V2, self._provide_appender, scope=DependencyScope.REQUEST
+        )
+        registration.event(
+            PolicyDecisionRecordedV2,
+            "policy_decision_v2",
+            self._materialize_policy_decision,
+            permission="foundation.audit.write",
+        )
         registration.query(
             QueryAuditLogsQuery, self._query_audit_logs, permission="foundation.audit.read"
         )
@@ -111,109 +137,208 @@ class AuditModule:
     async def _record_audit_log(
         self, cmd: RecordAuditLogCommand, ctx: HandlingContext
     ) -> AuditRecord:
-        tenant = _require_tenant(ctx.request, cmd.tenant_id)
-        audit_id = uuid4()
-        occurred_at = datetime.now(UTC)
-        correlation_id = cmd.correlation_id or ctx.request.correlation_id
-        trace_id = ctx.request.trace_id
-
-        await ctx.unit_of_work.persistence.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:tenant_id, 0))"),
-            {"tenant_id": str(cmd.tenant_id)},
+        raise BusinessOSError(
+            "audit_v1_write_disabled",
+            "Caller-supplied Audit V1 provenance is no longer accepted; use RecordAuditLogV2",
+            status_code=410,
         )
 
-        # Retrieve previous record's checksum for hash chaining
-        prev_res = await ctx.unit_of_work.persistence.execute(
-            select(AUDIT_LOGS.c.checksum)
-            .where(AUDIT_LOGS.c.tenant_id == cmd.tenant_id)
+    @asynccontextmanager
+    async def _provide_appender(
+        self, resolver: DependencyResolver
+    ) -> AsyncGenerator[AuditAppenderV2]:
+        appender = AuditAppenderProvider(self, resolver)
+        try:
+            yield appender
+        finally:
+            appender.active = False
+
+    async def _record_audit_log_v2(
+        self, cmd: RecordAuditLogV2, ctx: HandlingContext
+    ) -> AuditRecord:
+        actor = await trusted_interactive_actor(ctx)
+        return await self._append_v3(
+            ctx.request,
+            ctx.unit_of_work,
+            cmd.evidence,
+            trace_id=ctx.request.trace_id,
+            provenance={
+                "version": "audit.provenance.v3",
+                "path": "manual-command",
+                "actual_actor": actor,
+                "origin_actor": None,
+                "support": None,
+                "correlation_source": "request-context",
+                "trace_source": "request-context",
+            },
+        )
+
+    async def _materialize_policy_decision(
+        self, event: PolicyDecisionRecordedV2, ctx: EventHandlingContext
+    ) -> None:
+        binding = ctx.workload_binding
+        tenant = _require_tenant(ctx.request, event.tenant_id)
+        if ctx.request.correlation_id != event.correlation_id:
+            raise PermissionError("Delivery correlation does not match the committed Policy event")
+        if type(binding) is not TenantExecutionBinding:
+            raise PermissionError("Trusted workload binding required for Audit projection")
+        binding.assert_active(ctx.unit_of_work)
+        if (
+            binding.tenant_id != event.tenant_id
+            or binding.source_event_id != event.event_id
+            or binding.subscriber != "foundation.audit.policy_decision_v2"
+            or binding.purpose != "event-delivery"
+            or binding.workload.purpose != "event-delivery"
+            or binding.workload.principal_type != "service_account"
+            or binding.workload.installation_id != tenant.installation_id
+        ):
+            raise PermissionError("Workload delivery does not match the committed Policy event")
+        await self._append_v3(
+            ctx.request,
+            ctx.unit_of_work,
+            AuditEvidenceV2(
+                action=_bounded_projection_label(event.action),
+                resource_type=_bounded_projection_label(
+                    f"{event.resource_namespace}@{event.resource_version}"
+                ),
+                resource_id=str(event.record_id),
+                status="allowed" if event.allowed else "denied",
+                details={
+                    "mode": event.mode,
+                    "reason_code": event.reason_code,
+                    "policy_ids": [str(value) for value in event.policy_ids[:32]],
+                    "policy_ids_count": len(event.policy_ids),
+                    "policy_ids_sha256": hashlib.sha256(
+                        json.dumps([str(value) for value in event.policy_ids]).encode("utf-8")
+                    ).hexdigest(),
+                    "decision_at": event.decision_at.isoformat(),
+                    "source_action": _projection_source_reference(event.action),
+                    "source_resource": _projection_source_reference(
+                        f"{event.resource_namespace}@{event.resource_version}"
+                    ),
+                },
+            ),
+            provenance={
+                "version": "audit.provenance.v3",
+                "path": "committed-policy-event",
+                "actual_actor": {
+                    "type": binding.workload.principal_type,
+                    "id": str(binding.workload.workload_id),
+                    "source": "identity.tenant_execution_binding.v1",
+                    "scope": {"installation_id": str(binding.workload.installation_id)},
+                    "workload": {
+                        "process_class": binding.workload.process_class,
+                        "credential_generation": binding.workload.credential_generation,
+                        "verification_reference": str(binding.workload.verification_reference),
+                    },
+                },
+                "origin_actor": {
+                    "type": event.principal_type,
+                    "id": str(event.principal_id),
+                    "source": "committed-policy-decision-v2",
+                },
+                "support": None,
+                "delivery": {
+                    "source_event_id": str(event.event_id),
+                    "source_occurred_at": event.occurred_at.isoformat(),
+                    "subscriber": binding.subscriber,
+                    "attempt_id": str(binding.attempt_id),
+                    "causation_id": event.causation_id,
+                },
+                "correlation_source": "committed-policy-event",
+                "trace_source": "committed-policy-event"
+                if _committed_trace_id(event)
+                else "absent",
+            },
+            trace_id=_committed_trace_id(event),
+            source_event_id=event.event_id,
+            projection_kind="policy-decision-v2",
+        )
+
+    async def _append_v3(
+        self,
+        request: RequestContext,
+        transaction: HandlerTransaction,
+        evidence: AuditEvidenceV2,
+        *,
+        provenance: dict[str, Any],
+        trace_id: str | None = None,
+        source_event_id: UUID | None = None,
+        projection_kind: str | None = None,
+    ) -> AuditRecord:
+        # Pydantic's frozen model does not freeze mutable nested details. Snapshot and
+        # revalidate before the first await so a caller cannot change persisted bytes.
+        evidence = AuditEvidenceV2(
+            action=evidence.action,
+            resource_type=evidence.resource_type,
+            resource_id=evidence.resource_id,
+            status=evidence.status,
+            details=deepcopy(evidence.details),
+        )
+        if request.tenant is None:
+            raise BusinessOSError(
+                "tenant_context_required", "Tenant context required", status_code=401
+            )
+        tenant_id = request.tenant.tenant_id
+        await transaction.persistence.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:tenant_id, 0))"),
+            {"tenant_id": str(tenant_id)},
+        )
+        if source_event_id is not None:
+            existing = await transaction.persistence.execute(
+                select(AUDIT_LOGS).where(
+                    AUDIT_LOGS.c.tenant_id == tenant_id,
+                    AUDIT_LOGS.c.source_event_id == source_event_id,
+                    AUDIT_LOGS.c.projection_kind == projection_kind,
+                )
+            )
+            row = existing.mappings().one_or_none()
+            if row is not None:
+                return AuditRecord.model_validate(dict(row))
+        previous = await transaction.persistence.execute(
+            select(AUDIT_LOGS.c.occurred_at, AUDIT_LOGS.c.checksum)
+            .where(AUDIT_LOGS.c.tenant_id == tenant_id)
             .order_by(AUDIT_LOGS.c.occurred_at.desc(), AUDIT_LOGS.c.id.desc())
             .limit(1)
         )
-        prev_row = prev_res.first()
-        prev_checksum = prev_row[0] if prev_row else ""
-
-        checksum = compute_audit_checksum(
-            tenant_id=cmd.tenant_id,
-            occurred_at=occurred_at,
-            actor_id=cmd.actor_id,
-            action=cmd.action,
-            resource_type=cmd.resource_type,
-            resource_id=cmd.resource_id,
-            status=cmd.status,
-            previous_checksum=prev_checksum,
-            actor_type=cmd.actor_type,
-            scope_type=cmd.scope_type,
-            scope_id=cmd.scope_id,
-            before_state=cmd.before_state,
-            after_state=cmd.after_state,
-            correlation_id=correlation_id,
-            trace_id=trace_id,
-            decision_metadata=cmd.decision_metadata,
-            integrity_version="2",
-        )
-
-        stmt = insert(AUDIT_LOGS).values(
-            id=audit_id,
-            tenant_id=cmd.tenant_id,
-            occurred_at=occurred_at,
-            actor_id=cmd.actor_id,
-            actor_type=cmd.actor_type,
-            action=cmd.action,
-            resource_type=cmd.resource_type,
-            resource_id=cmd.resource_id,
-            scope_type=cmd.scope_type,
-            scope_id=cmd.scope_id,
-            before_state=cmd.before_state,
-            after_state=cmd.after_state,
-            correlation_id=correlation_id,
-            client_ip=cmd.client_ip,
-            user_agent=cmd.user_agent,
-            decision_metadata=cmd.decision_metadata,
-            trace_id=trace_id,
-            status=cmd.status,
-            previous_checksum=prev_checksum,
-            integrity_version="2",
-            checksum=checksum,
-        )
-        await ctx.unit_of_work.persistence.execute(stmt)
-
-        record = AuditRecord(
-            id=audit_id,
-            tenant_id=cmd.tenant_id,
-            occurred_at=occurred_at,
-            actor_id=cmd.actor_id,
-            actor_type=cmd.actor_type,
-            action=cmd.action,
-            resource_type=cmd.resource_type,
-            resource_id=cmd.resource_id,
-            scope_type=cmd.scope_type,
-            scope_id=cmd.scope_id,
-            before_state=cmd.before_state,
-            after_state=cmd.after_state,
-            correlation_id=correlation_id,
-            client_ip=cmd.client_ip,
-            user_agent=cmd.user_agent,
-            decision_metadata=cmd.decision_metadata,
-            trace_id=trace_id,
-            status=cmd.status,
-            previous_checksum=prev_checksum,
-            integrity_version="2",
-            checksum=checksum,
-        )
-
-        ctx.emit(
-            AuditEventRecorded(
-                tenant_id=tenant.tenant_id,
-                correlation_id=ctx.request.correlation_id,
-                audit_id=audit_id,
-                actor_id=cmd.actor_id,
-                action=cmd.action,
-                resource_type=cmd.resource_type,
-                resource_id=cmd.resource_id,
-                status=cmd.status,
+        prior = previous.first()
+        occurred_at = datetime.now(UTC)
+        if prior is not None and occurred_at <= prior[0]:
+            occurred_at = prior[0] + timedelta(microseconds=1)
+        actual_actor = provenance["actual_actor"]
+        if not isinstance(actual_actor, dict):
+            raise BusinessOSError(
+                "invalid_audit_provenance", "Trusted actor missing", status_code=500
             )
-        )
-        return record
+        values: dict[str, Any] = {
+            "id": uuid4(),
+            "tenant_id": tenant_id,
+            "occurred_at": occurred_at,
+            "actor_id": actual_actor["id"],
+            "actor_type": actual_actor["type"],
+            "action": evidence.action,
+            "resource_type": evidence.resource_type,
+            "resource_id": evidence.resource_id,
+            "scope_type": None,
+            "scope_id": None,
+            "before_state": None,
+            "after_state": None,
+            "client_ip": None,
+            "user_agent": None,
+            "decision_metadata": None,
+            "status": evidence.status,
+            "correlation_id": request.correlation_id,
+            "trace_id": trace_id,
+            "previous_checksum": prior[1] if prior else "",
+            "integrity_version": "3",
+            "provenance_v3": provenance,
+            "evidence_v3": evidence.model_dump(mode="json"),
+            "source_event_id": source_event_id,
+            "projection_kind": projection_kind,
+        }
+        values["checksum"] = compute_audit_checksum_v3(_v3_envelope(values))
+        await transaction.persistence.execute(insert(AUDIT_LOGS).values(**values))
+        return AuditRecord.model_validate(values)
 
     async def _query_audit_logs(
         self, query: QueryAuditLogsQuery, ctx: HandlingContext
@@ -258,6 +383,16 @@ class AuditModule:
             m = dict(row)
             integrity_version = m.get("integrity_version") or "1"
             stored_previous = m.get("previous_checksum") or ""
+            if integrity_version not in {"1", "2", "3"}:
+                tampered.append(m["id"])
+                prev_checksum = m["checksum"]
+                continue
+            if integrity_version == "3":
+                expected_v3 = compute_audit_checksum_v3(_v3_envelope(m))
+                if expected_v3 != m["checksum"] or stored_previous != prev_checksum:
+                    tampered.append(m["id"])
+                prev_checksum = m["checksum"]
+                continue
             expected = compute_audit_checksum(
                 tenant_id=m["tenant_id"],
                 occurred_at=m["occurred_at"],
@@ -302,3 +437,57 @@ def _require_tenant(request: RequestContext | None, target_tenant_id: UUID) -> T
             status_code=403,
         )
     return request.tenant
+
+
+_V3_ENVELOPE_FIELDS = (
+    "id",
+    "tenant_id",
+    "occurred_at",
+    "actor_id",
+    "actor_type",
+    "action",
+    "resource_type",
+    "resource_id",
+    "scope_type",
+    "scope_id",
+    "before_state",
+    "after_state",
+    "client_ip",
+    "user_agent",
+    "decision_metadata",
+    "status",
+    "correlation_id",
+    "trace_id",
+    "previous_checksum",
+    "provenance_v3",
+    "evidence_v3",
+    "source_event_id",
+    "projection_kind",
+)
+
+
+def _v3_envelope(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: row[key] for key in _V3_ENVELOPE_FIELDS}
+
+
+def _bounded_projection_label(value: str) -> str:
+    if len(value) <= 100:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"{value[:27]}~sha256:{digest}"
+
+
+def _projection_source_reference(value: str) -> dict[str, Any]:
+    return {
+        "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        "length": len(value),
+        "truncated": len(value) > 100,
+    }
+
+
+def _committed_trace_id(event: PolicyDecisionRecordedV2) -> str | None:
+    traceparent = event.trace_context.get("traceparent", "")
+    match = re.fullmatch(r"[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}", traceparent)
+    if match is None or set(match.group(1)) == {"0"}:
+        return None
+    return match.group(1)

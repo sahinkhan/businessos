@@ -6,9 +6,14 @@ module entry point, tenant API, or tenant configuration.
 """
 
 from dataclasses import dataclass
-from weakref import WeakKeyDictionary
 
 from businessos.activation import ContributionGeneration
+from businessos.dependency_entitlement import (
+    _issue_restricted_dependency_entitlement as _issue_entitlement,
+)
+from businessos.dependency_entitlement import (
+    _RestrictedDependencyEntitlement,
+)
 from businessos.errors import ConfigurationError
 from businessos.modules.manifest import ModuleManifest
 
@@ -57,15 +62,6 @@ class ApprovedModuleArtifact:
                     raise ConfigurationError("Resource alias lacks protected operator approval")
 
 
-class _RestrictedDependencyEntitlement:
-    __slots__ = ("__weakref__",)
-
-
-_dependency_entitlements: WeakKeyDictionary[
-    _RestrictedDependencyEntitlement, tuple[str, ContributionGeneration]
-] = WeakKeyDictionary()
-
-
 def _issue_restricted_dependency_entitlement(
     grant: ApprovedModuleArtifact,
     module: object,
@@ -75,15 +71,4 @@ def _issue_restricted_dependency_entitlement(
     grant.verify(module, manifest)
     if not grant.first_party or generation.owner != manifest.module_id:
         raise ConfigurationError("Reserved dependency requires approved first-party artifact")
-    entitlement = _RestrictedDependencyEntitlement()
-    _dependency_entitlements[entitlement] = (manifest.module_id, generation)
-    return entitlement
-
-
-def _valid_restricted_dependency_entitlement(
-    entitlement: object, owner: str, generation: ContributionGeneration
-) -> bool:
-    if type(entitlement) is not _RestrictedDependencyEntitlement:
-        return False
-    facts = _dependency_entitlements.get(entitlement)
-    return facts is not None and facts[0] == owner and facts[1] is generation
+    return _issue_entitlement(manifest.module_id, generation)

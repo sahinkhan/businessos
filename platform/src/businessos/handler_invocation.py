@@ -3,9 +3,10 @@
 import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol
 from weakref import WeakKeyDictionary
 
 from businessos.activation import ContributionGeneration
@@ -57,6 +58,14 @@ class _AuthorityFacts:
     lease: "_InvocationLease"
 
 
+@dataclass(frozen=True, slots=True)
+class _PublicFacts:
+    owner_module_id: str
+    generation: ContributionGeneration
+    invocation_kind: HandlerInvocationKind
+    direct_dependencies: tuple[HandlerInvocationDependency, ...]
+
+
 @dataclass(slots=True)
 class _InvocationLease:
     active: bool = True
@@ -69,27 +78,33 @@ class _IssuedBinding:
 
     @property
     def owner_module_id(self) -> str:
-        return _issued[self].owner_module_id
+        return _public[self].owner_module_id
 
     @property
     def generation(self) -> ContributionGeneration:
-        return _issued[self].generation
+        return _public[self].generation
 
     @property
     def invocation_kind(self) -> HandlerInvocationKind:
-        return _issued[self].invocation_kind
+        return _public[self].invocation_kind
 
     @property
     def direct_dependencies(self) -> tuple[HandlerInvocationDependency, ...]:
-        return _issued[self].direct_dependencies
+        return _public[self].direct_dependencies
 
     def has_direct_dependency(self, module_id: str) -> bool:
-        facts = _issued[self]
-        _require_live(facts)
+        facts = _issued.get(self)
+        if facts is None:
+            raise PermissionError("Handler invocation is no longer active")
+        _require_live(facts, self)
         return any(dependency.module_id == module_id for dependency in facts.direct_dependencies)
 
 
 _issued: WeakKeyDictionary[_IssuedBinding, _AuthorityFacts] = WeakKeyDictionary()
+_public: WeakKeyDictionary[_IssuedBinding, _PublicFacts] = WeakKeyDictionary()
+_active_binding: ContextVar[_IssuedBinding | None] = ContextVar(
+    "businessos_active_handler_invocation", default=None
+)
 
 
 class _TrustedHandlerProvenance:
@@ -132,14 +147,18 @@ def _trusted_handler_dependencies(
 ) -> tuple[HandlerInvocationDependency, ...] | None:
     if type(provenance) is not _TrustedHandlerProvenance:
         return None
-    facts = _registrations.get(cast(_TrustedHandlerProvenance, provenance))
+    facts = _registrations.get(provenance)
     if facts is None or facts.owner != owner or facts.generation is not generation:
         return None
     return facts.dependencies
 
 
-def _require_live(facts: _AuthorityFacts) -> None:
-    if not facts.lease.active or asyncio.current_task() is not facts.task:
+def _require_live(facts: _AuthorityFacts, binding: _IssuedBinding) -> None:
+    if (
+        not facts.lease.active
+        or asyncio.current_task() is not facts.task
+        or _active_binding.get() is not binding
+    ):
         raise PermissionError("Handler invocation is no longer active in this task")
 
 
@@ -153,11 +172,11 @@ def validate_handler_invocation(
     """Reject structural fakes, stale leases, and mismatched invocation objects."""
     if type(binding) is not _IssuedBinding:
         raise PermissionError("Handler invocation was not issued by the framework")
-    issued_binding = cast(_IssuedBinding, binding)
+    issued_binding = binding
     facts = _issued.get(issued_binding)
     if facts is None:
         raise PermissionError("Handler invocation was not issued by the framework")
-    _require_live(facts)
+    _require_live(facts, issued_binding)
     if (
         request is not facts.request
         or transaction is not facts.transaction
@@ -183,6 +202,9 @@ def _issue_handler_invocation(
         raise RuntimeError("Handler invocation requires a matching admitted generation and task")
     lease = _InvocationLease()
     binding = _IssuedBinding()
+    _public[binding] = _PublicFacts(
+        owner_module_id, generation, invocation_kind, direct_dependencies
+    )
     _issued[binding] = _AuthorityFacts(
         owner_module_id,
         generation,
@@ -193,7 +215,20 @@ def _issue_handler_invocation(
         task,
         lease,
     )
+    token = _active_binding.set(binding)
     try:
         yield binding
     finally:
         lease.active = False
+        _issued.pop(binding, None)
+        _active_binding.reset(token)
+
+
+@contextmanager
+def _without_handler_invocation() -> Iterator[None]:
+    """Prevent a nested legacy handler from inheriting its caller's authority."""
+    token = _active_binding.set(None)
+    try:
+        yield
+    finally:
+        _active_binding.reset(token)

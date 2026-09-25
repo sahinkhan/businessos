@@ -11,10 +11,10 @@ from packaging.version import Version
 from pydantic import ValidationError
 
 from businessos.activation import ContributionGeneration
+from businessos.dependency_entitlement import _RestrictedDependencyEntitlement
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
 from businessos.modules.artifact import (
     ApprovedModuleArtifact,
-    _RestrictedDependencyEntitlement,
     _issue_restricted_dependency_entitlement,
 )
 from businessos.modules.manifest import ModuleContractDeclaration, ModuleManifest

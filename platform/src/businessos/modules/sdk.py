@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 from businessos.activation import ContributionGate, ContributionGeneration, ContributionState
 from businessos.context import RequestContext
 from businessos.contracts import ContractRegistry, PublicContract
+from businessos.dependency_entitlement import _valid_restricted_dependency_entitlement
 from businessos.di import (
     Container,
     DependencyKey,
@@ -29,7 +30,6 @@ from businessos.messages import (
     Query,
 )
 from businessos.metadata import MetadataDeclaration, MetadataRegistry
-from businessos.modules.artifact import _valid_restricted_dependency_entitlement
 from businessos.modules.manifest import ModuleManifest
 from businessos.permissions import PermissionDeclaration, PermissionRegistry
 from businessos.providers import ProviderRegistry
@@ -234,6 +234,7 @@ class ModuleRegistration:
             owner=self.owner,
             generation=self.generation,
             gate=self._gate,
+            _owner_restricted_entitlement=self._owner_restricted_entitlement,
         )
 
     def contract(self, name: str, contract: PublicContract) -> None:

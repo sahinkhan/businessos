@@ -46,7 +46,14 @@ requires the exact issued concrete type, private registry membership, active
 lease, same task, same request object, same transaction object, and requested
 kind. A structural fake or caller-created instance cannot pass. The lease is
 invalidated in a `finally` path immediately after handler return, exception,
-or cancellation, before outer transaction commit or rollback.
+or cancellation, before outer transaction commit or rollback. Protected active
+facts that reference the request, transaction, and task are removed then;
+only safe immutable display facts remain on a retained stale binding.
+An invocation-local context marker also requires the binding to be the top
+active handler in the task. Nested dispatch temporarily masks an outer
+binding for its entire resolution, authorization, transaction, handler, and
+commit window, including when the inner handler is a legacy registration; the outer
+binding becomes usable again only after the inner handler returns.
 
 Drain stops new generation admissions but does not invalidate a handler that
 was admitted earlier; its invocation lease remains live until its handler

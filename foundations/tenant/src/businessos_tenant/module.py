@@ -158,6 +158,7 @@ class TenantModule:
             TenantLifecycleWorkRequested,
             "lifecycle-hooks",
             self._run_lifecycle_hooks,
+            permission="foundation.tenant.manage",
         )
 
     async def start(self) -> None:

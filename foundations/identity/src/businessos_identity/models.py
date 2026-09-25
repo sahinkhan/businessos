@@ -1,10 +1,12 @@
 """SQLAlchemy mappings owned by the identity foundation."""
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
     DateTime,
+    LargeBinary,
     MetaData,
     String,
     Table,
@@ -15,6 +17,25 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 
 metadata = MetaData()
+
+INSTALLATION_WORKLOADS = Table(
+    "installation_workloads",
+    metadata,
+    Column("installation_id", UUID(as_uuid=True), primary_key=True),
+    Column("workload_id", UUID(as_uuid=True), primary_key=True),
+    Column("name", String(200), nullable=False),
+    Column("active", Boolean(), nullable=False),
+    Column("process_class", String(100), nullable=False),
+    Column("allowed_purposes", ARRAY(String(100)), nullable=False),
+    Column("credential_reference", String(500), nullable=False),
+    Column("credential_digest", LargeBinary(), nullable=False),
+    Column("credential_generation", BigInteger(), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("rotated_at", DateTime(timezone=True)),
+    Column("revoked_at", DateTime(timezone=True)),
+    schema="platform_identity",
+)
 
 USERS = Table(
     "users",

@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import json
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from time import monotonic
 from typing import ClassVar, Protocol
 from uuid import UUID, uuid4
@@ -10,16 +12,19 @@ from uuid import UUID, uuid4
 import boto3
 import psycopg
 import pytest
-from businessos_proof.module import PROOF_RECORDS, ProofModule, ProofStored, StoreProof
-from sqlalchemy import select, text
+from businessos_identity import IdentityModule
+from businessos_proof.module import PROOF_RECORDS, ProofModule, ProofStored
+from businessos_tenant import TenantModule
+from sqlalchemy import insert, select, text
 
 from businessos.config import Settings
-from businessos.context import RequestContext, TenantContext
+from businessos.context import TenantContext
 from businessos.errors import DeliveryUnavailableError
 from businessos.event_worker import EventWorkerSettings, create_event_worker
 from businessos.messages import DomainEvent, EventHandlingContext
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleManifest, ModuleRegistration, ModuleRegistry
+from businessos.permissions import PermissionDeclaration
 from businessos.persistence import (
     Database,
     EventSubscriberObligation,
@@ -36,6 +41,52 @@ def _required_env(name: str) -> str:
     if value is None:
         pytest.skip(f"{name} is not configured")
     return value
+
+
+async def _provision_workload(database_url: str, installation_id: UUID, secret_path: Path) -> UUID:
+    credential = os.urandom(48)
+    await asyncio.to_thread(secret_path.write_bytes, credential)
+    workload_id = uuid4()
+    database = Database(Settings(database_url=database_url))
+    factory = SQLAlchemyUnitOfWorkFactory(database.sessions, system_sessions=database.sessions)
+    try:
+        async with factory.system() as unit:
+            await unit.persistence.execute(
+                text(
+                    "INSERT INTO platform_identity.installation_workloads "
+                    "(installation_id, workload_id, name, process_class, allowed_purposes, "
+                    "credential_reference, credential_digest, credential_generation) "
+                    "VALUES (:installation, :workload, 'integration-worker', 'event-worker', "
+                    "ARRAY['worker-startup','subscriber-sync','event-publisher','event-delivery'], "
+                    "'integration-file-v1', :digest, 1)"
+                ),
+                {
+                    "installation": installation_id,
+                    "workload": workload_id,
+                    "digest": hashlib.sha256(credential).digest(),
+                },
+            )
+            await unit.commit()
+    finally:
+        await database.close()
+    return workload_id
+
+
+async def _remove_workload(database_url: str, installation_id: UUID, workload_id: UUID) -> None:
+    database = Database(Settings(database_url=database_url))
+    factory = SQLAlchemyUnitOfWorkFactory(database.sessions, system_sessions=database.sessions)
+    try:
+        async with factory.system() as unit:
+            await unit.persistence.execute(
+                text(
+                    "DELETE FROM platform_identity.installation_workloads "
+                    "WHERE installation_id=:installation AND workload_id=:workload"
+                ),
+                {"installation": installation_id, "workload": workload_id},
+            )
+            await unit.commit()
+    finally:
+        await database.close()
 
 
 class _WorkerLifecycle(Protocol):
@@ -154,7 +205,11 @@ class _SubscriberModule:
         self._event_id = event_id
 
     async def register(self, registration: ModuleRegistration) -> None:
-        registration.event(_ObligationEvent, "projection", self._consume)
+        permission = f"{self.manifest.module_id}.consume"
+        registration.permission(
+            PermissionDeclaration(key=permission, description="Consume obligation")
+        )
+        registration.event(_ObligationEvent, "projection", self._consume, permission=permission)
 
     async def start(self) -> None:
         return None
@@ -181,10 +236,13 @@ class _SubscriberModule:
 async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_idempotency(
     postgres_database: PostgreSQLTestDatabase,
     request: pytest.FixtureRequest,
+    tmp_path: Path,
 ) -> None:
-    runtime_url = postgres_database.runtime_url
+    runtime_url = postgres_database.worker_url
     operations_url = postgres_database.operations_url
     migration_modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    migration_modules.add(TenantModule())
+    migration_modules.add(IdentityModule())
     migration_modules.add(ProofModule())
     migrations = MigrationCoordinator(migration_modules)
     await migrations.upgrade_async(postgres_database.migration_url)
@@ -209,6 +267,8 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
 
     request.addfinalizer(remove_bucket)
     tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="test")
+    credential_file = tmp_path / "workload-secret"
+    workload_id = await _provision_workload(operations_url, tenant.installation_id, credential_file)
     durable_name = f"businessos-test-{uuid4().hex}"
     worker_settings = EventWorkerSettings(
         runtime_database_url=runtime_url,
@@ -216,7 +276,10 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
         nats_url=_required_env("BOS_TEST_NATS_URL"),
         installation_id=tenant.installation_id,
         principal_id=tenant.principal_id,
-        permissions="example.phase1-proof.write,example.phase1-proof.read",
+        workload_id=workload_id,
+        workload_credential_reference="integration-file-v1",
+        workload_credential_file=credential_file,
+        permissions="example.phase1-proof.write,example.phase1-proof.read,example.obligation-a.consume,example.obligation-b.consume,foundation.tenant.manage",
         durable_name=durable_name,
         publish_interval_seconds=0.02,
     )
@@ -234,22 +297,37 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     first_broker = NatsJetStreamPublisher((worker_settings.nats_url,))
     first_worker = create_event_worker(
         worker_settings,
-        modules=(first_module,),
+        modules=(TenantModule(), IdentityModule(), first_module),
         broker=first_broker,
         object_storage=storage(),
     )
     await first_worker.start()
     await first_worker.readiness()
     assert first_worker.application.runtime is not None
-    context = RequestContext(correlation_id="event-worker-e2e", tenant=tenant)
     command_id = uuid4()
-    async with first_worker.application.container.request_scope() as dependencies:
-        result = await first_worker.application.runtime.messages.command(
-            StoreProof(command_id=command_id, value="durable"),
-            context,
-            dependencies,
+    record_id = uuid4()
+    source_database = Database(Settings(database_url=runtime_url))
+    source_factory = SQLAlchemyUnitOfWorkFactory(source_database.sessions)
+    async with source_factory.for_tenant(tenant) as unit_of_work:
+        await unit_of_work.persistence.execute(
+            insert(PROOF_RECORDS).values(
+                id=record_id,
+                tenant_id=tenant.tenant_id,
+                command_id=command_id,
+                value="durable",
+            )
         )
-    assert result == {"stored": True}
+        unit_of_work.add_outbox(
+            ProofStored(
+                tenant_id=tenant.tenant_id,
+                correlation_id="event-worker-e2e",
+                record_id=record_id,
+                command_id=command_id,
+                value="durable",
+            ).to_outbox()
+        )
+        await unit_of_work.commit()
+    await source_database.close()
     await asyncio.wait_for(first_module.projected.wait(), timeout=10.0)
     assert first_module.delivery_attempts == 2
 
@@ -283,13 +361,60 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
             select(PROOF_RECORDS.c.description).where(PROOF_RECORDS.c.command_id == command_id)
         )
     assert description == "object-storage-projection"
+
+    # One verified installation worker also processes another tenant through
+    # a separate event, binding, inbox receipt and RLS-scoped transaction.
+    tenant_b = TenantContext(
+        tenant.installation_id, uuid4(), tenant.principal_id, authentication_strength="test"
+    )
+    command_b, record_b = uuid4(), uuid4()
+    event_b = ProofStored(
+        tenant_id=tenant_b.tenant_id,
+        correlation_id="event-worker-tenant-b",
+        record_id=record_b,
+        command_id=command_b,
+        value="tenant-b",
+    )
+    async with inspection_factory.for_tenant(tenant_b) as unit_of_work:
+        await unit_of_work.persistence.execute(
+            insert(PROOF_RECORDS).values(
+                id=record_b,
+                tenant_id=tenant_b.tenant_id,
+                command_id=command_b,
+                value="tenant-b",
+            )
+        )
+        unit_of_work.add_outbox(event_b.to_outbox())
+        await unit_of_work.commit()
+    assert (
+        len(
+            await _wait_for_inbox_receipt_count(
+                inspection_factory, tenant_b, event_b.event_id, expected=1
+            )
+        )
+        == 1
+    )
+    async with inspection_factory.for_tenant(tenant_b) as unit_of_work:
+        result = await unit_of_work.persistence.execute(
+            select(PROOF_RECORDS.c.description).where(PROOF_RECORDS.c.command_id == command_b)
+        )
+        assert result.scalar_one() == "object-storage-projection"
+        result = await unit_of_work.persistence.execute(
+            select(PROOF_RECORDS.c.id).where(PROOF_RECORDS.c.command_id == command_id)
+        )
+        assert result.scalar_one_or_none() is None
+    async with inspection_factory.for_tenant(tenant) as unit_of_work:
+        result = await unit_of_work.persistence.execute(
+            select(PROOF_RECORDS.c.id).where(PROOF_RECORDS.c.command_id == command_b)
+        )
+        assert result.scalar_one_or_none() is None
     await first_worker.stop()
 
     second_module = _RetryingProofModule()
     second_broker = NatsJetStreamPublisher((worker_settings.nats_url,))
     second_worker = create_event_worker(
         worker_settings,
-        modules=(second_module,),
+        modules=(TenantModule(), IdentityModule(), second_module),
         broker=second_broker,
         object_storage=storage(),
     )
@@ -349,6 +474,7 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     await second_worker.stop()
     await inspection_database.close()
 
+    await _remove_workload(postgres_database.migration_url, tenant.installation_id, workload_id)
     await migrations.downgrade_async(postgres_database.migration_url)
 
 
@@ -358,20 +484,32 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
 @pytest.mark.asyncio
 async def test_subscriber_obligations_survive_worker_recreation(
     postgres_database: PostgreSQLTestDatabase,
+    tmp_path: Path,
 ) -> None:
-    migrations = MigrationCoordinator(ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0"))
+    migration_modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
+    migration_modules.add(TenantModule())
+    migration_modules.add(IdentityModule())
+    migrations = MigrationCoordinator(migration_modules)
     await migrations.upgrade_async(postgres_database.migration_url)
     inspection: Database | None = None
     runtime_inspection: Database | None = None
     try:
         tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="test")
+        credential_file = tmp_path / "workload-secret"
+        workload_id = await _provision_workload(
+            postgres_database.operations_url, tenant.installation_id, credential_file
+        )
         durable_name = f"businessos-obligations-{uuid4().hex}"
         settings = EventWorkerSettings(
-            runtime_database_url=postgres_database.runtime_url,
+            runtime_database_url=postgres_database.worker_url,
             operations_database_url=postgres_database.operations_url,
             nats_url=_required_env("BOS_TEST_NATS_URL"),
             installation_id=tenant.installation_id,
             principal_id=tenant.principal_id,
+            workload_id=workload_id,
+            workload_credential_reference="integration-file-v1",
+            workload_credential_file=credential_file,
+            permissions="example.obligation-a.consume,example.obligation-b.consume,foundation.tenant.manage",
             durable_name=durable_name,
             publish_interval_seconds=0.02,
         )
@@ -385,6 +523,8 @@ async def test_subscriber_obligations_survive_worker_recreation(
         first_worker = create_event_worker(
             settings,
             modules=(
+                TenantModule(),
+                IdentityModule(),
                 _SubscriberModule("example.obligation-a", calls, completed, event.event_id),
                 _SubscriberModule("example.obligation-b", calls, completed, event.event_id),
             ),
@@ -393,10 +533,23 @@ async def test_subscriber_obligations_survive_worker_recreation(
         async with _running_worker(first_worker):
             pass
 
+        source_database = Database(Settings(database_url=postgres_database.runtime_url))
+        try:
+            source_factory = SQLAlchemyUnitOfWorkFactory(source_database.sessions)
+            async with source_factory.for_tenant(tenant) as unit:
+                unit.add_outbox(event.to_outbox())
+                await unit.commit()
+        finally:
+            await source_database.close()
+
         second_broker = NatsJetStreamPublisher((settings.nats_url,))
         second_worker = create_event_worker(
             settings,
-            modules=(_SubscriberModule("example.obligation-a", calls, completed, event.event_id),),
+            modules=(
+                TenantModule(),
+                IdentityModule(),
+                _SubscriberModule("example.obligation-a", calls, completed, event.event_id),
+            ),
             broker=second_broker,
         )
         subject = f"businessos.events.tenant.{tenant.tenant_id}.{event.event_type}"
@@ -426,6 +579,8 @@ async def test_subscriber_obligations_survive_worker_recreation(
         third_worker = create_event_worker(
             settings,
             modules=(
+                TenantModule(),
+                IdentityModule(),
                 _SubscriberModule("example.obligation-a", calls, completed, event.event_id),
                 _SubscriberModule("example.obligation-b", calls, completed, event.event_id),
             ),
@@ -466,6 +621,7 @@ async def test_subscriber_obligations_survive_worker_recreation(
             await runtime_inspection.close()
         if inspection is not None:
             await inspection.close()
+        await _remove_workload(postgres_database.migration_url, tenant.installation_id, workload_id)
         await migrations.downgrade_async(postgres_database.migration_url)
 
 
@@ -477,7 +633,7 @@ async def test_worker_stop_retains_real_uow_cleanup_until_backend_closes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = EventWorkerSettings(
-        runtime_database_url=postgres_database.runtime_url,
+        runtime_database_url=postgres_database.worker_url,
         operations_database_url=postgres_database.operations_url,
         installation_id=uuid4(),
         principal_id=uuid4(),

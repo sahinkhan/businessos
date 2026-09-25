@@ -14,6 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from businessos.sdk import (
     BusinessOSError,
     Command,
+    DependencyScope,
     DomainEvent,
     HandlingContext,
     ModuleManifest,
@@ -27,6 +28,7 @@ from businessos.sdk import (
 from .authority import DatabaseMembershipAuthority
 from .contracts import (
     MEMBERSHIP_AUTHORITY,
+    WORKLOAD_EXECUTION_AUTHORITY,
     AuthenticationSessionRecord,
     AuthenticationStrength,
     IdentityContract,
@@ -44,6 +46,7 @@ from .models import (
     USERS,
 )
 from .principal_binding import AUTHENTICATED_PRINCIPAL, current_authenticated_principal
+from .workload_authority import DatabaseWorkloadExecutionAuthority
 
 
 class CreateUser(Command):
@@ -179,6 +182,11 @@ class IdentityModule:
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.dependency(MEMBERSHIP_AUTHORITY, lambda _: DatabaseMembershipAuthority())
+        registration.dependency(
+            WORKLOAD_EXECUTION_AUTHORITY,
+            lambda _: DatabaseWorkloadExecutionAuthority(),
+            scope=DependencyScope.SINGLETON,
+        )
         registration.dependency(
             AUTHENTICATED_PRINCIPAL, lambda _: current_authenticated_principal()
         )

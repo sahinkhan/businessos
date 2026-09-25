@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from typing import ClassVar
 from uuid import uuid4
 
@@ -75,7 +76,14 @@ async def test_outbox_survives_publish_failure_and_retries(
         await unit_of_work.commit()
 
     provider = RecordingPublisher(failing=True)
-    publisher = OutboxPublisher(factory, provider)
+
+    @asynccontextmanager
+    async def test_admission(_: object) -> AsyncGenerator[None]:
+        # This pre-ADR-019 test isolates broker retry behavior. Production
+        # EventWorker supplies the Identity-owned workload admission callback.
+        yield
+
+    publisher = OutboxPublisher(factory, provider, admission=test_admission)
     assert await publisher.publish_batch() == 0
 
     async with factory.for_tenant(tenant) as unit_of_work:

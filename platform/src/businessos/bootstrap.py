@@ -88,6 +88,7 @@ def create_application(
     context_resolver: TrustedContextResolver | None = None,
     context_resolver_factory: ContextResolverFactory | None = None,
     authorizer: Authorizer | None = None,
+    durable_subscriber_authorizer: Authorizer | None = None,
     infrastructure_providers: Mapping[str, object] | None = None,
     approved_module_artifacts: Mapping[str, ApprovedModuleArtifact] | None = None,
     resource_coordinator_ids: frozenset[str] = frozenset(),
@@ -122,7 +123,9 @@ def create_application(
         resolved_authorizer,
         resources=resources,
     )
-    event_consumer = DurableEventConsumer(unit_of_work_factory, event_bus)
+    event_consumer = DurableEventConsumer(
+        unit_of_work_factory, event_bus, durable_subscriber_authorizer
+    )
     container.register(DATABASE, lambda _: database, scope=DependencyScope.SINGLETON)
     container.register(
         UNIT_OF_WORK_FACTORY,

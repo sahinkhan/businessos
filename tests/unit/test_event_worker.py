@@ -1,6 +1,10 @@
 import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 from uuid import uuid4
 
@@ -8,12 +12,19 @@ import pytest
 from pydantic import ValidationError
 
 import businessos.__main__ as cli
-from businessos.context import current_request_context
+from businessos.context import RequestContext, TenantContext, current_request_context
 from businessos.errors import BusinessOSError, DeliveryUnavailableError
-from businessos.event_worker import EventWorkerSettings, create_event_worker
+from businessos.event_source import CommittedOutboxSourceVerifier
+from businessos.event_worker import (
+    EventWorker,
+    EventWorkerSettings,
+    create_event_worker,
+)
+from businessos.eventing import OutboxPublisher
 from businessos.logging import JsonFormatter
 from businessos.messages import DomainEvent
 from businessos.providers import BrokerEvent, PermanentDeliveryError
+from businessos.workload import WorkloadAdmissionDenied
 
 
 class _Broker:
@@ -31,9 +42,23 @@ class _UnknownEvent(DomainEvent):
     event_type: ClassVar[str] = "future.event"
 
 
+@pytest.fixture(autouse=True)
+def transport_only_worker_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep legacy envelope tests focused on transport after trusted admission."""
+
+    async def verified(_: EventWorker, __: object, ___: str) -> object:
+        return SimpleNamespace(valid_until=datetime.now(UTC) + timedelta(minutes=1))
+
+    async def source_verified(_: object, **__: object) -> None:
+        return None
+
+    monkeypatch.setattr(EventWorker, "_verify_workload", verified)
+    monkeypatch.setattr(CommittedOutboxSourceVerifier, "verify", source_verified)
+
+
 def _settings() -> EventWorkerSettings:
     return EventWorkerSettings(
-        runtime_database_url="postgresql+psycopg://businessos_app:runtime-secret@db/app",
+        runtime_database_url="postgresql+psycopg://businessos_worker:runtime-secret@db/app",
         operations_database_url="postgresql+psycopg://businessos_ops:ops-secret@db/app",
         installation_id=uuid4(),
         principal_id=uuid4(),
@@ -63,7 +88,9 @@ async def test_worker_delivery_logs_bind_correlation_tenant_and_restore_context(
     async def synchronize() -> None:
         return None
 
-    async def consume(event: _UnknownEvent, context: object, dependencies: object) -> None:
+    async def consume(
+        event: _UnknownEvent, context: object, dependencies: object, **_: object
+    ) -> None:
         logging.getLogger("businessos.event-worker").info("handler log")
         if event.correlation_id == "first-delivery":
             raise RuntimeError("delivery failed")
@@ -120,13 +147,200 @@ def test_event_worker_configuration_redacts_role_credentials() -> None:
 def test_event_worker_requires_separate_runtime_and_operations_roles() -> None:
     runtime_url = "postgresql+psycopg://same:runtime-secret@db/app"
     operations_url = "postgresql+psycopg://same:operations-secret@db/app?application_name=ops"
-    with pytest.raises(ValidationError, match="roles must be separate"):
+    with pytest.raises(ValidationError, match="businessos_worker and businessos_ops"):
         EventWorkerSettings(
             runtime_database_url=runtime_url,
             operations_database_url=operations_url,
             installation_id=uuid4(),
             principal_id=uuid4(),
         )
+
+
+def test_event_worker_requires_one_source_database() -> None:
+    with pytest.raises(ValidationError, match="same source database"):
+        EventWorkerSettings(
+            runtime_database_url="postgresql+psycopg://businessos_worker:a@db/installation_a",
+            operations_database_url="postgresql+psycopg://businessos_ops:b@db/installation_b",
+            installation_id=uuid4(),
+            principal_id=uuid4(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_worker_permission_is_only_for_registered_subscriber_check() -> None:
+    principal_id, tenant_id = uuid4(), uuid4()
+    settings = _settings().model_copy(
+        update={"principal_id": principal_id, "permissions": "test.consume"}
+    )
+    worker = create_event_worker(settings, modules=(), broker=cast(Any, _Broker()))
+    runtime = worker.application.runtime
+    assert runtime is not None
+    context = RequestContext(
+        correlation_id="permission-separation",
+        tenant=TenantContext(settings.installation_id, tenant_id, principal_id),
+    )
+    with pytest.raises(BusinessOSError, match="Permission denied"):
+        await runtime.events.authorize(context, "test.consume")
+    await cast(Any, runtime.event_consumer)._subscriber_authorizer.require(context, "test.consume")
+    with pytest.raises(BusinessOSError, match="Permission denied"):
+        await cast(Any, runtime.event_consumer)._subscriber_authorizer.require(
+            context, "test.manage"
+        )
+    await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_quarantine_closes_subscription() -> None:
+    worker = create_event_worker(_settings(), modules=(), broker=cast(Any, _Broker()))
+    closed = asyncio.Event()
+
+    class Subscription:
+        async def close(self) -> None:
+            closed.set()
+
+    worker._subscription = cast(Any, Subscription())
+    worker._quarantine()
+    await asyncio.wait_for(closed.wait(), timeout=1)
+    assert worker._quarantined
+    assert worker._subscription is None
+    assert worker._stop_publisher.is_set()
+    await worker.stop()
+
+
+@pytest.mark.asyncio
+async def test_invalid_workload_blocks_startup_sync_and_publisher_without_secret_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    canary = "raw-workload-credential-canary"
+    worker = create_event_worker(
+        _settings(),
+        modules=(),
+        broker=cast(Any, _Broker()),
+        workload_authority=cast(Any, object()),
+    )
+    calls: list[str] = []
+
+    class Unit:
+        persistence: Any = object()
+
+        async def commit(self) -> None:
+            calls.append("commit")
+
+    @asynccontextmanager
+    async def system() -> Any:
+        yield Unit()
+
+    async def noop() -> None:
+        return None
+
+    async def invalid(_: EventWorker, __: object, purpose: str) -> object:
+        calls.append(purpose)
+        raise WorkloadAdmissionDenied(canary)
+
+    monkeypatch.setattr(worker._operations_uow, "system", system)
+    monkeypatch.setattr(worker._operations_database, "readiness", noop)
+    monkeypatch.setattr(worker._operations_database, "close", noop)
+    monkeypatch.setattr(worker.application, "startup", noop)
+    monkeypatch.setattr(worker.application, "shutdown", noop)
+    monkeypatch.setattr(EventWorker, "_verify_workload", invalid)
+
+    with pytest.raises(WorkloadAdmissionDenied):
+        await worker.start()
+    assert calls == ["worker-startup"]
+
+    with pytest.raises(WorkloadAdmissionDenied):
+        await worker._synchronize_subscriber_obligations()
+    assert calls[-1] == "subscriber-sync"
+
+    with pytest.raises(WorkloadAdmissionDenied):
+        async with worker._admit_publisher(cast(Any, Unit())):
+            pytest.fail("publisher bypassed workload verification")
+    assert calls[-1] == "event-publisher"
+    assert "commit" not in calls
+
+    worker._stop_publisher.clear()
+    with caplog.at_level(logging.WARNING, logger="businessos.event-worker"):
+        await worker._publish_loop()
+    assert worker._quarantined
+    assert canary not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_raw_workload_secret_stays_out_of_context_event_outbox_and_broker(
+    tmp_path: Any,
+) -> None:
+    secret = b"raw-workload-credential-canary-1234567890"
+    secret_file = tmp_path / "workload-secret"
+    secret_file.write_bytes(secret)
+    settings = _settings().model_copy(
+        update={
+            "workload_id": uuid4(),
+            "workload_credential_reference": "test-file-v1",
+            "workload_credential_file": secret_file,
+        }
+    )
+
+    class Authority:
+        async def verify(self, _: object, **kwargs: object) -> object:
+            assert kwargs.pop("credential") == secret
+            return SimpleNamespace(valid_until=datetime.now(UTC) + timedelta(seconds=60))
+
+    worker = create_event_worker(
+        settings,
+        modules=(),
+        broker=cast(Any, _Broker()),
+        workload_authority=cast(Any, Authority()),
+    )
+    await worker._verify_workload(
+        cast(Any, SimpleNamespace(persistence=object())), "event-delivery"
+    )
+    tenant_id = uuid4()
+    event = _UnknownEvent(tenant_id=tenant_id, correlation_id="canary")
+    context = worker._context_resolver.resolve(
+        BrokerEvent(subject="test", payload=b"{}", headers={}), tenant_id, "canary"
+    )
+    pending = event.to_outbox()
+    row = SimpleNamespace(
+        id=pending.event_id,
+        tenant_id=pending.tenant_id,
+        event_type=pending.event_type,
+        schema_version=pending.schema_version,
+        occurred_at=pending.occurred_at,
+        correlation_id=pending.correlation_id,
+        causation_id=pending.causation_id,
+        payload=pending.payload,
+        published_at=None,
+        attempts=0,
+        last_error=None,
+    )
+
+    class Session:
+        async def scalars(self, _: object) -> list[object]:
+            return [row]
+
+    published: list[tuple[bytes, object]] = []
+
+    class CaptureBroker:
+        async def publish(self, _: str, payload: bytes, headers: object) -> None:
+            published.append((payload, headers))
+
+    @asynccontextmanager
+    async def test_admission(_: object) -> AsyncGenerator[None]:
+        yield
+
+    publisher = OutboxPublisher(
+        cast(Any, None), cast(Any, CaptureBroker()), admission=test_admission
+    )
+    assert (
+        await publisher._publish_locked_batch(cast(Any, SimpleNamespace(session=Session())), 1) == 1
+    )
+    assert secret not in repr(settings).encode()
+    assert secret not in repr(context).encode()
+    assert secret not in repr(event).encode()
+    assert secret not in repr(pending).encode()
+    assert secret not in repr(row.payload).encode()
+    assert all(secret not in repr(item).encode() for item in published)
+    await worker.stop()
 
 
 @pytest.mark.asyncio
@@ -150,7 +364,7 @@ async def test_invalid_event_envelope_is_rejected_before_tenant_transaction() ->
         await worker._consume_delivery(delivery)
 
     assert worker.application.settings.database_url.startswith(
-        "postgresql+psycopg://businessos_app:"
+        "postgresql+psycopg://businessos_worker:"
     )
     assert "ops-secret" not in repr(worker.application.settings)
     await worker.stop()

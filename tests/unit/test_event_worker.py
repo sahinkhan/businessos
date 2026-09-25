@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -323,7 +324,13 @@ async def test_raw_workload_secret_stays_out_of_context_event_outbox_and_broker(
         async def publish(self, _: str, payload: bytes, headers: object) -> None:
             published.append((payload, headers))
 
-    publisher = OutboxPublisher(cast(Any, None), cast(Any, CaptureBroker()))
+    @asynccontextmanager
+    async def test_admission(_: object) -> AsyncGenerator[None]:
+        yield
+
+    publisher = OutboxPublisher(
+        cast(Any, None), cast(Any, CaptureBroker()), admission=test_admission
+    )
     assert (
         await publisher._publish_locked_batch(cast(Any, SimpleNamespace(session=Session())), 1) == 1
     )

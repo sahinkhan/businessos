@@ -50,6 +50,9 @@ secret file to the worker and set `BOS_EVENT_WORKER_WORKLOAD_ID`,
 The protected platform exposes a generic admission protocol and lifecycle
 hook. It imports no Identity implementation or table. The standalone worker
 resolves the Identity authority through the versioned dependency key. Its
+outbox publisher requires an explicit admission callback; the worker supplies
+the workload-authority operation for every batch, so the database role alone
+cannot publish through the certified worker path. Its
 configured principal UUID remains routing metadata in `TenantContext`, marked
 `worker-routing-only`; it cannot authenticate the worker or create membership.
 The worker authenticates before subscription startup, subscriber synchronization, each

@@ -41,11 +41,6 @@ type PublisherAdmission = Callable[[SQLAlchemyUnitOfWork], AbstractAsyncContextM
 
 
 @asynccontextmanager
-async def _no_publisher_admission() -> AsyncGenerator[None]:
-    yield
-
-
-@asynccontextmanager
 async def _subscriber_scope(
     admission: SubscriberAdmission | None,
     unit_of_work: UnitOfWork,
@@ -66,7 +61,7 @@ class OutboxPublisher:
         publisher: EventPublisher,
         *,
         subject_prefix: str = "businessos.events",
-        admission: PublisherAdmission | None = None,
+        admission: PublisherAdmission,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._publisher = publisher
@@ -76,12 +71,7 @@ class OutboxPublisher:
     async def publish_batch(self, limit: int = 100) -> int:
         published = 0
         async with self._unit_of_work_factory.system() as unit_of_work:
-            scope = (
-                self._admission(unit_of_work)
-                if self._admission is not None
-                else _no_publisher_admission()
-            )
-            async with scope:
+            async with self._admission(unit_of_work):
                 published = await self._publish_locked_batch(unit_of_work, limit)
                 await unit_of_work.commit()
         return published

@@ -1,20 +1,32 @@
 # ADR-020: Trusted Handler Invocation and Module Authority
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Pending formal acceptance
+Decision date: 2026-09-25
+
+Acceptance stage: COMPLETE
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; SDK/Contract Maintainer; Security Maintainer; Audit Owning Domain Maintainer; Release Maintainer
 
-Approval pull request or commit: Pending
+Approval pull request or commit: [PR #41](https://github.com/sahinkhan/businessos/pull/41) — formal acceptance candidate; merge pending
 
-Review model: Pending; proposal authorship is not approval evidence
+Reviewed semantic proposal SHA: `384d7a508daa616fb88b214bdad0b6c62b7fc972`
+
+Proposal owner attestation: [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/41#issuecomment-5832248641) — personally posted; proposal-only
+
+Proposal exact-head CI: [BusinessOS run 36132159842](https://github.com/sahinkhan/businessos/actions/runs/36132159842) — PASS (`python-quality`, `windows-typing`, `web-quality`)
+
+Proposal independent technical/read-only architecture audit: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
+
+Formal acceptance candidate: PR #41 exact-head acceptance revision; exact SHA recorded in final acceptance evidence
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`
 
 Independent human review: NOT PERFORMED
 
-Independent technical audit: Pending
+Formal acceptance owner attestation: Pending exact-candidate owner acceptance
 
-Formal authority: NONE — this proposal does not authorize implementation
+Formal authority: ACCEPTED / AUTHORITATIVE on main after final exact-candidate owner acceptance and merge. This candidate permits only the narrow additive Phase 4 Platform/SDK HandlerInvocationBinding implementation after that acceptance checkpoint; Audit V2 remains blocked until the generic runtime/SDK extension is separately implemented, audited, certified, owner-attested, and merged. ADR-017 runtime, V1 retirement, and general Phase 0–3 reopening are not authorized. Phases 0–3 remain FINAL PASS / FROZEN.
 
 Supersedes: None
 

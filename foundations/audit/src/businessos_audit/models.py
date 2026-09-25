@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -109,6 +109,9 @@ def compute_audit_checksum(
 def compute_audit_checksum_v3(envelope: dict[str, Any]) -> str:
     """A separate canonical encoding; historical version 1/2 bytes are unchanged."""
     payload = {"integrity_version": "3", **envelope}
+    occurred_at = payload.get("occurred_at")
+    if isinstance(occurred_at, datetime):
+        payload["occurred_at"] = occurred_at.astimezone(UTC).isoformat()
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

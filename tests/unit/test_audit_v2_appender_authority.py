@@ -1,13 +1,14 @@
 """The Audit provider checks a live command invocation on every append."""
 
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 from businessos_audit import AuditEvidenceV2, AuditModule
 from businessos_audit.v2_runtime import AuditAppenderProvider
 
 from businessos.activation import ContributionGeneration
-from businessos.context import RequestContext
+from businessos.context import RequestContext, TenantContext
 from businessos.handler_invocation import (
     HandlerInvocationDependency,
     HandlerInvocationKind,
@@ -67,3 +68,19 @@ async def test_appender_rejects_unissued_query_and_missing_direct_dependency() -
     appender.active = False
     with pytest.raises(PermissionError, match="not active"):
         await appender.append(evidence, context)
+
+
+@pytest.mark.asyncio
+async def test_append_revalidates_mutated_nested_evidence_before_await() -> None:
+    evidence = AuditEvidenceV2(action="test", resource_type="resource", details={"safe": {}})
+    evidence.details["safe"]["api_token"] = "secret"
+    request = RequestContext(
+        tenant=TenantContext(installation_id=uuid4(), tenant_id=uuid4(), principal_id=uuid4())
+    )
+    with pytest.raises(ValueError, match="sensitive"):
+        await AuditModule()._append_v3(  # pyright: ignore[reportPrivateUsage]
+            request,
+            cast(Any, object()),
+            evidence,
+            provenance={"actual_actor": {"id": "actor", "type": "user"}},
+        )

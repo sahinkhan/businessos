@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -36,8 +38,11 @@ from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
 from businessos.errors import BusinessOSError
+from businessos.event_source import CommittedOutboxSourceVerifier
+from businessos.eventing import DurableEventConsumer
 from businessos.messages import (
     Command,
+    EventBus,
     EventHandlingContext,
     HandlingContext,
     handler_transaction_view,
@@ -393,13 +398,14 @@ async def test_policy_projection_uses_workload_actor_and_unique_committed_event(
         principal_id=origin_id,
         decision_at=datetime.now(UTC),
         mode="commit",
-        action="resource.update",
-        resource_namespace="example.resource",
+        action="resource." + "u" * 120,
+        resource_namespace="example." + "r" * 120,
         resource_version="2",
         record_id=uuid4(),
         allowed=True,
         reason_code="allowed",
-        policy_ids=(uuid4(),),
+        policy_ids=tuple(uuid4() for _ in range(300)),
+        trace_context={"traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-01"},
     )
     tenant = TenantContext(
         installation_id=installation_id,
@@ -515,7 +521,7 @@ async def test_policy_projection_uses_workload_actor_and_unique_committed_event(
             connection.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant_id),))
             rows = connection.execute(
                 "SELECT actor_id, actor_type, provenance_v3, source_event_id, "
-                "previous_checksum, checksum "
+                "previous_checksum, checksum, trace_id, action, resource_type, evidence_v3 "
                 "FROM platform_audit.audit_logs WHERE tenant_id = %s "
                 "ORDER BY occurred_at, id",
                 (tenant_id,),
@@ -531,6 +537,88 @@ async def test_policy_projection_uses_workload_actor_and_unique_committed_event(
             assert row[0] == str(workload_id) and row[1] == "service_account"
             assert row[2]["origin_actor"]["id"] == str(origin_id)
             assert row[2]["actual_actor"]["id"] == str(workload_id)
+            assert row[6] == "a" * 32
+            assert len(row[7]) <= 100 and len(row[8]) <= 100
+            assert row[9]["details"]["source_action"]["truncated"] is True
+            assert row[9]["details"]["policy_ids_count"] == 300
+            assert len(row[9]["details"]["policy_ids"]) == 32
+
+        source_event = event.model_copy(update={"event_id": uuid4()})
+        source_db = Database(Settings(database_url=postgres_database.runtime_url))
+        source_factory = SQLAlchemyUnitOfWorkFactory(source_db.sessions)
+        try:
+            async with source_factory.for_tenant(tenant) as source_unit:
+                source_unit.add_outbox(source_event.to_outbox())
+                await source_unit.commit()
+            verifier = CommittedOutboxSourceVerifier(ops_factory)
+            await verifier.verify(
+                event_id=source_event.event_id,
+                tenant_id=tenant_id,
+                event_type=source_event.event_type,
+                schema_version=source_event.schema_version,
+                occurred_at=source_event.occurred_at,
+                correlation_id=source_event.correlation_id,
+                causation_id=source_event.causation_id,
+                payload=source_event.model_dump(mode="json"),
+            )
+            bus = EventBus()
+            fail_once = True
+
+            async def project(
+                committed: PolicyDecisionRecordedV2, delivery: EventHandlingContext
+            ) -> None:
+                nonlocal fail_once
+                await audit._materialize_policy_decision(committed, delivery)
+                if fail_once:
+                    fail_once = False
+                    raise RuntimeError("retry after Audit append")
+
+            bus.subscribe(
+                PolicyDecisionRecordedV2,
+                "foundation.audit.policy_decision_v2",
+                project,
+                permission="foundation.audit.write",
+            )
+            allow = _DenyAuditWrite()
+            allow.allow_audit = True
+            consumer = DurableEventConsumer(worker_factory, bus, Authorizer(allow))
+
+            @asynccontextmanager
+            async def admission(
+                delivery_unit: Any, transaction: Any, subscriber: str
+            ) -> AsyncGenerator[object]:
+                async with authority.bind(
+                    delivery_unit.persistence,
+                    verified=verified,
+                    tenant_id=tenant_id,
+                    source_event_id=source_event.event_id,
+                    subscriber=subscriber,
+                    attempt_id=uuid4(),
+                    transaction=transaction,
+                ) as admitted:
+                    yield admitted
+
+            async def deliver() -> int:
+                async with app.container.request_scope() as dependencies:
+                    return await consumer.consume(
+                        source_event, request, dependencies, admission=admission
+                    )
+
+            with pytest.raises(RuntimeError, match="retry after Audit append"):
+                await deliver()
+            assert await deliver() == 1
+            assert await deliver() == 0
+            with psycopg.connect(_url(postgres_database.runtime_url)) as connection:
+                connection.execute(
+                    "SELECT set_config('app.tenant_id', %s, false)", (str(tenant_id),)
+                )
+                projected_count = connection.execute(
+                    "SELECT count(*) FROM platform_audit.audit_logs WHERE source_event_id = %s",
+                    (source_event.event_id,),
+                ).fetchone()
+            assert projected_count == (1,)
+        finally:
+            await source_db.close()
     finally:
         await operations.close()
         await worker.close()

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
 from typing import Any
@@ -158,6 +161,7 @@ class AuditModule:
             ctx.request,
             ctx.unit_of_work,
             cmd.evidence,
+            trace_id=ctx.request.trace_id,
             provenance={
                 "version": "audit.provenance.v3",
                 "path": "manual-command",
@@ -191,15 +195,25 @@ class AuditModule:
             ctx.request,
             ctx.unit_of_work,
             AuditEvidenceV2(
-                action=event.action,
-                resource_type=f"{event.resource_namespace}@{event.resource_version}",
+                action=_bounded_projection_label(event.action),
+                resource_type=_bounded_projection_label(
+                    f"{event.resource_namespace}@{event.resource_version}"
+                ),
                 resource_id=str(event.record_id),
                 status="allowed" if event.allowed else "denied",
                 details={
                     "mode": event.mode,
                     "reason_code": event.reason_code,
-                    "policy_ids": [str(value) for value in event.policy_ids],
+                    "policy_ids": [str(value) for value in event.policy_ids[:32]],
+                    "policy_ids_count": len(event.policy_ids),
+                    "policy_ids_sha256": hashlib.sha256(
+                        json.dumps([str(value) for value in event.policy_ids]).encode("utf-8")
+                    ).hexdigest(),
                     "decision_at": event.decision_at.isoformat(),
+                    "source_action": _projection_source_reference(event.action),
+                    "source_resource": _projection_source_reference(
+                        f"{event.resource_namespace}@{event.resource_version}"
+                    ),
                 },
             ),
             provenance={
@@ -230,8 +244,11 @@ class AuditModule:
                     "causation_id": event.causation_id,
                 },
                 "correlation_source": "committed-policy-event",
-                "trace_source": "verified-event-trace",
+                "trace_source": "committed-policy-event"
+                if _committed_trace_id(event)
+                else "absent",
             },
+            trace_id=_committed_trace_id(event),
             source_event_id=event.event_id,
             projection_kind="policy-decision-v2",
         )
@@ -243,9 +260,19 @@ class AuditModule:
         evidence: AuditEvidenceV2,
         *,
         provenance: dict[str, Any],
+        trace_id: str | None = None,
         source_event_id: UUID | None = None,
         projection_kind: str | None = None,
     ) -> AuditRecord:
+        # Pydantic's frozen model does not freeze mutable nested details. Snapshot and
+        # revalidate before the first await so a caller cannot change persisted bytes.
+        evidence = AuditEvidenceV2(
+            action=evidence.action,
+            resource_type=evidence.resource_type,
+            resource_id=evidence.resource_id,
+            status=evidence.status,
+            details=deepcopy(evidence.details),
+        )
         if request.tenant is None:
             raise BusinessOSError(
                 "tenant_context_required", "Tenant context required", status_code=401
@@ -299,7 +326,7 @@ class AuditModule:
             "decision_metadata": None,
             "status": evidence.status,
             "correlation_id": request.correlation_id,
-            "trace_id": request.trace_id,
+            "trace_id": trace_id,
             "previous_checksum": prior[1] if prior else "",
             "integrity_version": "3",
             "provenance_v3": provenance,
@@ -439,3 +466,26 @@ _V3_ENVELOPE_FIELDS = (
 
 def _v3_envelope(row: dict[str, Any]) -> dict[str, Any]:
     return {key: row[key] for key in _V3_ENVELOPE_FIELDS}
+
+
+def _bounded_projection_label(value: str) -> str:
+    if len(value) <= 100:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"{value[:27]}~sha256:{digest}"
+
+
+def _projection_source_reference(value: str) -> dict[str, Any]:
+    return {
+        "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        "length": len(value),
+        "truncated": len(value) > 100,
+    }
+
+
+def _committed_trace_id(event: PolicyDecisionRecordedV2) -> str | None:
+    traceparent = event.trace_context.get("traceparent", "")
+    match = re.fullmatch(r"[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}", traceparent)
+    if match is None or set(match.group(1)) == {"0"}:
+        return None
+    return match.group(1)

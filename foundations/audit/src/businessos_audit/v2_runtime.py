@@ -77,6 +77,7 @@ class AuditAppenderProvider:
             ctx.request,
             ctx.unit_of_work,
             evidence,
+            trace_id=ctx.request.trace_id,
             provenance={
                 "version": "audit.provenance.v3",
                 "path": "handler-command",

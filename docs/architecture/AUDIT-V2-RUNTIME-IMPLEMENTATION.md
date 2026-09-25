@@ -36,6 +36,11 @@ committed Policy event. Policy has no Audit dependency. The Audit projection
 commits in the delivery transaction after the Policy source commit. A failed
 append rolls back the inbox claim and retries. A partial unique index over
 `(tenant_id, source_event_id, projection_kind)` enforces one projection.
+The projection takes its trace from the committed event trace context, never
+from the broker header. Long valid Policy actions and resource labels become
+deterministic bounded labels with source digests and lengths. Up to 32 Policy
+IDs are copied into bounded details with the complete count and digest; the
+committed source event retains the full list.
 
 ## Storage and integrity
 
@@ -43,7 +48,9 @@ Version 3 stores the trusted structured provenance and bounded evidence next
 to legacy fields. The checksum canonically covers the V3 envelope, including
 actor, origin, event/delivery IDs, outcome, tenant, correlation/trace source,
 and previous checksum. Historical integrity versions 1 and 2 retain their
-original encodings and rows. Writes take a per-tenant transaction advisory lock
+original encodings and rows. V3 timestamps are canonicalized to UTC across
+PostgreSQL session timezones. Writes revalidate a deep evidence snapshot before
+the first await and take a per-tenant transaction advisory lock
 before selecting the predecessor and assign an instant strictly greater than
 the predecessor to preserve chain order. The current Audit RLS and append-only
 trigger remain in force. `audit_0003` refuses downgrade when V3 rows exist.
@@ -59,7 +66,8 @@ V1 write consumer was found.
 The focused PostgreSQL tests exercise manual authority, actor spoof rejection,
 same-unit-of-work commit and rollback, direct dependency denial, verified
 workload/origin separation, duplicate delivery, mixed historical/V3 chain
-verification, and distinct concurrent chain appends. The Phase 0 gate, Ruff,
+verification, distinct concurrent chain appends, and committed-source consumer
+rollback/retry with one durable projection. The Phase 0 gate, Ruff,
 mypy, Pyright, unit, integration, conformance, wheel/image, web, and exact-head
 CI results are reported in the implementation PR.
 This batch does not implement ADR-017, preventative SoD, or broad V1 retirement.

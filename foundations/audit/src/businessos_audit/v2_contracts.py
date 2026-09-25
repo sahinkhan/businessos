@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -26,14 +26,14 @@ _SENSITIVE_KEY_PARTS = (
 
 def _validate_evidence_json(value: object) -> None:
     if isinstance(value, dict):
-        for key, item in value.items():
+        for key, item in cast(dict[object, object], value).items():
             if not isinstance(key, str) or any(
                 part in key.lower() for part in _SENSITIVE_KEY_PARTS
             ):
                 raise ValueError("Audit evidence contains a sensitive or invalid key")
             _validate_evidence_json(item)
     elif isinstance(value, list):
-        for item in value:
+        for item in cast(list[object], value):
             _validate_evidence_json(item)
     elif value is None or isinstance(value, (str, bool, int)):
         return

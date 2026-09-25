@@ -1,7 +1,7 @@
 """Versioned Audit integrity does not reinterpret historical encodings."""
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -26,6 +26,13 @@ def test_historical_encodings_are_stable_and_distinct_from_v3() -> None:
 
     assert checksum("1") == checksum("1")
     assert checksum("2") != checksum("1")
+
+
+def test_v3_checksum_normalizes_session_timezone() -> None:
+    instant = datetime(2026, 9, 25, 12, 30, tzinfo=UTC)
+    envelope = {"occurred_at": instant, "tenant_id": uuid4()}
+    shifted = {**envelope, "occurred_at": instant.astimezone(timezone(timedelta(hours=6)))}
+    assert compute_audit_checksum_v3(envelope) == compute_audit_checksum_v3(shifted)
 
 
 @pytest.mark.parametrize(

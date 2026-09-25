@@ -8,7 +8,7 @@ Acceptance stage: COMPLETE
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; SDK/Contract Maintainer; Security Maintainer; Audit Owning Domain Maintainer; Release Maintainer
 
-Approval pull request or commit: [PR #41](https://github.com/sahinkhan/businessos/pull/41) — formal acceptance candidate; merge pending
+Approval pull request or commit: [PR #41](https://github.com/sahinkhan/businessos/pull/41) — MERGED
 
 Reviewed semantic proposal SHA: `384d7a508daa616fb88b214bdad0b6c62b7fc972`
 
@@ -18,15 +18,23 @@ Proposal exact-head CI: [BusinessOS run 36132159842](https://github.com/sahinkha
 
 Proposal independent technical/read-only architecture audit: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
 
-Formal acceptance candidate: PR #41 exact-head acceptance revision; exact SHA recorded in final acceptance evidence
+Formal acceptance candidate SHA: `6829bf6e5ec9c650dcae5945205c58de423ee0b7`
+
+Formal acceptance exact-head CI: [BusinessOS run 36134671922](https://github.com/sahinkhan/businessos/actions/runs/36134671922) — PASS (`python-quality`, `windows-typing`, `web-quality`)
+
+Formal acceptance independent technical/read-only audit: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
 
 Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`
 
 Independent human review: NOT PERFORMED
 
-Formal acceptance owner attestation: Pending exact-candidate owner acceptance
+Formal acceptance owner attestation: COMPLETE — [@sahinkhan's exact-candidate attestation](https://github.com/sahinkhan/businessos/pull/41#issuecomment-5832587395)
 
-Formal authority: ACCEPTED / AUTHORITATIVE on main after final exact-candidate owner acceptance and merge. This candidate permits only the narrow additive Phase 4 Platform/SDK HandlerInvocationBinding implementation after that acceptance checkpoint; Audit V2 remains blocked until the generic runtime/SDK extension is separately implemented, audited, certified, owner-attested, and merged. ADR-017 runtime, V1 retirement, and general Phase 0–3 reopening are not authorized. Phases 0–3 remain FINAL PASS / FROZEN.
+Accepted main merge SHA: `db1ad26b797cfe7f2f7a6222ef040288104cc9ad`
+
+Architecture state: ACCEPTED / AUTHORITATIVE / MERGED
+
+Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN. Only the narrow additive Phase 4 Platform/SDK HandlerInvocationBinding implementation is authorized for later work. ADR-020 runtime/SDK is NOT IMPLEMENTED. Audit V2 remains BLOCKED until that generic extension is separately implemented, audited, certified, owner-attested, and merged. ADR-017 runtime and V1 retirement remain PENDING. Phases 0–3 remain FINAL PASS / FROZEN; no general Phase 1 reopening occurred.
 
 Supersedes: None
 

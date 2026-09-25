@@ -202,6 +202,7 @@ def _run_image(
         "BOS_MIGRATOR_PASSWORD",
         "BOS_APPLICATION_PASSWORD",
         "BOS_OPERATIONS_PASSWORD",
+        "BOS_WORKER_PASSWORD",
     )
     command = ["docker", "run", "--rm", "--network", network]
     for name in names:
@@ -301,6 +302,7 @@ def main() -> None:
             "BOS_MIGRATOR_PASSWORD": _required("BOS_MIGRATOR_PASSWORD"),
             "BOS_APPLICATION_PASSWORD": _required("BOS_APPLICATION_PASSWORD"),
             "BOS_OPERATIONS_PASSWORD": _required("BOS_OPERATIONS_PASSWORD"),
+            "BOS_WORKER_PASSWORD": _required("BOS_WORKER_PASSWORD"),
         }
     )
 

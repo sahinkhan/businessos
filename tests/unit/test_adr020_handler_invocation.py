@@ -338,7 +338,9 @@ async def test_direct_only_snapshot_and_manifest_replacement_do_not_change_autho
     module = ProbeModule(
         "example.probe", dependencies=(_dependency("example.middle"),), command_handler=handler
     )
-    app = create_application(_settings(), modules=(module, middle, audit))
+    app = create_application(
+        _settings(), modules=(module, middle, audit), approved_module_artifacts={}
+    )
     assert app.runtime is not None
     app.runtime.messages._unit_of_work_factory = FakeUnitOfWorkFactory([])
     await app.runtime.lifecycle.install_all()
@@ -370,7 +372,7 @@ async def test_direct_audit_dependency_is_proven_from_exact_manifest() -> None:
         dependencies=(_dependency("foundation.audit"),),
         command_handler=handler,
     )
-    app = create_application(_settings(), modules=(module, audit))
+    app = create_application(_settings(), modules=(module, audit), approved_module_artifacts={})
     assert app.runtime is not None
     app.runtime.messages._unit_of_work_factory = FakeUnitOfWorkFactory([])
     await app.runtime.lifecycle.install_all()
@@ -505,7 +507,7 @@ async def test_owner_restricted_key_requires_exact_owner_and_approved_artifact()
         await wrong_app.runtime.lifecycle.enable_all()
 
     missing = ProbeModule("foundation.audit", dependency_key=key)
-    missing_app = create_application(_settings(), modules=(missing,))
+    missing_app = create_application(_settings(), modules=(missing,), approved_module_artifacts={})
     assert missing_app.runtime is not None
     await missing_app.runtime.lifecycle.install_all()
     with pytest.raises(PermissionError, match="approved first-party artifact"):

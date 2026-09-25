@@ -854,6 +854,10 @@ class Container:
         try:
             if registration.gate is None:
                 return await self._invoke_provider(registration.provider, resolver, stack)
+            if key.required_owner is not None and registration.scope is DependencyScope.REQUEST:
+                # A reserved request provider remains admitted until its scope closes.
+                await stack.enter_async_context(registration.gate.admit(registration.generation))
+                return await self._invoke_provider(registration.provider, resolver, stack)
             async with registration.gate.admit(registration.generation):
                 return await self._invoke_provider(registration.provider, resolver, stack)
         finally:

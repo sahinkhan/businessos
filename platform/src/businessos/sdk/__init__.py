@@ -7,7 +7,7 @@ from businessos.dependencies import (
     RESOURCE_OWNER_RESOLVER,
     UNIT_OF_WORK_FACTORY,
 )
-from businessos.di import DependencyKey, DependencyScope, RequestDependencyScope
+from businessos.di import DependencyKey, DependencyResolver, DependencyScope, RequestDependencyScope
 from businessos.errors import BusinessOSError
 from businessos.features import FeatureFlag
 from businessos.handler_invocation import (
@@ -63,6 +63,7 @@ __all__ = [
     "BusinessOSError",
     "Command",
     "DependencyKey",
+    "DependencyResolver",
     "DependencyScope",
     "DomainEvent",
     "EventHandlingContext",

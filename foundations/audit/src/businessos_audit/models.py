@@ -46,6 +46,10 @@ AUDIT_LOGS = Table(
     Column("status", String(30), nullable=False, server_default="success"),
     Column("previous_checksum", String(64), nullable=False, server_default=""),
     Column("integrity_version", String(10), nullable=False, server_default="2"),
+    Column("provenance_v3", JSONB, nullable=True),
+    Column("evidence_v3", JSONB, nullable=True),
+    Column("source_event_id", PG_UUID(as_uuid=True), nullable=True),
+    Column("projection_kind", String(50), nullable=True),
     Column("checksum", String(64), nullable=False),
     Index("ix_audit_tenant_occurred", "tenant_id", "occurred_at"),
     Index("ix_audit_tenant_resource", "tenant_id", "resource_type", "resource_id"),
@@ -102,6 +106,13 @@ def compute_audit_checksum(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def compute_audit_checksum_v3(envelope: dict[str, Any]) -> str:
+    """A separate canonical encoding; historical version 1/2 bytes are unchanged."""
+    payload = {"integrity_version": "3", **envelope}
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 class AuditRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -125,6 +136,10 @@ class AuditRecord(BaseModel):
     status: str = "success"
     previous_checksum: str = ""
     integrity_version: str = "2"
+    provenance_v3: dict[str, Any] | None = None
+    evidence_v3: dict[str, Any] | None = None
+    source_event_id: UUID | None = None
+    projection_kind: str | None = None
     checksum: str
 
 

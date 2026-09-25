@@ -14,6 +14,15 @@
           "2"
         ]
       ]
+    },
+    {
+      "module_id": "foundation.audit",
+      "publisher": "BusinessOS",
+      "package_identity": "businessos-foundation-audit",
+      "loaded_type": "businessos_audit.module:AuditModule",
+      "install_identity": "ci-test-only-adr019-audit-v2-owner",
+      "first_party": true,
+      "approved_aliases": []
     }
   ]
 }

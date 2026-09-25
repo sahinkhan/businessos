@@ -34,7 +34,15 @@ Accepted main merge SHA: `db1ad26b797cfe7f2f7a6222ef040288104cc9ad`
 
 Architecture state: ACCEPTED / AUTHORITATIVE / MERGED
 
-Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN. Only the narrow additive Phase 4 Platform/SDK HandlerInvocationBinding implementation is authorized for later work. ADR-020 runtime/SDK is NOT IMPLEMENTED. Audit V2 remains BLOCKED until that generic extension is separately implemented, audited, certified, owner-attested, and merged. ADR-017 runtime and V1 retirement remain PENDING. Phases 0–3 remain FINAL PASS / FROZEN; no general Phase 1 reopening occurred.
+Formal authority: ACCEPTED / AUTHORITATIVE ON MAIN. The narrow additive Phase 4 Platform/SDK HandlerInvocationBinding runtime is IMPLEMENTED / CERTIFIED / MERGED. Audit V2 Path A architecture blocker is RESOLVED; Audit V2 is UNBLOCKED FOR IMPLEMENTATION. ADR-017 runtime and V1 retirement remain PENDING. Phases 0–3 remain FINAL PASS / FROZEN; no general Phase 1 reopening occurred.
+
+Runtime candidate SHA: `575ac85908f03da4e7b3765a3903ce2db9903088`
+
+Runtime exact-head CI: [BusinessOS run 36149944766](https://github.com/sahinkhan/businessos/actions/runs/36149944766) — PASS
+
+Runtime owner implementation attestation: [@sahinkhan's attestation](https://github.com/sahinkhan/businessos/pull/43#issuecomment-5834683997)
+
+Runtime certification merge/main SHA: `1c6d0eafb5cde8688b44c9ac88ae65f9ad15beb7`
 
 Supersedes: None
 

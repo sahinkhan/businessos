@@ -7,6 +7,7 @@ from .models import (
     AuditVerificationResult,
     RecordAuditEvent,
     compute_audit_checksum,
+    compute_audit_checksum_v3,
     metadata,
 )
 from .module import (
@@ -15,17 +16,23 @@ from .module import (
     RecordAuditLogCommand,
     VerifyAuditIntegrityQuery,
 )
+from .v2_contracts import AUDIT_APPENDER_V2, AuditAppenderV2, AuditEvidenceV2, RecordAuditLogV2
 
 __all__ = [
+    "AUDIT_APPENDER_V2",
     "AUDIT_LOGS",
+    "AuditAppenderV2",
     "AuditEventRecorded",
+    "AuditEvidenceV2",
     "AuditModule",
     "AuditRecord",
     "AuditVerificationResult",
     "QueryAuditLogsQuery",
     "RecordAuditEvent",
     "RecordAuditLogCommand",
+    "RecordAuditLogV2",
     "VerifyAuditIntegrityQuery",
     "compute_audit_checksum",
+    "compute_audit_checksum_v3",
     "metadata",
 ]

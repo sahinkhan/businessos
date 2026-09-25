@@ -80,6 +80,7 @@ from .v2_contracts import (
     PolicyDecisionEvidenceV2,
     PolicyReadDecisionV2,
 )
+from .v2_runtime import PolicyDecisionRecordedV2
 
 __all__ = [
     "APPROVAL_LIMITS",
@@ -127,6 +128,7 @@ __all__ = [
     "PolicyCommitDecisionV2",
     "PolicyContext",
     "PolicyDecisionEvidenceV2",
+    "PolicyDecisionRecordedV2",
     "PolicyEvaluationService",
     "PolicyModule",
     "PolicyReadDecisionV2",

@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
@@ -125,6 +126,9 @@ async def test_binding_is_one_task_one_transaction_and_expires_on_exit() -> None
         assert not hasattr(binding.workload, "_issuer")
         assert secret not in repr(binding).encode()
         binding.assert_active(cast(Any, transaction))
+        # Matching public fields are insufficient: Identity must have issued this object.
+        with pytest.raises(InvalidWorkloadCredential):
+            replace(binding).assert_active(cast(Any, transaction))
         with pytest.raises(InvalidWorkloadCredential):
             async with authority.bind(
                 cast(Any, persistence),

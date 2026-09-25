@@ -36,6 +36,7 @@ from businessos.modules import (
     UpgradeCoordinator,
 )
 from businessos.modules.artifact import ApprovedModuleArtifact
+from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 from businessos.providers import ProviderRegistry, S3ObjectStorageProvider, tenant_bound_provider
@@ -92,6 +93,9 @@ def create_application(
     resource_coordinator_ids: frozenset[str] = frozenset(),
 ) -> BusinessOSApplication:
     """Compose the protected runtime without importing business modules."""
+    loaded_modules = tuple(modules)
+    if approved_module_artifacts is None:
+        approved_module_artifacts = approved_artifacts_from_operator_inventory(loaded_modules)
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
     version = resolved_settings.app_version or runtime_version()
@@ -182,7 +186,7 @@ def create_application(
         approved_artifacts=approved_module_artifacts,
         coordinator_ids=resource_coordinator_ids,
     )
-    for module in modules:
+    for module in loaded_modules:
         module_registry.add(module)
 
     runtime_placeholder: dict[str, FrameworkRuntime] = {}

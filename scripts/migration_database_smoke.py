@@ -24,6 +24,10 @@ from businessos.migrations import (
     MigrationPlan,
 )
 from businessos.modules import ModuleRegistry, discover_modules
+from businessos.modules.installation_inventory import (
+    approved_artifacts_from_operator_inventory,
+    read_operator_inventory,
+)
 from businessos.version import runtime_version
 
 # Artifact composition, not revision tips: additional discovered modules remain supported.
@@ -45,8 +49,16 @@ REQUIRED_OWNERS = {
 
 
 def _expected_plan() -> MigrationPlan:
-    registry = ModuleRegistry(platform_version=runtime_version(), sdk_version="0.1.0")
-    for module in discover_modules():
+    operator_inventory = read_operator_inventory()
+    modules = tuple(discover_modules())
+    registry = ModuleRegistry(
+        platform_version=runtime_version(),
+        sdk_version="0.1.0",
+        approved_artifacts=approved_artifacts_from_operator_inventory(
+            modules, inventory=operator_inventory
+        ),
+    )
+    for module in modules:
         registry.add(module)
     plan = MigrationCoordinator(registry).plan()
     missing = REQUIRED_OWNERS - {source.owner for source in plan.sources}
@@ -244,15 +256,15 @@ def _verify_global_geography_read_only(database_url: str) -> None:
                 raise RuntimeError(f"unsafe runtime privileges on global Geography {table}")
 
 
-def _expect_safe_currency_downgrade_refusal(run: Callable[[Sequence[str]], str]) -> None:
+def _expect_safe_classification_downgrade_refusal(run: Callable[[Sequence[str]], str]) -> None:
     try:
         run(("migrate", "downgrade", "base"))
     except subprocess.CalledProcessError as exc:
-        if "currency_0001 downgrade refused" not in (exc.stderr or ""):
+        if "gov_0003 downgrade refused" not in (exc.stderr or ""):
             raise RuntimeError("migration downgrade failed for an unexpected reason") from exc
-        print("canonical Currency downgrade safely refused")
+        print("classification V2 downgrade safely refused")
     else:
-        raise RuntimeError("destructive Currency downgrade unexpectedly succeeded")
+        raise RuntimeError("destructive classification V2 downgrade unexpectedly succeeded")
 
 
 def main() -> None:
@@ -346,7 +358,7 @@ def main() -> None:
             _verify_installed_plan(run(("migrate", "plan", "--check-database")), plan)
             _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
             before_currency = _currency_rows(_url(migration_base, database_name, sqlalchemy=False))
-            _expect_safe_currency_downgrade_refusal(run)
+            _expect_safe_classification_downgrade_refusal(run)
             _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
             if (
                 _currency_rows(_url(migration_base, database_name, sqlalchemy=False))

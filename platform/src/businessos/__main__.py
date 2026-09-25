@@ -22,12 +22,24 @@ from businessos.database_admin import (
 from businessos.event_worker import EventWorkerSettings, create_event_worker
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleRegistry, discover_modules
+from businessos.modules.installation_inventory import (
+    approved_artifacts_from_operator_inventory,
+    read_operator_inventory,
+)
 from businessos.version import runtime_version
 
 
 def _migration_coordinator() -> MigrationCoordinator:
-    registry = ModuleRegistry(platform_version=runtime_version(), sdk_version="0.1.0")
-    for module in discover_modules():
+    operator_inventory = read_operator_inventory()
+    modules = tuple(discover_modules())
+    registry = ModuleRegistry(
+        platform_version=runtime_version(),
+        sdk_version="0.1.0",
+        approved_artifacts=approved_artifacts_from_operator_inventory(
+            modules, inventory=operator_inventory
+        ),
+    )
+    for module in modules:
         registry.add(module)
     return MigrationCoordinator(registry)
 

@@ -13,6 +13,7 @@ from businessos.modules import (
     ModuleRegistry,
     discover_modules,
 )
+from businessos.modules.artifact import ApprovedModuleArtifact
 from businessos.version import runtime_version
 
 PHASE3_MIGRATION_PARENTS = {
@@ -66,7 +67,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert plan.heads == (
         "audit_0002",
         "geography_0003",
-        "gov_0002",
+        "gov_0003",
         "identity_0003",
         "organization_0003",
         "party_0002",
@@ -104,6 +105,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["audit_0002"] == ("audit_0001",)
     assert parents["gov_0001"] == ("audit_0001",)
     assert parents["gov_0002"] == ("gov_0001",)
+    assert parents["gov_0003"] == ("gov_0002",)
     smoke._verify_installed_plan(_plan_json(plan), plan)
     smoke._verify_state(set(plan.heads), _inventory(plan), plan)
 
@@ -139,7 +141,32 @@ def test_cross_owner_migration_parent_requires_declared_dependency(
         _ManifestOverrideModule(module, manifest) if module is target else module
         for module in modules
     ]
-    registry = ModuleRegistry(platform_version=runtime_version(), sdk_version="0.1.0")
+    governance = next(
+        module for module in modules if module.manifest.module_id == "foundation.data_governance"
+    )
+    grant = ApprovedModuleArtifact(
+        loaded_module=governance,
+        module_id="foundation.data_governance",
+        publisher="BusinessOS",
+        package_identity="businessos-foundation-data-governance",
+        loaded_type=f"{type(governance).__module__}:{type(governance).__qualname__}",
+        install_identity="unit-test-migration-catalog",
+        first_party=True,
+        approved_aliases=frozenset(
+            {
+                (
+                    "foundation.governance.data-classification",
+                    "foundation.data_governance.data-classification",
+                    "2",
+                )
+            }
+        ),
+    )
+    registry = ModuleRegistry(
+        platform_version=runtime_version(),
+        sdk_version="0.1.0",
+        approved_artifacts={"foundation.data_governance": grant},
+    )
     for module in modules:
         registry.add(module)
 

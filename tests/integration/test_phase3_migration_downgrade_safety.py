@@ -8,13 +8,19 @@ import pytest
 
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleRegistry, discover_modules
+from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 from businessos.version import runtime_version
 from tests.conftest import PostgreSQLTestDatabase
 
 
 def _coordinator() -> MigrationCoordinator:
-    registry = ModuleRegistry(platform_version=runtime_version(), sdk_version="0.1.0")
-    for module in discover_modules():
+    modules = tuple(discover_modules())
+    registry = ModuleRegistry(
+        platform_version=runtime_version(),
+        sdk_version="0.1.0",
+        approved_artifacts=approved_artifacts_from_operator_inventory(modules),
+    )
+    for module in modules:
         registry.add(module)
     return MigrationCoordinator(registry)
 
@@ -150,7 +156,7 @@ def test_currency_downgrade_rejects_seeded_data_atomically(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     migrations = _coordinator()
-    migrations.upgrade(postgres_database.migration_url)
+    migrations.upgrade(postgres_database.migration_url, "geography_0003")
     with psycopg.connect(_raw(postgres_database.migration_url)) as connection:
         connection.execute(
             "INSERT INTO platform_geo.countries "
@@ -173,7 +179,7 @@ def test_currency_downgrade_rejects_seeded_data_atomically(
             assert connection.execute(
                 "SELECT currency_code FROM platform_geo.countries WHERE code = 'XZ'"
             ).fetchone() == ("USD",)
-        migrations.upgrade(postgres_database.migration_url)
+        migrations.upgrade(postgres_database.migration_url, "geography_0003")
         assert _currency_state(postgres_database) == before
 
 

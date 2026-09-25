@@ -9,10 +9,10 @@ from dataclasses import dataclass
 
 from businessos.activation import ContributionGeneration
 from businessos.dependency_entitlement import (
-    _issue_restricted_dependency_entitlement as _issue_entitlement,
+    InternalRestrictedDependencyEntitlement,
 )
 from businessos.dependency_entitlement import (
-    _RestrictedDependencyEntitlement,
+    internal_issue_restricted_dependency_entitlement as _issue_entitlement,
 )
 from businessos.errors import ConfigurationError
 from businessos.modules.manifest import ModuleManifest
@@ -62,12 +62,12 @@ class ApprovedModuleArtifact:
                     raise ConfigurationError("Resource alias lacks protected operator approval")
 
 
-def _issue_restricted_dependency_entitlement(
+def internal_issue_restricted_dependency_entitlement(
     grant: ApprovedModuleArtifact,
     module: object,
     manifest: ModuleManifest,
     generation: ContributionGeneration,
-) -> _RestrictedDependencyEntitlement:
+) -> InternalRestrictedDependencyEntitlement:
     grant.verify(module, manifest)
     if not grant.first_party or generation.owner != manifest.module_id:
         raise ConfigurationError("Reserved dependency requires approved first-party artifact")

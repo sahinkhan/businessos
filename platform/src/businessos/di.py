@@ -13,7 +13,7 @@ from types import TracebackType
 from typing import Any, Protocol, TypeVar, cast
 
 from businessos.activation import ContributionGate, ContributionGeneration
-from businessos.dependency_entitlement import _valid_restricted_dependency_entitlement
+from businessos.dependency_entitlement import internal_valid_restricted_dependency_entitlement
 from businessos.errors import ConfigurationError, ConflictError
 
 T = TypeVar("T")
@@ -178,8 +178,8 @@ class Container:
         if key.required_owner is not None:
             if owner != key.required_owner:
                 raise ConfigurationError("Dependency key is reserved to another module owner")
-            if not _valid_restricted_dependency_entitlement(
-                _owner_restricted_entitlement, owner, generation
+            if not internal_valid_restricted_dependency_entitlement(
+                _owner_restricted_entitlement, key.required_owner, generation
             ):
                 raise ConfigurationError("Reserved dependency requires approved artifact")
         if key in self._registrations:

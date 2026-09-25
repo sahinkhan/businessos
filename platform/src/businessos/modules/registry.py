@@ -11,11 +11,11 @@ from packaging.version import Version
 from pydantic import ValidationError
 
 from businessos.activation import ContributionGeneration
-from businessos.dependency_entitlement import _RestrictedDependencyEntitlement
+from businessos.dependency_entitlement import InternalRestrictedDependencyEntitlement
 from businessos.errors import ConfigurationError, ConflictError, NotFoundError
 from businessos.modules.artifact import (
     ApprovedModuleArtifact,
-    _issue_restricted_dependency_entitlement,
+    internal_issue_restricted_dependency_entitlement,
 )
 from businessos.modules.manifest import ModuleContractDeclaration, ModuleManifest
 from businessos.modules.sdk import BusinessOSModule, ModuleRegistration
@@ -255,13 +255,13 @@ class ModuleRegistry:
 
     def restricted_dependency_entitlement(
         self, module_id: str, generation: ContributionGeneration
-    ) -> _RestrictedDependencyEntitlement | None:
+    ) -> InternalRestrictedDependencyEntitlement | None:
         """Issue only from protected inventory and the exact admitted module artifact."""
         grant = self._approved_artifacts.get(module_id)
         if grant is None or not grant.first_party:
             return None
         registered = self.get(module_id)
-        return _issue_restricted_dependency_entitlement(
+        return internal_issue_restricted_dependency_entitlement(
             grant, registered.module, registered.manifest, generation
         )
 

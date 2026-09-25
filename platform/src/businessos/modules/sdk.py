@@ -8,7 +8,7 @@ from typing import Protocol, runtime_checkable
 from businessos.activation import ContributionGate, ContributionGeneration, ContributionState
 from businessos.context import RequestContext
 from businessos.contracts import ContractRegistry, PublicContract
-from businessos.dependency_entitlement import _valid_restricted_dependency_entitlement
+from businessos.dependency_entitlement import internal_valid_restricted_dependency_entitlement
 from businessos.di import (
     Container,
     DependencyKey,
@@ -17,7 +17,7 @@ from businessos.di import (
     RequestDependencyScope,
 )
 from businessos.features import FeatureFlag, FeatureFlagRegistry
-from businessos.handler_invocation import _capture_handler_provenance
+from businessos.handler_invocation import internal_capture_handler_provenance
 from businessos.http import Request, Response, Router
 from businessos.http.middleware import CallNext, Middleware, MiddlewareRegistry
 from businessos.jobs import Job, JobHandlerRegistry
@@ -92,7 +92,7 @@ class ModuleRegistration:
         self._jobs = jobs
         self._gate = gate
         self._manifest = manifest
-        self._handler_provenance = _capture_handler_provenance(manifest, owner, generation)
+        self._handler_provenance = internal_capture_handler_provenance(manifest, owner, generation)
         self._owner_restricted_entitlement = owner_restricted_entitlement
         self._resources = resources
         self._coordinator_token: object | None = None
@@ -223,7 +223,7 @@ class ModuleRegistration:
                 raise RuntimeError("Reserved dependencies must register before activation")
             if self.owner != key.required_owner:
                 raise PermissionError("Dependency key is reserved to another module owner")
-            if not _valid_restricted_dependency_entitlement(
+            if not internal_valid_restricted_dependency_entitlement(
                 self._owner_restricted_entitlement, self.owner, self.generation
             ):
                 raise PermissionError("Reserved dependency requires approved first-party artifact")

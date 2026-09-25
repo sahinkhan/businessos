@@ -1,7 +1,7 @@
 """Framework-issued, invocation-local module provenance for command/query handlers."""
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -123,7 +123,7 @@ _registrations: WeakKeyDictionary[_TrustedHandlerProvenance, _RegistrationFacts]
 )
 
 
-def _capture_handler_provenance(
+def internal_capture_handler_provenance(
     manifest: "ModuleManifest | None", owner: str, generation: ContributionGeneration
 ) -> _TrustedHandlerProvenance | None:
     if manifest is None:
@@ -142,7 +142,7 @@ def _capture_handler_provenance(
     return provenance
 
 
-def _trusted_handler_dependencies(
+def internal_trusted_handler_dependencies(
     provenance: object, owner: str, generation: ContributionGeneration | None
 ) -> tuple[HandlerInvocationDependency, ...] | None:
     if type(provenance) is not _TrustedHandlerProvenance:
@@ -187,7 +187,7 @@ def validate_handler_invocation(
 
 
 @contextmanager
-def _issue_handler_invocation(
+def internal_issue_handler_invocation(
     *,
     owner_module_id: str,
     generation: ContributionGeneration,
@@ -195,7 +195,7 @@ def _issue_handler_invocation(
     direct_dependencies: tuple[HandlerInvocationDependency, ...],
     request: "RequestContext",
     transaction: "HandlerTransaction",
-) -> Iterator[HandlerInvocationBinding]:
+) -> Generator[HandlerInvocationBinding]:
     """Called only by the dispatcher inside an admitted generation and active UOW."""
     task = asyncio.current_task()
     if task is None or generation.owner != owner_module_id:
@@ -225,7 +225,7 @@ def _issue_handler_invocation(
 
 
 @contextmanager
-def _without_handler_invocation() -> Iterator[None]:
+def internal_without_handler_invocation() -> Generator[None]:
     """Prevent a nested legacy handler from inheriting its caller's authority."""
     token = _active_binding.set(None)
     try:

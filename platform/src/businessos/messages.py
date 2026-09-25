@@ -22,9 +22,9 @@ from businessos.handler_invocation import (
     HandlerInvocationBinding,
     HandlerInvocationDependency,
     HandlerInvocationKind,
-    _issue_handler_invocation,
-    _trusted_handler_dependencies,
-    _without_handler_invocation,
+    internal_issue_handler_invocation,
+    internal_trusted_handler_dependencies,
+    internal_without_handler_invocation,
 )
 from businessos.persistence import (
     PendingOutboxMessage,
@@ -204,7 +204,7 @@ class HandlerRegistry:
             generation,
             permission,
             coordinator_token,
-            _trusted_handler_dependencies(_provenance, owner, generation),
+            internal_trusted_handler_dependencies(_provenance, owner, generation),
         )
 
     def get(self, message: Message) -> Handler:
@@ -487,7 +487,7 @@ class MessageDispatcher:
     ) -> object:
         ResourceTransactionScope.reject_nested_dispatch_if_leased()
         with (
-            _without_handler_invocation(),
+            internal_without_handler_invocation(),
             bind_request_context(context),
             dispatch_span("command", type(message).__name__),
         ):
@@ -499,7 +499,7 @@ class MessageDispatcher:
                     async with unit_of_work:
                         transaction = handler_transaction_view(unit_of_work)
                         handling = HandlingContext(context, dependencies, transaction)
-                        with _without_handler_invocation():
+                        with internal_without_handler_invocation():
                             result = await self.commands.invoke_registered(
                                 registered, message, handling
                             )
@@ -520,12 +520,12 @@ class MessageDispatcher:
                                 registered.direct_dependencies is None
                                 or registered.generation is None
                             ):
-                                with _without_handler_invocation():
+                                with internal_without_handler_invocation():
                                     result = await self.commands.invoke_registered(
                                         registered, message, handling
                                     )
                             else:
-                                with _issue_handler_invocation(
+                                with internal_issue_handler_invocation(
                                     owner_module_id=registered.owner,
                                     generation=registered.generation,
                                     invocation_kind=HandlerInvocationKind.COMMAND,
@@ -548,7 +548,7 @@ class MessageDispatcher:
     ) -> object:
         ResourceTransactionScope.reject_nested_dispatch_if_leased()
         with (
-            _without_handler_invocation(),
+            internal_without_handler_invocation(),
             bind_request_context(context),
             dispatch_span("query", type(message).__name__),
         ):
@@ -560,7 +560,7 @@ class MessageDispatcher:
                     async with unit_of_work:
                         transaction = handler_transaction_view(unit_of_work)
                         handling = HandlingContext(context, dependencies, transaction)
-                        with _without_handler_invocation():
+                        with internal_without_handler_invocation():
                             return await self.queries.invoke_registered(
                                 registered, message, handling
                             )
@@ -576,11 +576,11 @@ class MessageDispatcher:
                         resource_scope.bind_transaction(transaction)
                         handling = HandlingContext(context, dependencies, transaction)
                         if registered.direct_dependencies is None or registered.generation is None:
-                            with _without_handler_invocation():
+                            with internal_without_handler_invocation():
                                 return await self.queries.invoke_registered(
                                     registered, message, handling
                                 )
-                        with _issue_handler_invocation(
+                        with internal_issue_handler_invocation(
                             owner_module_id=registered.owner,
                             generation=registered.generation,
                             invocation_kind=HandlerInvocationKind.QUERY,

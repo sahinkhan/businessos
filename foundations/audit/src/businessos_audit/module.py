@@ -178,6 +178,8 @@ class AuditModule:
     ) -> None:
         binding = ctx.workload_binding
         tenant = _require_tenant(ctx.request, event.tenant_id)
+        if ctx.request.correlation_id != event.correlation_id:
+            raise PermissionError("Delivery correlation does not match the committed Policy event")
         if type(binding) is not TenantExecutionBinding:
             raise PermissionError("Trusted workload binding required for Audit projection")
         binding.assert_active(ctx.unit_of_work)

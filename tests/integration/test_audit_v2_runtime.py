@@ -475,6 +475,17 @@ async def test_policy_projection_uses_workload_actor_and_unique_committed_event(
                     )
                     with pytest.raises(BusinessOSError, match="Target tenant"):
                         await audit._materialize_policy_decision(event, wrong_tenant)
+                    wrong_correlation = EventHandlingContext(
+                        RequestContext(
+                            tenant=tenant,
+                            correlation_id="unverified-delivery-correlation",
+                        ),
+                        dependencies,
+                        transaction,
+                        binding,
+                    )
+                    with pytest.raises(PermissionError, match="correlation"):
+                        await audit._materialize_policy_decision(event, wrong_correlation)
                     context = EventHandlingContext(request, dependencies, transaction, binding)
                     await audit._materialize_policy_decision(event, context)
                     await audit._materialize_policy_decision(event, context)

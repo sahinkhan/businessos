@@ -57,7 +57,7 @@ class ProbeModule:
             version="1.0.0",
             platform=">=0.1,<1",
             sdk=">=0.1,<1",
-            python=">=3.13",
+            python=">=3.12",
             entry_point="test:module",
             dependencies=dependencies,
         )
@@ -169,6 +169,14 @@ async def test_command_binding_is_exact_task_bound_and_unforgeable() -> None:
 
         await asyncio.create_task(child())
         with pytest.raises(PermissionError):
+            await asyncio.to_thread(
+                validate_handler_invocation,
+                binding,
+                handling.request,
+                handling.unit_of_work,
+                invocation_kind=HandlerInvocationKind.COMMAND,
+            )
+        with pytest.raises(PermissionError):
             validate_handler_invocation(
                 copy(binding),
                 handling.request,
@@ -262,6 +270,7 @@ async def test_nested_legacy_handler_cannot_borrow_outer_invocation() -> None:
     async def outer(_: ProbeCommand, handling: HandlingContext) -> object:
         binding = handling.invocation
         assert binding is not None
+        assert app.runtime is not None
         await app.runtime.messages.command(NestedCommand(), handling.request, handling.dependencies)
         validate_handler_invocation(
             binding,

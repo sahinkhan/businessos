@@ -154,11 +154,11 @@ def _trusted_handler_dependencies(
 
 
 def _require_live(facts: _AuthorityFacts, binding: _IssuedBinding) -> None:
-    if (
-        not facts.lease.active
-        or asyncio.current_task() is not facts.task
-        or _active_binding.get() is not binding
-    ):
+    try:
+        task = asyncio.current_task()
+    except RuntimeError as exc:
+        raise PermissionError("Handler invocation requires its issuing task") from exc
+    if not facts.lease.active or task is not facts.task or _active_binding.get() is not binding:
         raise PermissionError("Handler invocation is no longer active in this task")
 
 

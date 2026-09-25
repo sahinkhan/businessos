@@ -1,22 +1,42 @@
 # ADR-019: Trusted Workload Identity and Tenant-Bound Worker Execution
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Pending formal acceptance
+Decision date: 2026-09-25
+
+Acceptance stage: Formal acceptance candidate; decision authority is pending final exact-SHA owner attestation and merge to `main`
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; Identity Maintainer; Security Maintainer; SDK/Contract Maintainer; Audit Owning Domain Maintainer; Release Maintainer; Migration Safety Reviewer
 
-Approval pull request or commit: Pending
+Approval pull request or commit: [PR #38](https://github.com/sahinkhan/businessos/pull/38) — OPEN / UNMERGED formal acceptance candidate
+
+Approved semantic proposal SHA: `33ed51422d6845373c4877bb3e94220e6f3e0cfa`
+
+Proposal owner attestation: [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/38#issuecomment-5826426747) — personally posted for `33ed51422d6845373c4877bb3e94220e6f3e0cfa`
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`
 
 Independent human review: NOT PERFORMED
 
-Independent technical/read-only review: Pending
+Proposal independent technical/read-only architecture review: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0
 
-Exact-head CI: Pending
+Proposal exact-head CI: [BusinessOS run 36091055099](https://github.com/sahinkhan/businessos/actions/runs/36091055099) — PASS (`python-quality`, `windows-typing`, `web-quality`)
 
-Formal authority: PENDING owner acceptance and merge to main
+Formal acceptance candidate SHA: The exact [PR #38 head](https://github.com/sahinkhan/businessos/pull/38) recorded in its acceptance evidence; a commit cannot embed its own SHA.
 
-Supersedes: [ADR-016](ADR-016-trusted-audit-provenance-v2.md) **only upon ADR-019 formal acceptance**. This proposal does not change ADR-016's current ACCEPTED status; the acceptance candidate must make the reciprocal `SUPERSEDED` metadata change in the same reviewed change.
+Formal acceptance exact-head CI: Fresh run required on that PR head; exact run and result are recorded in [PR #38 acceptance evidence](https://github.com/sahinkhan/businessos/pull/38) before owner attestation.
+
+Formal acceptance independent technical/read-only review: Fresh exact-head audit required; result and finding counts are recorded in [PR #38 acceptance evidence](https://github.com/sahinkhan/businessos/pull/38) before owner attestation.
+
+Formal acceptance owner attestation: PENDING personal exact-SHA attestation by `@sahinkhan`
+
+Architecture state: ACCEPTANCE CANDIDATE; installation workload identity, tenant execution binding, and EventWorker additive binding are NOT IMPLEMENTED; Identity forward migration is NOT CREATED; ADR-016 Audit V2 runtime remains BLOCKED on ADR-019 runtime implementation and certification; ADR-017 is NOT IMPLEMENTED; V1 retirement is NOT PERFORMED. Architecture acceptance alone does not certify Audit V2 runtime. Required order: ADR-019 runtime certification, then ADR-016 implementation and certification under ADR-019 authority.
+
+Frozen-phase state: Phases 0–3 remain FINAL PASS / FROZEN. This decision authorizes only the narrow additive Platform/Kernel and Identity integration required for Phase 4; it does not generally reopen Phase 1 or Phase 2.
+
+Formal authority: PENDING final exact-SHA owner acceptance attestation and merge to `main`
+
+Supersedes: [ADR-016 — Trusted Audit Provenance and Write Contract V2](ADR-016-trusted-audit-provenance-v2.md) upon formal acceptance on `main`; all ADR-016 decisions except its worker-binding model are incorporated and preserved in this successor.
 
 Superseded by: None
 

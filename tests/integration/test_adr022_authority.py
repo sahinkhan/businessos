@@ -14,6 +14,7 @@ from businessos_data_governance import (
     PlaceLegalHoldCommand,
 )
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 
 from businessos.activation import ContributionGeneration
 from businessos.application import BusinessOSApplication
@@ -51,6 +52,33 @@ def _application(database: PostgreSQLTestDatabase) -> BusinessOSApplication:
 class _AllowAllPolicy:
     async def is_allowed(self, principal_id: Any, tenant: TenantContext, permission: str) -> bool:
         return True
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_adr022_startup_rejects_budget_above_postgresql_capacity(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = create_application(
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            governance_database_url=postgres_database.governance_url,
+            database_connection_budget=10_000,
+        ),
+        modules=(
+            module
+            for module in discover_modules()
+            if module.manifest.module_id.startswith("foundation.")
+        ),
+        authorizer=Authorizer(_AllowAllPolicy()),
+    )
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    with pytest.raises(ConfigurationError, match="PostgreSQL capacity"):
+        await app.startup()
+    await app.shutdown()
 
 
 def _privilege(
@@ -451,7 +479,9 @@ async def test_adr022_rotation_rejects_grant_drift_and_draining_generation(
     try:
         with pytest.raises(ConfigurationError, match="endpoint mismatch"):
             await authority.rotate(
-                postgres_database.governance_url.replace("@postgres:", "@other:")
+                make_url(postgres_database.governance_url)
+                .set(host="other")
+                .render_as_string(hide_password=False)
             )
         with pytest.raises(ConfigurationError, match="unavailable"):
             async with authority.for_command(registered, type(command), tenant):
@@ -467,6 +497,35 @@ async def test_adr022_rotation_rejects_grant_drift_and_draining_generation(
                     "REVOKE UPDATE ON platform_audit.audit_logs FROM businessos_governance"
                 )
         await authority.rotate(postgres_database.governance_url)
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute(
+                "GRANT UPDATE (event_type) ON eventing.outbox_messages TO businessos_governance"
+            )
+        try:
+            with pytest.raises(ConfigurationError, match="grants are unsafe"):
+                await authority.rotate(postgres_database.governance_url)
+        finally:
+            with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+                admin.execute(
+                    "REVOKE UPDATE (event_type) ON eventing.outbox_messages "
+                    "FROM businessos_governance"
+                )
+        await authority.rotate(postgres_database.governance_url)
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute(
+                "GRANT UPDATE (id) ON platform_gov.classification_definitions "
+                "TO businessos_governance"
+            )
+        try:
+            with pytest.raises(ConfigurationError, match="grants are unsafe"):
+                await authority.rotate(postgres_database.governance_url)
+        finally:
+            with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+                admin.execute(
+                    "REVOKE UPDATE (id) ON platform_gov.classification_definitions "
+                    "FROM businessos_governance"
+                )
+        await authority.rotate(postgres_database.governance_url)
         async with app.runtime.contributions.admit(registered.generation):
             draining = asyncio.create_task(
                 app.runtime.contributions.close_and_drain(registered.generation, timeout_seconds=2)
@@ -476,5 +535,47 @@ async def test_adr022_rotation_rejects_grant_drift_and_draining_generation(
                 async with authority.for_command(registered, type(command), tenant):
                     pass
         await draining
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_adr022_protected_admission_checks_grants_without_readiness(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    authority = app.runtime.messages._protected_database
+    assert authority is not None
+    tenant = TenantContext(installation_id=uuid4(), tenant_id=uuid4(), principal_id=uuid4())
+    command = PlaceLegalHoldCommand(
+        tenant_id=tenant.tenant_id,
+        code="case",
+        name="Case",
+        reason="reason",
+        entity_type="party",
+        entity_id="1",
+        placed_by="actor",
+    )
+    registered = app.runtime.messages.commands.resolve(command)
+    try:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute("GRANT UPDATE ON platform_audit.audit_logs TO businessos_governance")
+        try:
+            with pytest.raises(ConfigurationError, match="grants are unsafe"):
+                async with authority.for_command(registered, type(command), tenant):
+                    pytest.fail("Unsafe protected command was admitted")
+        finally:
+            with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+                admin.execute(
+                    "REVOKE UPDATE ON platform_audit.audit_logs FROM businessos_governance"
+                )
+        with pytest.raises(ConfigurationError, match="unavailable"):
+            async with authority.for_command(registered, type(command), tenant):
+                pytest.fail("Failed profile remained active")
     finally:
         await app.shutdown()

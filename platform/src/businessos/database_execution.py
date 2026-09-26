@@ -208,6 +208,12 @@ class _GovernancePool:
                         )
                         if result.scalar_one():
                             raise ConfigurationError("Protected database grants are unsafe")
+                        result = await connection.execute(
+                            text("SELECT has_any_column_privilege(:role, :table, 'UPDATE')"),
+                            {"role": GOVERNANCE_ROLE, "table": qualified},
+                        )
+                        if result.scalar_one():
+                            raise ConfigurationError("Protected database grants are unsafe")
                     for privilege in ("SELECT", "INSERT"):
                         result = await connection.execute(
                             text("SELECT has_table_privilege(:role, :table, :privilege)"),
@@ -224,20 +230,92 @@ class _GovernancePool:
                             raise ConfigurationError("Protected database grants are unavailable")
                 extra = await connection.execute(
                     text(
-                        "SELECT 1 FROM pg_class AS c "
+                        "SELECT n.nspname, c.relname FROM pg_class AS c "
                         "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
                         "WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "
                         "AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r', 'p', 'v', 'm') "
-                        "AND has_table_privilege(:role, c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE') "
+                        "AND (has_table_privilege(:role, c.oid, "
+                        "'INSERT, UPDATE, DELETE, TRUNCATE') "
+                        "OR has_any_column_privilege(:role, c.oid, 'INSERT, UPDATE')) "
                         "AND (n.nspname, c.relname) NOT IN "
                         "(('platform_gov','retention_policies'),('platform_gov','legal_holds'),"
-                        "('platform_audit','audit_logs'),('eventing','outbox_messages')) "
+                        "('platform_audit','audit_logs'),('eventing','outbox_messages'),"
+                        "('platform_gov','tenant_classifications'),"
+                        "('platform_gov','tenant_classification_versions'),"
+                        "('platform_gov','classification_overlays')) "
                         "LIMIT 1"
                     ),
                     {"role": GOVERNANCE_ROLE},
                 )
                 if extra.first() is not None:
                     raise ConfigurationError("Protected database grants are unsafe")
+                for table_name in (
+                    "tenant_classifications",
+                    "tenant_classification_versions",
+                    "classification_overlays",
+                ):
+                    qualified = f"platform_gov.{table_name}"
+                    table_dml = await connection.execute(
+                        text(
+                            "SELECT has_table_privilege(:role, :table, "
+                            "'INSERT, UPDATE, DELETE, TRUNCATE')"
+                        ),
+                        {"role": GOVERNANCE_ROLE, "table": qualified},
+                    )
+                    columns = await connection.execute(
+                        text(
+                            "SELECT a.attname, "
+                            "has_column_privilege(:role, c.oid, a.attname, 'INSERT'), "
+                            "has_column_privilege(:role, c.oid, a.attname, 'UPDATE') "
+                            "FROM pg_attribute AS a JOIN pg_class AS c ON c.oid = a.attrelid "
+                            "WHERE c.oid = CAST(:table AS regclass) "
+                            "AND a.attnum > 0 AND NOT a.attisdropped"
+                        ),
+                        {"role": GOVERNANCE_ROLE, "table": qualified},
+                    )
+                    if table_dml.scalar_one() or any(
+                        insert or (update and column != "id") or (column == "id" and not update)
+                        for column, insert, update in columns
+                    ):
+                        raise ConfigurationError("Protected database grants are unsafe")
+                indirect = await connection.execute(
+                    text(
+                        "SELECT 1 FROM pg_class AS c WHERE c.relkind IN ('v', 'm') "
+                        "AND EXISTS (SELECT 1 FROM pg_rewrite AS rw "
+                        "JOIN pg_depend AS dep ON dep.objid = rw.oid "
+                        "WHERE rw.ev_class = c.oid AND dep.refobjid IN "
+                        "('platform_gov.retention_policies'::regclass, "
+                        "'platform_gov.legal_holds'::regclass)) "
+                        "AND (has_table_privilege('businessos_app', c.oid, "
+                        "'INSERT, UPDATE, DELETE') "
+                        "OR has_table_privilege('businessos_worker', c.oid, "
+                        "'INSERT, UPDATE, DELETE') "
+                        "OR has_any_column_privilege('businessos_app', c.oid, 'INSERT, UPDATE') "
+                        "OR has_any_column_privilege('businessos_worker', c.oid, "
+                        "'INSERT, UPDATE')) "
+                        "UNION ALL SELECT 1 FROM pg_proc AS p "
+                        "JOIN pg_namespace AS n ON n.oid = p.pronamespace "
+                        "WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "
+                        "AND n.nspname NOT LIKE 'pg_%' AND p.prosecdef "
+                        "AND NOT (n.nspname = 'platform_identity' "
+                        "AND p.proname = 'admit_workload') "
+                        "AND (has_function_privilege('businessos_app', p.oid, 'EXECUTE') "
+                        "OR has_function_privilege('businessos_worker', p.oid, 'EXECUTE')) "
+                        "UNION ALL SELECT 1 FROM pg_default_acl AS d "
+                        "LEFT JOIN pg_namespace AS n ON n.oid = d.defaclnamespace "
+                        "CROSS JOIN LATERAL aclexplode(d.defaclacl) AS a "
+                        "WHERE (n.nspname = 'platform_gov' OR d.defaclnamespace = 0) "
+                        "AND d.defaclobjtype = 'r' "
+                        "AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE') "
+                        "AND (a.grantee = 0 OR a.grantee IN "
+                        "(SELECT oid FROM pg_roles WHERE rolname IN "
+                        "('businessos_app', 'businessos_worker'))) LIMIT 1"
+                    )
+                )
+                if indirect.first() is not None:
+                    raise ConfigurationError(
+                        "Indirect ordinary Governance mutation remains available"
+                    )
         except ConfigurationError:
             raise
         except Exception:
@@ -364,6 +442,17 @@ class ProtectedDatabaseExecutionAuthority:
             pool = self._active
             if pool is None or self._closed:
                 raise ConfigurationError("Protected database profile unavailable")
+            # Admission must inspect the effective database authority even if
+            # readiness checks are disabled or have not yet been requested.
+            try:
+                await pool.validate()
+            except BaseException:
+                self._active = None
+                if self._leases.get(pool, 0) == 0:
+                    await pool.close()
+                raise
+            if not self._gate.is_active(registration.generation):
+                raise NotFoundError("Module contribution is not active")
             self._leases[pool] = self._leases.get(pool, 0) + 1
         try:
             yield pool.for_tenant(tenant)

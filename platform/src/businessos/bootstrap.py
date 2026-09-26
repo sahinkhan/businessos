@@ -283,6 +283,10 @@ def create_application(
         providers.close_infrastructure,
     )
     application.add_lifecycle("modules", start_modules, lifecycle.disable_all)
+    if resolved_settings.governance_database_url is not None and any(
+        module.manifest.module_id == "foundation.data_governance" for module in loaded_modules
+    ):
+        application.on_startup(database.check_connection_budget)
     application.on_shutdown(database.close)
     application.on_shutdown(protected_database.close)
     diagnostics.add_readiness_check("application", application.readiness)

@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     governance_database_url: str | None = Field(default=None, repr=False, exclude=True)
     governance_database_pool_size: int = Field(default=2, ge=1, le=20)
     governance_database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
+    database_connection_budget: int = Field(default=100, ge=1)
+    database_app_processes: int = Field(default=1, ge=1)
+    database_worker_pool_reservation: int = Field(default=5, ge=0)
+    database_ops_pool_reservation: int = Field(default=2, ge=0)
+    database_other_connection_reservation: int = Field(default=10, ge=0)
     database_readiness_enabled: bool = True
     request_body_limit_bytes: int = Field(default=1_048_576, ge=1)
     startup_timeout_seconds: float = Field(default=30.0, gt=0)
@@ -50,6 +55,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_database_driver(self) -> Self:
+        required_connections = (
+            self.database_pool_size * self.database_app_processes
+            + (
+                self.governance_database_pool_size * self.database_app_processes
+                if self.governance_database_url is not None
+                else 0
+            )
+            + self.database_worker_pool_reservation
+            + self.database_ops_pool_reservation
+            + self.database_other_connection_reservation
+        )
+        if required_connections > self.database_connection_budget:
+            raise ValueError("Configured database pools exceed the installation connection budget")
         if not self.database_url.startswith("postgresql+psycopg://"):
             msg = "database_url must use the postgresql+psycopg SQLAlchemy dialect"
             raise ValueError(msg)

@@ -1,12 +1,40 @@
 # ADR-022: Module-Scoped Database Execution Authority
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Pending formal acceptance.
+Decision date: 2026-09-26
+
+Acceptance stage: FORMAL ACCEPTANCE CANDIDATE / MERGE PENDING
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; Security Maintainer; Migration Safety Reviewer; Release Maintainer; Data Governance Owning Domain Maintainer; SDK/Contract Maintainer; Audit Owning Domain Maintainer; affected participating Resource Owning Domain Maintainer
 
-Approval pull request or commit: Pending proposal review.
+Approval pull request or commit: [PR #46](https://github.com/sahinkhan/businessos/pull/46) — open formal acceptance candidate; merge pending.
+
+Reviewed semantic proposal SHA: `d85f199cd7030336f49c462d4434c78e0217b7b7`
+
+Proposal owner attestation: COMPLETE / proposal-only — [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/46#issuecomment-5842454556).
+
+Proposal exact-head CI: [BusinessOS run 36210284516](https://github.com/sahinkhan/businessos/actions/runs/36210284516) — PASS (`python-quality`, `windows-typing`, `web-quality`).
+
+Proposal independent technical/read-only architecture audit: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0.
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`.
+
+Independent human review: NOT PERFORMED.
+
+Formal acceptance candidate SHA: The exact [PR #46 head](https://github.com/sahinkhan/businessos/pull/46) recorded in its acceptance evidence; a commit cannot embed its own SHA.
+
+Formal acceptance exact-head CI: PENDING fresh run on the acceptance candidate; exact run and result are recorded in [PR #46 acceptance evidence](https://github.com/sahinkhan/businessos/pull/46) before owner attestation.
+
+Formal acceptance independent technical/read-only audit: PENDING fresh exact-head audit; result and finding counts are recorded in [PR #46 acceptance evidence](https://github.com/sahinkhan/businessos/pull/46) before owner attestation.
+
+Formal acceptance owner attestation: PENDING personal exact-SHA attestation by `@sahinkhan`.
+
+Accepted main merge SHA: PENDING.
+
+Architecture state: FORMAL ACCEPTANCE CANDIDATE / NOT YET AUTHORITATIVE ON MAIN.
+
+Runtime state: NOT IMPLEMENTED. ADR-017 PR #45 remains DRAFT / BLOCKED. Architecture acceptance alone does not certify runtime or unblock ADR-017. Phases 0–3 remain FINAL PASS / FROZEN.
 
 Supersedes: None
 

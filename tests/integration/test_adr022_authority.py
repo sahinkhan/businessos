@@ -579,3 +579,100 @@ async def test_adr022_protected_admission_checks_grants_without_readiness(
                 pytest.fail("Failed profile remained active")
     finally:
         await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_adr022_cancelled_validation_preserves_healthy_protected_pool(
+    postgres_database: PostgreSQLTestDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    authority = app.runtime.messages._protected_database
+    assert authority is not None
+    pool = authority._active
+    assert pool is not None
+    tenant = TenantContext(installation_id=uuid4(), tenant_id=uuid4(), principal_id=uuid4())
+    command = PlaceLegalHoldCommand(
+        tenant_id=tenant.tenant_id,
+        code="case",
+        name="Case",
+        reason="reason",
+        entity_type="party",
+        entity_id="1",
+        placed_by="actor",
+    )
+    registered = app.runtime.messages.commands.resolve(command)
+    entered = asyncio.Event()
+    original_validate = pool.validate
+
+    async def blocked_validation() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def attempt() -> None:
+        async with authority.for_command(registered, type(command), tenant):
+            pytest.fail("Cancelled request entered the protected pool")
+
+    try:
+        monkeypatch.setattr(pool, "validate", blocked_validation)
+        task = asyncio.create_task(attempt())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        monkeypatch.setattr(pool, "validate", original_validate)
+        async with authority.for_command(registered, type(command), tenant):
+            pass
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_adr022_admission_rejects_tenant_classification_rls_drift(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    authority = app.runtime.messages._protected_database
+    assert authority is not None
+    tenant = TenantContext(installation_id=uuid4(), tenant_id=uuid4(), principal_id=uuid4())
+    command = PlaceLegalHoldCommand(
+        tenant_id=tenant.tenant_id,
+        code="case",
+        name="Case",
+        reason="reason",
+        entity_type="party",
+        entity_id="1",
+        placed_by="actor",
+    )
+    registered = app.runtime.messages.commands.resolve(command)
+    policy = "tenant_classifications_governance_lock"
+    with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+        admin.execute(f"DROP POLICY {policy} ON platform_gov.tenant_classifications")
+        admin.execute(
+            f"CREATE POLICY {policy} ON platform_gov.tenant_classifications "
+            "FOR UPDATE TO businessos_governance USING (true) WITH CHECK (true)"
+        )
+    try:
+        with pytest.raises(ConfigurationError, match="RLS policy is unsafe"):
+            async with authority.for_command(registered, type(command), tenant):
+                pytest.fail("Unsafe classification policy was admitted")
+    finally:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute(f"DROP POLICY {policy} ON platform_gov.tenant_classifications")
+            admin.execute(
+                f"CREATE POLICY {policy} ON platform_gov.tenant_classifications "
+                "FOR UPDATE TO businessos_governance "
+                "USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid) "
+                "WITH CHECK (false)"
+            )
+        await app.shutdown()

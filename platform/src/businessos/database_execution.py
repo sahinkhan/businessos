@@ -228,6 +228,61 @@ class _GovernancePool:
                         )
                         if not result.scalar_one():
                             raise ConfigurationError("Protected database grants are unavailable")
+                for table_name in (
+                    "tenant_classifications",
+                    "tenant_classification_versions",
+                    "classification_overlays",
+                    "classification_legacy_mappings",
+                ):
+                    state = await connection.execute(
+                        text(
+                            "SELECT c.relrowsecurity, c.relforcerowsecurity FROM pg_class AS c "
+                            "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+                            "WHERE n.nspname = 'platform_gov' AND c.relname = :table"
+                        ),
+                        {"table": table_name},
+                    )
+                    if state.one_or_none() != (True, True):
+                        raise ConfigurationError("Protected database RLS is unsafe")
+                    policies = await connection.execute(
+                        text(
+                            "SELECT policyname, roles, cmd, qual, with_check "
+                            "FROM pg_policies WHERE schemaname = 'platform_gov' "
+                            "AND tablename = :table AND (roles @> ARRAY['public']::name[] "
+                            "OR roles @> ARRAY[:role]::name[])"
+                        ),
+                        {"table": table_name, "role": GOVERNANCE_ROLE},
+                    )
+                    classification_policies = {
+                        name: (roles, command, _normalized_policy(qual), _normalized_policy(check))
+                        for name, roles, command, qual, check in policies
+                    }
+                    if table_name == "classification_legacy_mappings":
+                        expected = {
+                            "classification_legacy_mappings_governance_read": (
+                                [GOVERNANCE_ROLE],
+                                "SELECT",
+                                _normalized_policy(f"tenant_id IS NULL OR {_TENANT_POLICY}"),
+                                "",
+                            )
+                        }
+                    else:
+                        expected = {
+                            f"{table_name}_governance_tenant": (
+                                [GOVERNANCE_ROLE],
+                                "SELECT",
+                                _normalized_policy(_TENANT_POLICY),
+                                "",
+                            ),
+                            f"{table_name}_governance_lock": (
+                                [GOVERNANCE_ROLE],
+                                "UPDATE",
+                                _normalized_policy(_TENANT_POLICY),
+                                "false",
+                            ),
+                        }
+                    if classification_policies != expected:
+                        raise ConfigurationError("Protected database RLS policy is unsafe")
                 extra = await connection.execute(
                     text(
                         "SELECT n.nspname, c.relname FROM pg_class AS c "
@@ -446,7 +501,7 @@ class ProtectedDatabaseExecutionAuthority:
             # readiness checks are disabled or have not yet been requested.
             try:
                 await pool.validate()
-            except BaseException:
+            except Exception:
                 self._active = None
                 if self._leases.get(pool, 0) == 0:
                     await pool.close()

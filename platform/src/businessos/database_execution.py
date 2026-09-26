@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -23,7 +23,7 @@ from businessos.errors import ConfigurationError
 from businessos.persistence.uow import SQLAlchemyUnitOfWork, UnitOfWork
 
 if TYPE_CHECKING:
-    from businessos.messages import Command, _OwnedHandler
+    from businessos.messages import Command
 
 
 GOVERNANCE_PROFILE = "foundation.data_governance"
@@ -39,9 +39,20 @@ _GOVERNANCE_COMMANDS = frozenset(
 _GOVERNANCE_COMMAND_MODULE = "businessos_data_governance.module"
 
 
+class _ProtectedCommandRegistration(Protocol):
+    @property
+    def owner(self) -> str: ...
+
+    @property
+    def generation(self) -> ContributionGeneration | None: ...
+
+    @property
+    def direct_dependencies(self) -> object | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _Registration:
-    registered: _OwnedHandler
+    registered: _ProtectedCommandRegistration
     command_type: type[Command]
     generation: ContributionGeneration
 
@@ -133,12 +144,14 @@ class ProtectedDatabaseExecutionAuthority:
         )
 
     @classmethod
-    def requires_protected(cls, registered: _OwnedHandler, command_type: type[Command]) -> bool:
+    def requires_protected(
+        cls, registered: _ProtectedCommandRegistration, command_type: type[Command]
+    ) -> bool:
         return cls._protected_command(registered.owner, command_type)
 
     def record_registration(
         self,
-        registered: _OwnedHandler,
+        registered: _ProtectedCommandRegistration,
         command_type: type[Command],
         entitlement: object,
     ) -> None:
@@ -164,7 +177,10 @@ class ProtectedDatabaseExecutionAuthority:
 
     @asynccontextmanager
     async def for_command(
-        self, registered: _OwnedHandler, command_type: type[Command], tenant: TenantContext | None
+        self,
+        registered: _ProtectedCommandRegistration,
+        command_type: type[Command],
+        tenant: TenantContext | None,
     ) -> AsyncGenerator[UnitOfWork]:
         if not self.requires_protected(registered, command_type):
             raise PermissionError("Command has no protected database execution profile")

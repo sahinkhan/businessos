@@ -8,7 +8,10 @@ from collections.abc import Sequence
 
 from alembic import op
 
-from businessos.migration_assets.governance_role import assert_governance_role_safe
+from businessos.migration_assets.governance_role import (
+    assert_governance_role_safe,
+    assert_ordinary_governance_write_denied,
+)
 
 revision: str = "gov_0004"
 down_revision: str | Sequence[str] | None = "gov_0003"
@@ -36,7 +39,7 @@ def upgrade() -> None:
         qualified = f"{SCHEMA}.{table}"
         op.execute(
             f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON {qualified} "
-            "FROM businessos_app, businessos_worker"
+            "FROM PUBLIC, businessos_app, businessos_worker"
         )
         op.execute(f"GRANT SELECT ON {qualified} TO businessos_app")
         op.execute(f"GRANT SELECT, INSERT, UPDATE ON {qualified} TO businessos_governance")
@@ -77,6 +80,7 @@ def upgrade() -> None:
         "platform_gov.classification_legacy_mappings FOR SELECT TO businessos_governance "
         f"USING (tenant_id IS NULL OR {TENANT_EXPRESSION})"
     )
+    assert_ordinary_governance_write_denied(op.get_bind())
 
 
 def downgrade() -> None:

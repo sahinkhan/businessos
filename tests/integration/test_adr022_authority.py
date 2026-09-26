@@ -20,7 +20,7 @@ from businessos.application import BusinessOSApplication
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
-from businessos.errors import ConfigurationError
+from businessos.errors import ConfigurationError, NotFoundError
 from businessos.messages import Command
 from businessos.modules import discover_modules
 from businessos.persistence import PendingOutboxMessage
@@ -376,5 +376,105 @@ async def test_adr022_one_uow_commit_cancellation_and_next_tenant(
                         {"id": committed_hold},
                     )
                 ).first() is None
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_adr022_upgrade_rejects_indirect_ordinary_writer(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url, "gov_0003")
+    writer = f"adr022_writer_{uuid4().hex}"
+    with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+        admin.execute(f'CREATE ROLE "{writer}"')
+        admin.execute(f'GRANT UPDATE ON platform_gov.legal_holds TO "{writer}"')
+        admin.execute(f'GRANT "{writer}" TO businessos_app')
+    try:
+        with pytest.raises(RuntimeError, match="ordinary Governance role membership"):
+            app.runtime.migrations.upgrade(postgres_database.migration_url)
+    finally:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute(f'REVOKE "{writer}" FROM businessos_app')
+            admin.execute(f'REVOKE UPDATE ON platform_gov.legal_holds FROM "{writer}"')
+            admin.execute(f'DROP ROLE "{writer}"')
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_adr022_upgrade_removes_legacy_public_write(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url, "gov_0003")
+    with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+        admin.execute("GRANT UPDATE ON platform_gov.legal_holds TO PUBLIC")
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    with psycopg.connect(postgres_database.administrator_url) as admin:
+        assert not _privilege(admin, "businessos_app", "platform_gov.legal_holds", "UPDATE")
+        assert not _privilege(admin, "businessos_worker", "platform_gov.legal_holds", "UPDATE")
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_adr022_rotation_rejects_grant_drift_and_draining_generation(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    authority = app.runtime.messages._protected_database
+    assert authority is not None
+    tenant = TenantContext(
+        installation_id=uuid4(),
+        tenant_id=uuid4(),
+        principal_id=uuid4(),
+        authentication_strength="mfa",
+    )
+    command = PlaceLegalHoldCommand(
+        tenant_id=tenant.tenant_id,
+        code="case",
+        name="Case",
+        reason="reason",
+        entity_type="party",
+        entity_id="1",
+        placed_by="actor",
+    )
+    registered = app.runtime.messages.commands.resolve(command)
+    assert registered.generation is not None
+    try:
+        with pytest.raises(ConfigurationError, match="endpoint mismatch"):
+            await authority.rotate(
+                postgres_database.governance_url.replace("@postgres:", "@other:")
+            )
+        with pytest.raises(ConfigurationError, match="unavailable"):
+            async with authority.for_command(registered, type(command), tenant):
+                pass
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute("GRANT UPDATE ON platform_audit.audit_logs TO businessos_governance")
+        try:
+            with pytest.raises(ConfigurationError, match="grants are unsafe"):
+                await authority.rotate(postgres_database.governance_url)
+        finally:
+            with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+                admin.execute(
+                    "REVOKE UPDATE ON platform_audit.audit_logs FROM businessos_governance"
+                )
+        await authority.rotate(postgres_database.governance_url)
+        async with app.runtime.contributions.admit(registered.generation):
+            draining = asyncio.create_task(
+                app.runtime.contributions.close_and_drain(registered.generation, timeout_seconds=2)
+            )
+            await asyncio.sleep(0)
+            with pytest.raises(NotFoundError, match="not active"):
+                async with authority.for_command(registered, type(command), tenant):
+                    pass
+        await draining
     finally:
         await app.shutdown()

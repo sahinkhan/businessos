@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -16,10 +17,10 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from businessos.activation import ContributionGeneration
+from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.context import TenantContext
 from businessos.dependency_entitlement import internal_valid_restricted_dependency_entitlement
-from businessos.errors import ConfigurationError
+from businessos.errors import ConfigurationError, NotFoundError
 from businessos.persistence.uow import SQLAlchemyUnitOfWork, UnitOfWork
 
 if TYPE_CHECKING:
@@ -37,6 +38,15 @@ _GOVERNANCE_COMMANDS = frozenset(
     }
 )
 _GOVERNANCE_COMMAND_MODULE = "businessos_data_governance.module"
+_TENANT_POLICY = "tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid"
+
+
+def _normalized_policy(expression: object) -> str:
+    if not isinstance(expression, str):
+        return ""
+    return (
+        "".join(expression.lower().replace("::text", "").split()).replace("(", "").replace(")", "")
+    )
 
 
 class _ProtectedCommandRegistration(Protocol):
@@ -85,6 +95,149 @@ class _GovernancePool:
                 )
                 if result.one() != (self.database_name, GOVERNANCE_ROLE, GOVERNANCE_ROLE):
                     raise ConfigurationError("Protected database identity mismatch")
+                role = await connection.execute(
+                    text(
+                        "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, "
+                        "rolinherit, rolbypassrls FROM pg_roles WHERE rolname = :role"
+                    ),
+                    {"role": GOVERNANCE_ROLE},
+                )
+                if role.one_or_none() != (True, False, False, False, False, False):
+                    raise ConfigurationError("Protected database role is unsafe")
+                unsafe = await connection.execute(
+                    text(
+                        "SELECT 1 FROM pg_auth_members AS m JOIN pg_roles AS r "
+                        "ON r.oid = m.roleid JOIN pg_roles AS u ON u.oid = m.member "
+                        "WHERE r.rolname = :role OR u.rolname = :role "
+                        "UNION ALL SELECT 1 FROM pg_database AS d JOIN pg_roles AS r "
+                        "ON r.oid = d.datdba WHERE r.rolname = :role "
+                        "UNION ALL SELECT 1 FROM pg_namespace AS n JOIN pg_roles AS r "
+                        "ON r.oid = n.nspowner WHERE r.rolname = :role "
+                        "UNION ALL SELECT 1 FROM pg_class AS c JOIN pg_roles AS r "
+                        "ON r.oid = c.relowner WHERE r.rolname = :role "
+                        "UNION ALL SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r "
+                        "ON r.oid = p.proowner WHERE r.rolname = :role LIMIT 1"
+                    ),
+                    {"role": GOVERNANCE_ROLE},
+                )
+                if unsafe.first() is not None:
+                    raise ConfigurationError("Protected database role is unsafe")
+                ordinary_membership = await connection.execute(
+                    text(
+                        "SELECT 1 FROM pg_auth_members AS link "
+                        "JOIN pg_roles AS member ON member.oid = link.member "
+                        "JOIN pg_roles AS granted ON granted.oid = link.roleid "
+                        "WHERE member.rolname IN ('businessos_app', 'businessos_worker') "
+                        "AND NOT (member.rolname = 'businessos_worker' "
+                        "AND granted.rolname = 'businessos_app') LIMIT 1"
+                    )
+                )
+                if ordinary_membership.first() is not None:
+                    raise ConfigurationError("Ordinary database role membership is unsafe")
+                protected = (
+                    ("platform_gov", "retention_policies", "retention_policies_governance_tenant"),
+                    ("platform_gov", "legal_holds", "legal_holds_governance_tenant"),
+                    ("platform_audit", "audit_logs", "audit_logs_governance_tenant"),
+                    ("eventing", "outbox_messages", "outbox_messages_governance_tenant"),
+                )
+                for schema, table_name, policy_name in protected:
+                    qualified = f"{schema}.{table_name}"
+                    state = await connection.execute(
+                        text(
+                            "SELECT c.relrowsecurity, c.relforcerowsecurity FROM pg_class AS c "
+                            "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+                            "WHERE n.nspname = :schema AND c.relname = :table"
+                        ),
+                        {"schema": schema, "table": table_name},
+                    )
+                    if state.one_or_none() != (True, True):
+                        raise ConfigurationError("Protected database RLS is unsafe")
+                    policies = await connection.execute(
+                        text(
+                            "SELECT policyname, roles, cmd, qual, with_check "
+                            "FROM pg_policies WHERE schemaname = :schema AND tablename = :table "
+                            "AND (roles @> ARRAY['public']::name[] "
+                            "OR roles @> ARRAY[:role]::name[])"
+                        ),
+                        {"schema": schema, "table": table_name, "role": GOVERNANCE_ROLE},
+                    )
+                    applicable = policies.all()
+                    if (
+                        len(applicable) != 1
+                        or applicable[0][:3] != (policy_name, [GOVERNANCE_ROLE], "ALL")
+                        or any(
+                            _normalized_policy(expression) != _normalized_policy(_TENANT_POLICY)
+                            for expression in applicable[0][3:]
+                        )
+                    ):
+                        raise ConfigurationError("Protected database RLS policy is unsafe")
+                    for privilege in ("INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+                        for role_name in ("businessos_app", "businessos_worker"):
+                            result = await connection.execute(
+                                text("SELECT has_table_privilege(:role, :table, :privilege)"),
+                                {"role": role_name, "table": qualified, "privilege": privilege},
+                            )
+                            if schema == "platform_gov" and result.scalar_one():
+                                raise ConfigurationError(
+                                    "Ordinary Governance mutation remains available"
+                                )
+                    if schema == "platform_gov":
+                        for role_name in ("businessos_app", "businessos_worker"):
+                            for privilege in ("INSERT", "UPDATE"):
+                                result = await connection.execute(
+                                    text(
+                                        "SELECT has_any_column_privilege(:role, :table, :privilege)"
+                                    ),
+                                    {"role": role_name, "table": qualified, "privilege": privilege},
+                                )
+                                if result.scalar_one():
+                                    raise ConfigurationError(
+                                        "Ordinary Governance mutation remains available"
+                                    )
+                    for privilege in ("DELETE", "TRUNCATE"):
+                        result = await connection.execute(
+                            text("SELECT has_table_privilege(:role, :table, :privilege)"),
+                            {"role": GOVERNANCE_ROLE, "table": qualified, "privilege": privilege},
+                        )
+                        if result.scalar_one():
+                            raise ConfigurationError("Protected database grants are unsafe")
+                    if schema != "platform_gov":
+                        result = await connection.execute(
+                            text("SELECT has_table_privilege(:role, :table, 'UPDATE')"),
+                            {"role": GOVERNANCE_ROLE, "table": qualified},
+                        )
+                        if result.scalar_one():
+                            raise ConfigurationError("Protected database grants are unsafe")
+                    for privilege in ("SELECT", "INSERT"):
+                        result = await connection.execute(
+                            text("SELECT has_table_privilege(:role, :table, :privilege)"),
+                            {"role": GOVERNANCE_ROLE, "table": qualified, "privilege": privilege},
+                        )
+                        if not result.scalar_one():
+                            raise ConfigurationError("Protected database grants are unavailable")
+                    if schema == "platform_gov":
+                        result = await connection.execute(
+                            text("SELECT has_table_privilege(:role, :table, 'UPDATE')"),
+                            {"role": GOVERNANCE_ROLE, "table": qualified},
+                        )
+                        if not result.scalar_one():
+                            raise ConfigurationError("Protected database grants are unavailable")
+                extra = await connection.execute(
+                    text(
+                        "SELECT 1 FROM pg_class AS c "
+                        "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "
+                        "AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r', 'p', 'v', 'm') "
+                        "AND has_table_privilege(:role, c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE') "
+                        "AND (n.nspname, c.relname) NOT IN "
+                        "(('platform_gov','retention_policies'),('platform_gov','legal_holds'),"
+                        "('platform_audit','audit_logs'),('eventing','outbox_messages')) "
+                        "LIMIT 1"
+                    ),
+                    {"role": GOVERNANCE_ROLE},
+                )
+                if extra.first() is not None:
+                    raise ConfigurationError("Protected database grants are unsafe")
         except ConfigurationError:
             raise
         except Exception:
@@ -116,10 +269,20 @@ class ProtectedDatabaseExecutionAuthority:
         database_name: str,
         pool_size: int,
         pool_timeout: float,
+        gate: ContributionGate,
     ) -> None:
         self._database_name = database_name
         self._pool_size = pool_size
         self._pool_timeout = pool_timeout
+        self._gate = gate
+        self._endpoint = None
+        if governance_url is not None:
+            parsed = make_url(governance_url)
+            if any(
+                key in parsed.query for key in ("host", "hostaddr", "port", "service", "options")
+            ):
+                raise ConfigurationError("Protected database endpoint is ambiguous")
+            self._endpoint = (parsed.host, parsed.port, parsed.database)
         self._active = (
             _GovernancePool(
                 governance_url,
@@ -196,6 +359,8 @@ class ProtectedDatabaseExecutionAuthority:
                 "Protected database execution requires exact trusted registration"
             )
         async with self._lock:
+            if not self._gate.is_active(registration.generation):
+                raise NotFoundError("Module contribution is not active")
             pool = self._active
             if pool is None or self._closed:
                 raise ConfigurationError("Protected database profile unavailable")
@@ -224,22 +389,38 @@ class ProtectedDatabaseExecutionAuthority:
         Failure revokes new protected admissions; already admitted transactions
         retain their old pool lease until completion.
         """
-        replacement = _GovernancePool(
-            url,
-            size=self._pool_size,
-            timeout=self._pool_timeout,
-            database_name=self._database_name,
-        )
+        replacement: _GovernancePool | None = None
         try:
+            try:
+                parsed = make_url(url)
+            except Exception:
+                raise ConfigurationError("Protected database endpoint mismatch") from None
+            if (
+                self._endpoint is None
+                or (parsed.host, parsed.port, parsed.database) != self._endpoint
+                or any(
+                    key in parsed.query
+                    for key in ("host", "hostaddr", "port", "service", "options")
+                )
+            ):
+                raise ConfigurationError("Protected database endpoint mismatch")
+            replacement = _GovernancePool(
+                url,
+                size=self._pool_size,
+                timeout=self._pool_timeout,
+                database_name=self._database_name,
+            )
             await replacement.validate()
         except BaseException:
-            await replacement.close()
+            if replacement is not None:
+                await replacement.close()
             async with self._lock:
                 old = self._active
                 self._active = None
             if old is not None and self._leases.get(old, 0) == 0:
                 await old.close()
             raise
+        assert replacement is not None
         async with self._lock:
             if self._closed:
                 await replacement.close()

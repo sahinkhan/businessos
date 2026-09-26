@@ -119,6 +119,7 @@ def create_application(
         database_name=database_name,
         pool_size=resolved_settings.governance_database_pool_size,
         pool_timeout=resolved_settings.governance_database_pool_timeout_seconds,
+        gate=contributions,
     )
     if context_resolver is not None and context_resolver_factory is not None:
         raise ValueError("Provide a context resolver or resolver factory, not both")

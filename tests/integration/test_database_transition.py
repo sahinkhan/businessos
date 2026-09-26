@@ -147,6 +147,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
         application=make_url(runtime_base).password or "",
         operations=make_url(operations_base).password or "",
         worker="businessos-worker",
+        governance="businessos-governance",
     )
 
     with psycopg.connect(admin_base, autocommit=True) as connection:
@@ -294,7 +295,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
                 "SELECT oid FROM pg_database WHERE datname = current_database()"
             ).fetchone()
         assert retained == ("retained-value", "retained-description")
-        assert revisions == {("0005_durable_event_subscribers",), ("proof_0003",)}
+        assert revisions == {("0006_governance_outbox",), ("proof_0003",)}
         assert roles == [
             ("businessos_app", False, False, False),
             ("businessos_migrator", False, False, False),

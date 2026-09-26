@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import Field, field_serializer, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -33,6 +34,9 @@ class Settings(BaseSettings):
     )
     database_pool_size: int = Field(default=5, ge=1, le=100)
     database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
+    governance_database_url: str | None = Field(default=None, repr=False, exclude=True)
+    governance_database_pool_size: int = Field(default=2, ge=1, le=20)
+    governance_database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
     database_readiness_enabled: bool = True
     request_body_limit_bytes: int = Field(default=1_048_576, ge=1)
     startup_timeout_seconds: float = Field(default=30.0, gt=0)
@@ -49,6 +53,20 @@ class Settings(BaseSettings):
         if not self.database_url.startswith("postgresql+psycopg://"):
             msg = "database_url must use the postgresql+psycopg SQLAlchemy dialect"
             raise ValueError(msg)
+        if self.governance_database_url is not None:
+            if not self.governance_database_url.startswith("postgresql+psycopg://"):
+                raise ValueError("governance_database_url must use the psycopg dialect")
+            ordinary = make_url(self.database_url)
+            protected = make_url(self.governance_database_url)
+            if (
+                protected.username != "businessos_governance"
+                or ordinary.database != protected.database
+                or ordinary.host != protected.host
+                or ordinary.port != protected.port
+            ):
+                raise ValueError(
+                    "Governance profile must target the same database with its dedicated role"
+                )
         if (self.s3_access_key is None) != (self.s3_secret_key is None):
             raise ValueError("S3 access key and secret key must be configured together")
         storage_options = (
@@ -65,6 +83,10 @@ class Settings(BaseSettings):
 
     @field_serializer("database_url")
     def serialize_database_url(self, _: str) -> str:
+        return "**********"
+
+    @field_serializer("governance_database_url")
+    def serialize_governance_database_url(self, _: str | None) -> str:
         return "**********"
 
 

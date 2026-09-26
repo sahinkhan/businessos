@@ -12,6 +12,7 @@ MIGRATOR_ROLE = "businessos_migrator"
 APPLICATION_ROLE = "businessos_app"
 OPERATIONS_ROLE = "businessos_ops"
 WORKER_ROLE = "businessos_worker"
+GOVERNANCE_ROLE = "businessos_governance"
 TRANSITION_LOCK = "businessos.database-role-transition.v1"
 
 
@@ -25,6 +26,7 @@ class DatabaseRolePasswords:
     application: str
     operations: str
     worker: str
+    governance: str
 
 
 def _role_exists(connection: psycopg.Connection[tuple[object, ...]], role: str) -> bool:
@@ -255,6 +257,20 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
             _ensure_role(connection, APPLICATION_ROLE, passwords.application, bypass_rls=False)
             _ensure_role(connection, OPERATIONS_ROLE, passwords.operations, bypass_rls=True)
             _ensure_role(connection, WORKER_ROLE, passwords.worker, bypass_rls=False, inherit=True)
+            _ensure_role(connection, GOVERNANCE_ROLE, passwords.governance, bypass_rls=False)
+            memberships = connection.execute(
+                "SELECT granted.rolname, member.rolname FROM pg_auth_members AS link "
+                "JOIN pg_roles AS granted ON granted.oid = link.roleid "
+                "JOIN pg_roles AS member ON member.oid = link.member "
+                "WHERE granted.rolname = %s OR member.rolname = %s",
+                (GOVERNANCE_ROLE, GOVERNANCE_ROLE),
+            ).fetchall()
+            for granted, member in memberships:
+                connection.execute(
+                    sql.SQL("REVOKE {} FROM {}").format(
+                        sql.Identifier(str(granted)), sql.Identifier(str(member))
+                    )
+                )
             connection.execute(
                 sql.SQL("REVOKE {}, {} FROM {}").format(
                     sql.Identifier(MIGRATOR_ROLE),
@@ -280,14 +296,40 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
                 )
             )
             connection.execute(
-                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}, {}").format(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}, {}, {}").format(
                     sql.Identifier(database_name),
                     sql.Identifier(MIGRATOR_ROLE),
                     sql.Identifier(APPLICATION_ROLE),
                     sql.Identifier(OPERATIONS_ROLE),
                     sql.Identifier(WORKER_ROLE),
+                    sql.Identifier(GOVERNANCE_ROLE),
                 )
             )
+            role_state = connection.execute(
+                "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, "
+                "rolinherit, rolbypassrls "
+                "FROM pg_roles WHERE rolname = %s",
+                (GOVERNANCE_ROLE,),
+            ).fetchone()
+            if role_state != (True, False, False, False, False, False):
+                raise DatabaseTransitionError("governance role attributes are unsafe")
+            for role in (APPLICATION_ROLE, WORKER_ROLE, MIGRATOR_ROLE, OPERATIONS_ROLE):
+                if connection.execute(
+                    "SELECT pg_has_role(%s, %s, 'MEMBER') OR pg_has_role(%s, %s, 'MEMBER')",
+                    (role, GOVERNANCE_ROLE, GOVERNANCE_ROLE, role),
+                ).fetchone() != (False,):
+                    raise DatabaseTransitionError("governance role membership is unsafe")
+            owned = connection.execute(
+                "SELECT 1 FROM pg_database WHERE datdba = "
+                "(SELECT oid FROM pg_roles WHERE rolname=%s) "
+                "UNION ALL SELECT 1 FROM pg_namespace WHERE nspowner = "
+                "(SELECT oid FROM pg_roles WHERE rolname=%s) "
+                "UNION ALL SELECT 1 FROM pg_class WHERE relowner = "
+                "(SELECT oid FROM pg_roles WHERE rolname=%s) LIMIT 1",
+                (GOVERNANCE_ROLE, GOVERNANCE_ROLE, GOVERNANCE_ROLE),
+            ).fetchone()
+            if owned is not None:
+                raise DatabaseTransitionError("governance role must not own database objects")
             connection.execute(
                 sql.SQL("ALTER DATABASE {} OWNER TO {}").format(
                     sql.Identifier(database_name), sql.Identifier(MIGRATOR_ROLE)

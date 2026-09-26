@@ -70,6 +70,7 @@ def _run_database_admin(arguments: Sequence[str]) -> None:
         application=_required_environment("BOS_APPLICATION_PASSWORD"),
         operations=_required_environment("BOS_OPERATIONS_PASSWORD"),
         worker=_required_environment("BOS_WORKER_PASSWORD"),
+        governance=_required_environment("BOS_GOVERNANCE_PASSWORD"),
     )
     try:
         transition_database_roles(_required_environment("BOS_ADMIN_DATABASE_URL"), passwords)

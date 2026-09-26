@@ -4,11 +4,11 @@ Status: ACCEPTED
 
 Decision date: 2026-09-26
 
-Acceptance stage: FORMAL ACCEPTANCE CANDIDATE / MERGE PENDING
+Acceptance stage: ACCEPTED / AUTHORITATIVE ON MAIN
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; Security Maintainer; Migration Safety Reviewer; Release Maintainer; Data Governance Owning Domain Maintainer; SDK/Contract Maintainer; Audit Owning Domain Maintainer; affected participating Resource Owning Domain Maintainer
 
-Approval pull request or commit: [PR #46](https://github.com/sahinkhan/businessos/pull/46) — open formal acceptance candidate; merge pending.
+Approval pull request or commit: [PR #46](https://github.com/sahinkhan/businessos/pull/46) — merged at `fddaa6c3880fda7f8a2ddab44d669e25915d44cc`.
 
 Reviewed semantic proposal SHA: `d85f199cd7030336f49c462d4434c78e0217b7b7`
 
@@ -22,19 +22,19 @@ Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`.
 
 Independent human review: NOT PERFORMED.
 
-Formal acceptance candidate SHA: The exact [PR #46 head](https://github.com/sahinkhan/businessos/pull/46) recorded in its acceptance evidence; a commit cannot embed its own SHA.
+Formal acceptance candidate SHA: `6bb2ccf49363d38f64c88b7d39516695aecdb22e`.
 
-Formal acceptance exact-head CI: PENDING fresh run on the acceptance candidate; exact run and result are recorded in [PR #46 acceptance evidence](https://github.com/sahinkhan/businessos/pull/46) before owner attestation.
+Formal acceptance exact-head CI: [BusinessOS run 36212815165](https://github.com/sahinkhan/businessos/actions/runs/36212815165) — PASS.
 
-Formal acceptance independent technical/read-only audit: PENDING fresh exact-head audit; result and finding counts are recorded in [PR #46 acceptance evidence](https://github.com/sahinkhan/businessos/pull/46) before owner attestation.
+Formal acceptance independent technical/read-only audit: PASS; Critical 0; High 0; Medium 0; Low 0.
 
-Formal acceptance owner attestation: PENDING personal exact-SHA attestation by `@sahinkhan`.
+Formal acceptance owner attestation: [@sahinkhan's final acceptance attestation](https://github.com/sahinkhan/businessos/pull/46#issuecomment-5842684887).
 
-Accepted main merge SHA: PENDING.
+Accepted main merge SHA: `fddaa6c3880fda7f8a2ddab44d669e25915d44cc`.
 
-Architecture state: FORMAL ACCEPTANCE CANDIDATE / NOT YET AUTHORITATIVE ON MAIN.
+Architecture state: ACCEPTED / AUTHORITATIVE / MERGED.
 
-Runtime state: NOT IMPLEMENTED. ADR-017 PR #45 remains DRAFT / BLOCKED. Architecture acceptance alone does not certify runtime or unblock ADR-017. Phases 0–3 remain FINAL PASS / FROZEN.
+Runtime state: IMPLEMENTATION CANDIDATE / NOT CERTIFIED. ADR-017 PR #45 remains DRAFT / BLOCKED. Architecture acceptance alone does not certify runtime or unblock ADR-017. Phases 0–3 remain FINAL PASS / FROZEN.
 
 Supersedes: None
 

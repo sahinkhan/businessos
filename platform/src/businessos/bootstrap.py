@@ -3,10 +3,13 @@
 from collections.abc import Callable, Iterable, Mapping
 from typing import cast
 
+from sqlalchemy.engine import make_url
+
 from businessos.activation import ContributionGate
 from businessos.application import BusinessOSApplication
 from businessos.config import Settings, get_settings
 from businessos.contracts import ContractRegistry
+from businessos.database_execution import ProtectedDatabaseExecutionAuthority
 from businessos.dependencies import (
     AUTHORIZER,
     CACHE,
@@ -108,6 +111,16 @@ def create_application(
     container = Container()
     database = Database(resolved_settings)
     unit_of_work_factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    database_name = make_url(resolved_settings.database_url).database
+    if database_name is None:
+        raise ValueError("Application database name is required")
+    protected_database = ProtectedDatabaseExecutionAuthority(
+        governance_url=resolved_settings.governance_database_url,
+        database_name=database_name,
+        pool_size=resolved_settings.governance_database_pool_size,
+        pool_timeout=resolved_settings.governance_database_pool_timeout_seconds,
+        gate=contributions,
+    )
     if context_resolver is not None and context_resolver_factory is not None:
         raise ValueError("Provide a context resolver or resolver factory, not both")
     if context_resolver_factory is not None:
@@ -122,6 +135,7 @@ def create_application(
         contributions,
         resolved_authorizer,
         resources=resources,
+        protected_database=protected_database,
     )
     event_consumer = DurableEventConsumer(
         unit_of_work_factory, event_bus, durable_subscriber_authorizer
@@ -240,6 +254,10 @@ def create_application(
     )
     if resolved_settings.database_readiness_enabled:
         diagnostics.add_readiness_check("postgresql", database.readiness)
+        if any(
+            module.manifest.module_id == "foundation.data_governance" for module in loaded_modules
+        ):
+            diagnostics.add_readiness_check("governance-postgresql", protected_database.validate)
     for capability in sorted(infrastructure_providers or {}):
 
         async def provider_readiness(name: str = capability) -> None:
@@ -265,6 +283,11 @@ def create_application(
         providers.close_infrastructure,
     )
     application.add_lifecycle("modules", start_modules, lifecycle.disable_all)
+    if resolved_settings.governance_database_url is not None and any(
+        module.manifest.module_id == "foundation.data_governance" for module in loaded_modules
+    ):
+        application.on_startup(database.check_connection_budget)
     application.on_shutdown(database.close)
+    application.on_shutdown(protected_database.close)
     diagnostics.add_readiness_check("application", application.readiness)
     return application

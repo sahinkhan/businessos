@@ -606,7 +606,7 @@ def test_inventory_is_append_only_and_tamper_detecting(
     assert _inventory(postgres_migration_database_url) == appended_inventory
     with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
-    assert heads == {"0005_durable_event_subscribers", "history_0003"}
+    assert heads == {"0006_governance_outbox", "history_0003"}
 
 
 @pytest.mark.integration
@@ -634,7 +634,7 @@ def test_concurrent_migrations_serialize_graph_and_inventory(
     assert [item["revision"] for item in inventory[-1]] == ["concurrent_history_0001"]
     with psycopg.connect(_psycopg_url(postgres_migration_database_url)) as connection:
         heads = {row[0] for row in connection.execute("SELECT version_num FROM alembic_version")}
-    assert heads == {"0005_durable_event_subscribers", "concurrent_history_0001"}
+    assert heads == {"0006_governance_outbox", "concurrent_history_0001"}
 
 
 @pytest.mark.integration
@@ -685,7 +685,7 @@ async def test_real_task_cancellation_rolls_back_each_uncommitted_phase(
 
     await coordinator.upgrade_async(database_url)
     heads, inventory, table_exists = _database_snapshot(database_url, table)
-    assert set(heads) == {"0005_durable_event_subscribers", f"cancel_{phase}_0001"}
+    assert set(heads) == {"0006_governance_outbox", f"cancel_{phase}_0001"}
     assert inventory is not None
     assert table_exists
 
@@ -827,7 +827,7 @@ async def test_cancellation_after_commit_authorization_returns_durable_success(
     assert _migration_processes() == baseline_processes
     assert _migration_sessions(database_url, application_name) == 0
     heads, inventory, table_exists = _database_snapshot(database_url, table)
-    assert set(heads) == {"0005_durable_event_subscribers", "cancel_after_commit_0001"}
+    assert set(heads) == {"0006_governance_outbox", "cancel_after_commit_0001"}
     assert inventory is not None
     assert table_exists
     _assert_advisory_lock_available(database_url)
@@ -979,7 +979,7 @@ async def test_cleanup_diagnostic_does_not_replace_committed_outcome(
 
     assert _migration_sessions(database_url, application_name) == 0
     heads, inventory, table_exists = _database_snapshot(database_url, table)
-    assert set(heads) == {"0005_durable_event_subscribers", "cleanup_diagnostic_0001"}
+    assert set(heads) == {"0006_governance_outbox", "cleanup_diagnostic_0001"}
     assert inventory is not None
     assert table_exists
     _assert_advisory_lock_available(database_url)

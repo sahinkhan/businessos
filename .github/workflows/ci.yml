@@ -41,6 +41,7 @@ jobs:
       BOS_TEST_DATABASE_RUNTIME_URL: postgresql://businessos_app:businessos-application@localhost:5432/postgres
       BOS_TEST_DATABASE_OPERATIONS_URL: postgresql://businessos_ops:businessos-operations@localhost:5432/postgres
       BOS_TEST_DATABASE_WORKER_URL: postgresql://businessos_worker:businessos-worker@localhost:5432/postgres
+      BOS_TEST_DATABASE_GOVERNANCE_URL: postgresql://businessos_governance:businessos-governance@localhost:5432/postgres
       BOS_TEST_REDIS_URL: redis://localhost:6379/0
       BOS_TEST_NATS_URL: nats://localhost:4222
       BOS_TEST_S3_ENDPOINT: http://localhost:9000
@@ -50,6 +51,7 @@ jobs:
       BOS_APPLICATION_PASSWORD: businessos-application
       BOS_OPERATIONS_PASSWORD: businessos-operations
       BOS_WORKER_PASSWORD: businessos-worker
+      BOS_GOVERNANCE_PASSWORD: businessos-governance
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

@@ -203,6 +203,7 @@ def _run_image(
         "BOS_APPLICATION_PASSWORD",
         "BOS_OPERATIONS_PASSWORD",
         "BOS_WORKER_PASSWORD",
+        "BOS_GOVERNANCE_PASSWORD",
     )
     command = ["docker", "run", "--rm", "--network", network]
     for name in names:
@@ -261,7 +262,7 @@ def _expect_safe_classification_downgrade_refusal(run: Callable[[Sequence[str]],
     try:
         run(("migrate", "downgrade", "base"))
     except subprocess.CalledProcessError as exc:
-        if "gov_0003 downgrade refused" not in (exc.stderr or ""):
+        if "gov_0004 downgrade refused" not in (exc.stderr or ""):
             raise RuntimeError("migration downgrade failed for an unexpected reason") from exc
         print("classification V2 downgrade safely refused")
     else:
@@ -303,6 +304,7 @@ def main() -> None:
             "BOS_APPLICATION_PASSWORD": _required("BOS_APPLICATION_PASSWORD"),
             "BOS_OPERATIONS_PASSWORD": _required("BOS_OPERATIONS_PASSWORD"),
             "BOS_WORKER_PASSWORD": _required("BOS_WORKER_PASSWORD"),
+            "BOS_GOVERNANCE_PASSWORD": _required("BOS_GOVERNANCE_PASSWORD"),
         }
     )
 

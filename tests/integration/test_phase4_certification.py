@@ -34,8 +34,13 @@ def _raw(url: str) -> str:
     return url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
-def _settings(url: str) -> Settings:
-    return Settings(environment="test", database_url=url, database_pool_size=4)
+def _settings(url: str, governance_url: str) -> Settings:
+    return Settings(
+        environment="test",
+        database_url=url,
+        database_pool_size=4,
+        governance_database_url=governance_url,
+    )
 
 
 class _AllowAllPolicy:
@@ -73,7 +78,10 @@ async def _query(app: Any, message: object, context: RequestContext) -> object:
 def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
-    app = create_application(_settings(postgres_database.runtime_url), modules=discover_modules())
+    app = create_application(
+        _settings(postgres_database.runtime_url, postgres_database.governance_url),
+        modules=discover_modules(),
+    )
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
 
@@ -149,9 +157,10 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
                 "ORDER BY n.nspname, c.relname"
             ).fetchall()
         assert heads == {
-            "audit_0003",
+            "0006_governance_outbox",
+            "audit_0004",
             "geography_0003",
-            "gov_0003",
+            "gov_0004",
             "identity_0005",
             "organization_0003",
             "party_0002",
@@ -162,7 +171,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
         assert len(rls) >= 17
         assert all(row[2] and row[3] for row in rls)
     finally:
-        with pytest.raises(Exception, match="gov_0003 downgrade refused"):
+        with pytest.raises(Exception, match="gov_0004 downgrade refused"):
             app.runtime.migrations.downgrade(postgres_database.migration_url)
 
 
@@ -173,7 +182,7 @@ async def test_governance_retention_legal_hold_and_consent_lifecycle(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        _settings(postgres_database.runtime_url),
+        _settings(postgres_database.runtime_url, postgres_database.governance_url),
         modules=(
             module
             for module in discover_modules()
@@ -307,5 +316,5 @@ async def test_governance_retention_legal_hold_and_consent_lifecycle(
         assert not revoked_consent.has_consent
     finally:
         await app.shutdown()
-        with pytest.raises(Exception, match="gov_0003 downgrade refused"):
+        with pytest.raises(Exception, match="gov_0004 downgrade refused"):
             app.runtime.migrations.downgrade(postgres_database.migration_url)

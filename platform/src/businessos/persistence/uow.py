@@ -55,9 +55,14 @@ class SQLAlchemyUnitOfWork:
         self,
         sessions: SessionFactory,
         tenant_context: TenantContext | None,
+        *,
+        expected_database: str | None = None,
+        expected_user: str | None = None,
     ) -> None:
         self._sessions = sessions
         self.tenant_context = tenant_context
+        self._expected_database = expected_database
+        self._expected_user = expected_user
         self.session: AsyncSession | None = None
         self._committed = False
 
@@ -67,6 +72,14 @@ class SQLAlchemyUnitOfWork:
         self.session = self._sessions()
         try:
             await self.session.begin()
+            if self._expected_user is not None:
+                identity = (
+                    await self.session.execute(
+                        text("SELECT current_database(), current_user, session_user")
+                    )
+                ).one()
+                if identity != (self._expected_database, self._expected_user, self._expected_user):
+                    raise ConfigurationError("Protected database identity mismatch")
             if self.tenant_context is not None:
                 await self.session.execute(
                     text("SELECT set_config('app.tenant_id', :tenant_id, true)"),

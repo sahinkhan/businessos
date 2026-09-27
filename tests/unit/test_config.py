@@ -15,6 +15,27 @@ def test_settings_reject_invalid_port() -> None:
         Settings(port=0)
 
 
+def test_database_pool_budget_counts_protected_and_reserved_connections() -> None:
+    with pytest.raises(ValidationError, match="connection budget"):
+        Settings(
+            database_url="postgresql+psycopg://businessos_app:secret@localhost:5432/businessos",
+            governance_database_url=(
+                "postgresql+psycopg://businessos_governance:secret@localhost:5432/businessos"
+            ),
+            database_connection_budget=20,
+            database_app_processes=2,
+        )
+    settings = Settings(
+        database_url="postgresql+psycopg://businessos_app:secret@localhost:5432/businessos",
+        governance_database_url=(
+            "postgresql+psycopg://businessos_governance:secret@localhost:5432/businessos"
+        ),
+        database_connection_budget=31,
+        database_app_processes=2,
+    )
+    assert settings.database_connection_budget == 31
+
+
 def test_database_url_is_redacted_from_settings_representations() -> None:
     secret = "never-print-database-password"
     settings = Settings(

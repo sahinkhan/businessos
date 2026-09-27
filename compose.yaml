@@ -5,6 +5,7 @@ services:
       target: development
     environment:
       BOS_DATABASE_URL: postgresql+psycopg://businessos_app:businessos-application@postgres:5432/businessos
+      BOS_GOVERNANCE_DATABASE_URL: postgresql+psycopg://businessos_governance:${BOS_GOVERNANCE_PASSWORD:-businessos-governance}@postgres:5432/businessos
       BOS_ENVIRONMENT: development
       BOS_LOG_LEVEL: INFO
       BOS_INSTALLATION_ID: 00000000-0000-0000-0000-000000000001
@@ -87,6 +88,7 @@ services:
       BOS_APPLICATION_PASSWORD: ${BOS_APPLICATION_PASSWORD:-businessos-application}
       BOS_OPERATIONS_PASSWORD: ${BOS_OPERATIONS_PASSWORD:-businessos-operations}
       BOS_WORKER_PASSWORD: ${BOS_WORKER_PASSWORD:-businessos-worker}
+      BOS_GOVERNANCE_PASSWORD: ${BOS_GOVERNANCE_PASSWORD:-businessos-governance}
     command: ["businessos", "database", "transition-roles"]
     volumes:
       - .:/app

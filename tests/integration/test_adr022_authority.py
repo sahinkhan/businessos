@@ -433,6 +433,107 @@ def test_adr022_upgrade_rejects_indirect_ordinary_writer(
 
 @pytest.mark.integration
 @pytest.mark.postgres
+def test_adr022_upgrade_rejects_column_writer_on_dependent_view(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url, "gov_0003")
+    inner = f"adr022_guarded_inner_{uuid4().hex}"
+    outer = f"adr022_guarded_outer_{uuid4().hex}"
+    with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+        admin.execute(f"CREATE VIEW public.{inner} AS SELECT id FROM platform_gov.legal_holds")
+        admin.execute(f"CREATE VIEW public.{outer} AS SELECT id FROM public.{inner}")
+        admin.execute(f"GRANT UPDATE (id) ON public.{outer} TO businessos_app")
+    try:
+        with pytest.raises(RuntimeError, match="indirect ordinary Governance mutation"):
+            app.runtime.migrations.upgrade(postgres_database.migration_url)
+    finally:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute(f"DROP VIEW public.{outer}")
+            admin.execute(f"DROP VIEW public.{inner}")
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_adr022_upgrade_rejects_overloaded_security_definer(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url, "gov_0003")
+    with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+        admin.execute(
+            "CREATE FUNCTION platform_identity.admit_workload(text) RETURNS integer "
+            "LANGUAGE SQL SECURITY DEFINER AS 'SELECT 1'"
+        )
+    try:
+        with pytest.raises(RuntimeError, match="indirect ordinary Governance mutation"):
+            app.runtime.migrations.upgrade(postgres_database.migration_url)
+    finally:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute("DROP FUNCTION platform_identity.admit_workload(text)")
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_adr022_upgrade_rejects_privileged_trigger_on_ordinary_table(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url, "gov_0003")
+    suffix = uuid4().hex
+    table = f"adr022_trigger_source_{suffix}"
+    function = f"adr022_trigger_writer_{suffix}"
+    with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+        admin.execute(f"CREATE TABLE public.{table} (id integer)")
+        admin.execute(f"GRANT INSERT ON public.{table} TO businessos_app")
+        admin.execute(
+            f"CREATE FUNCTION public.{function}() RETURNS trigger LANGUAGE plpgsql "
+            "SECURITY DEFINER AS $$ BEGIN "
+            "UPDATE platform_gov.legal_holds SET reason = reason; RETURN NEW; END $$"
+        )
+        admin.execute(
+            f"CREATE TRIGGER {function} BEFORE INSERT ON public.{table} "
+            f"FOR EACH ROW EXECUTE FUNCTION public.{function}()"
+        )
+        admin.execute(f"REVOKE ALL ON FUNCTION public.{function}() FROM PUBLIC")
+    try:
+        with pytest.raises(RuntimeError, match="indirect ordinary Governance mutation"):
+            app.runtime.migrations.upgrade(postgres_database.migration_url)
+    finally:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute(f"DROP TABLE public.{table}")
+            admin.execute(f"DROP FUNCTION public.{function}()")
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+def test_adr022_upgrade_rejects_ordinary_table_write_rule(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url, "gov_0003")
+    table = f"adr022_rule_source_{uuid4().hex}"
+    with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+        admin.execute(f"CREATE TABLE public.{table} (id integer)")
+        admin.execute(f"GRANT INSERT ON public.{table} TO businessos_app")
+        admin.execute(
+            f"CREATE RULE {table}_write AS ON INSERT TO public.{table} "
+            "DO ALSO UPDATE platform_gov.legal_holds SET reason = reason"
+        )
+    try:
+        with pytest.raises(RuntimeError, match="indirect ordinary Governance mutation"):
+            app.runtime.migrations.upgrade(postgres_database.migration_url)
+    finally:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            admin.execute(f"DROP TABLE public.{table}")
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
 def test_adr022_upgrade_removes_legacy_public_write(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
@@ -675,4 +776,80 @@ async def test_adr022_admission_rejects_tenant_classification_rls_drift(
                 "USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid) "
                 "WITH CHECK (false)"
             )
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ("nested_view", "trigger", "rule", "overload"))
+async def test_adr022_admission_rejects_indirect_ordinary_write_drift(
+    postgres_database: PostgreSQLTestDatabase,
+    surface: str,
+) -> None:
+    app = _application(postgres_database)
+    assert app.runtime is not None
+    app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await app.startup()
+    authority = app.runtime.messages._protected_database
+    assert authority is not None
+    tenant = TenantContext(installation_id=uuid4(), tenant_id=uuid4(), principal_id=uuid4())
+    command = PlaceLegalHoldCommand(
+        tenant_id=tenant.tenant_id,
+        code="case",
+        name="Case",
+        reason="reason",
+        entity_type="party",
+        entity_id="1",
+        placed_by="actor",
+    )
+    registered = app.runtime.messages.commands.resolve(command)
+    suffix = uuid4().hex
+    source = f"adr022_indirect_source_{suffix}"
+    inner = f"adr022_indirect_inner_{suffix}"
+    function = f"adr022_indirect_writer_{suffix}"
+    cleanup: list[str] = []
+    try:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            if surface == "nested_view":
+                admin.execute(
+                    f"CREATE VIEW public.{inner} AS SELECT id FROM platform_gov.legal_holds"
+                )
+                admin.execute(f"CREATE VIEW public.{source} AS SELECT id FROM public.{inner}")
+                admin.execute(f"GRANT UPDATE (id) ON public.{source} TO businessos_app")
+                cleanup = [f"DROP VIEW public.{source}", f"DROP VIEW public.{inner}"]
+            elif surface in {"trigger", "rule"}:
+                admin.execute(f"CREATE TABLE public.{source} (id integer)")
+                admin.execute(f"GRANT INSERT ON public.{source} TO businessos_app")
+                cleanup = [f"DROP TABLE public.{source}"]
+                if surface == "trigger":
+                    admin.execute(
+                        f"CREATE FUNCTION public.{function}() RETURNS trigger LANGUAGE plpgsql "
+                        "SECURITY DEFINER AS $$ BEGIN "
+                        "UPDATE platform_gov.legal_holds SET reason = reason; RETURN NEW; END $$"
+                    )
+                    admin.execute(
+                        f"CREATE TRIGGER {function} BEFORE INSERT ON public.{source} "
+                        f"FOR EACH ROW EXECUTE FUNCTION public.{function}()"
+                    )
+                    admin.execute(f"REVOKE ALL ON FUNCTION public.{function}() FROM PUBLIC")
+                    cleanup.append(f"DROP FUNCTION public.{function}()")
+                else:
+                    admin.execute(
+                        f"CREATE RULE {source}_write AS ON INSERT TO public.{source} "
+                        "DO ALSO UPDATE platform_gov.legal_holds SET reason = reason"
+                    )
+            else:
+                admin.execute(
+                    "CREATE FUNCTION platform_identity.admit_workload(text) RETURNS integer "
+                    "LANGUAGE SQL SECURITY DEFINER AS 'SELECT 1'"
+                )
+                cleanup = ["DROP FUNCTION platform_identity.admit_workload(text)"]
+        with pytest.raises(ConfigurationError, match="Indirect ordinary Governance mutation"):
+            async with authority.for_command(registered, type(command), tenant):
+                pytest.fail("Indirect ordinary writer was admitted")
+    finally:
+        with psycopg.connect(postgres_database.administrator_url, autocommit=True) as admin:
+            for statement in cleanup:
+                admin.execute(statement)
         await app.shutdown()

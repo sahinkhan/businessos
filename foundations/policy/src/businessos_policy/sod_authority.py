@@ -107,6 +107,11 @@ class SoDAuthority:
     def with_permission(self, record: RolePermissionRecord) -> SoDAuthority:
         return replace(self, permissions=(*self.permissions, record))
 
+    def with_role(self, record: RoleRecord) -> SoDAuthority:
+        projected = replace(self, roles=(*self.roles, record))
+        projected._validate_shape()
+        return projected
+
     def with_assignment(self, record: SubjectRoleAssignmentRecord) -> SoDAuthority:
         return replace(self, assignments=(*self.assignments, record))
 
@@ -117,6 +122,17 @@ class SoDAuthority:
         return replace(self, rules=(*self.rules, record))
 
     def _validate_shape(self) -> None:
+        if any(
+            len(rows) > _MAX_ROWS
+            for rows in (
+                self.roles,
+                self.permissions,
+                self.assignments,
+                self.delegations,
+                self.rules,
+            )
+        ):
+            raise _unbounded("Projected Policy authority exceeds the reviewed row bound")
         for assignment in self.assignments:
             if (assignment.valid_from is not None and assignment.valid_from.tzinfo is None) or (
                 assignment.valid_to is not None and assignment.valid_to.tzinfo is None

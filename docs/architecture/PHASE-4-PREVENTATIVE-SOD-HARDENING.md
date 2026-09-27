@@ -43,6 +43,14 @@ source traversal steps per projection fail closed with
 does not itself authorize a Policy V2 request or replace live Identity
 membership, owner facts, scope, and record-policy evaluation.
 
+An exact-commit audit found that the initial candidate could insert the
+257th row of a bounded relation and then leave subsequent Policy mutations
+unable to load that tenant's graph. The remediated projection checks the
+post-mutation row count before insertion for roles, role permissions,
+assignments, delegations, and preventative rules. `CreateRole` now projects
+its new role under the same tenant lock. Focused unit and PostgreSQL tests
+prove the 257th row is rejected without a write.
+
 ## Concurrency and transaction evidence
 
 PostgreSQL tests hold the exact Policy tenant advisory lock independently and
@@ -75,22 +83,25 @@ boundary would need separate architecture approval.
 
 ## Certification evidence
 
-Local certification on the candidate worktree:
+Local certification on the remediated candidate worktree:
 
-- Focused Policy/SoD PostgreSQL set: 47 passed in 9m20s, exit 0.
-- Full integration: 203 passed in 1h06m52s, exit 0.
-- Full pytest: 748 passed in 1h00m18s, exit 0.
+- Focused post-remediation SoD tests: 11 unit and 10 PostgreSQL integration
+  cases passed. The wider Policy/SoD PostgreSQL set passed 47 tests before
+  the bounded-row remediation.
+- Full integration: 204 passed in 33m40s, exit 0.
+- Full pytest: 750 passed in 35m01s, exit 0.
 - Repository CI Ruff format and lint: PASS. Mypy: 336 source files, PASS.
   Pyright: 0 errors, PASS. Phase 0 governance gate: PASS.
-- Installed-wheel migration smoke: PASS in 5m34s; installed graph retained
+- Installed-wheel migration smoke: PASS; installed graph retained
   `policy_0004`; migration replay and current safe downgrade refusal passed.
-- Development image: PASS in 3m11s. Production image: PASS in 2m30s.
-  Migration-smoke image: PASS in 16s.
+- Development, production, and migration-smoke images: PASS.
 - Existing Phase 0-3 coverage ran within the full integration and pytest
   suites. No separate migration-graph-changing replay is required because
   this batch adds no migration.
 
-Independent read-only preflight: Critical 0, High 0, Medium 0, Low 0.
+Independent read-only remediation preflight: Critical 0, High 0, Medium 0,
+Low 0. The first exact-commit audit's one Medium was remediated before this
+certification. A new exact-commit audit is required on the new candidate SHA.
 Hosted exact-head CI and independent exact-commit audit remain candidate PR
 gates. No owner attestation has been posted; no merge is authorized by this
 document.

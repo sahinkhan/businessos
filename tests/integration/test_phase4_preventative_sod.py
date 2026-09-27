@@ -145,6 +145,42 @@ async def _delegate(
 @pytest.mark.integration
 @pytest.mark.postgres
 @pytest.mark.asyncio
+async def test_create_role_rejects_the_257th_role_before_insert(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = await _app(postgres_database)
+    tenant, actor_id = uuid4(), uuid4()
+    _seed_tenant(postgres_database.migration_url, tenant, "sod-role-bound", status="active")
+    actor = _context(tenant, actor_id)
+    dsn = postgres_database.runtime_url.replace("postgresql+psycopg://", "postgresql://")
+    try:
+        async with await psycopg.AsyncConnection.connect(dsn) as connection:
+            await connection.execute("SELECT set_config('app.tenant_id', %s, true)", (str(tenant),))
+            async with connection.cursor() as cursor:
+                await cursor.executemany(
+                    "INSERT INTO platform_policy.roles "
+                    "(id, tenant_id, code, name, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, now(), now())",
+                    [(uuid4(), tenant, f"bound-{i}", f"Bound {i}") for i in range(256)],
+                )
+
+        with pytest.raises(BusinessOSError) as denied:
+            await _role(app, tenant, actor, "bound-256")
+        assert denied.value.code == "authority_unbounded"
+        async with await psycopg.AsyncConnection.connect(dsn) as connection:
+            await connection.execute("SELECT set_config('app.tenant_id', %s, true)", (str(tenant),))
+            result = await connection.execute(
+                "SELECT count(*) FROM platform_policy.roles WHERE tenant_id = %s", (tenant,)
+            )
+            row = await result.fetchone()
+            assert row is not None and row[0] == 256
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
 async def test_supported_mutations_reject_projected_preventative_conflicts(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:

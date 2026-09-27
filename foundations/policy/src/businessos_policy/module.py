@@ -439,6 +439,19 @@ class PolicyModule:
             await _validate_new_role_parent(ctx, cmd.tenant_id, cmd.parent_role_id)
         now = datetime.now(UTC)
         role_id = uuid4()
+        record = RoleRecord(
+            id=role_id,
+            tenant_id=cmd.tenant_id,
+            code=cmd.code,
+            name=cmd.name,
+            description=cmd.description,
+            is_system=cmd.is_system,
+            parent_role_id=cmd.parent_role_id,
+            created_at=now,
+            updated_at=now,
+        )
+        authority = await SoDAuthority.load(ctx.unit_of_work.persistence, cmd.tenant_id)
+        authority.with_role(record)
         stmt = insert(ROLES).values(
             id=role_id,
             tenant_id=cmd.tenant_id,
@@ -451,17 +464,6 @@ class PolicyModule:
             updated_at=now,
         )
         await ctx.unit_of_work.persistence.execute(stmt)
-        record = RoleRecord(
-            id=role_id,
-            tenant_id=cmd.tenant_id,
-            code=cmd.code,
-            name=cmd.name,
-            description=cmd.description,
-            is_system=cmd.is_system,
-            parent_role_id=cmd.parent_role_id,
-            created_at=now,
-            updated_at=now,
-        )
         ctx.emit(
             RoleCreated(
                 tenant_id=tenant.tenant_id,

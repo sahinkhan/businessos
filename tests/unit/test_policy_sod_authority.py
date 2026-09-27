@@ -301,3 +301,41 @@ def test_dense_delegation_paths_exhaust_traversal_budget() -> None:
         base.reject_new_conflicts(base.with_permission(permission(target, SECOND)))
     assert failure.value.code == "authority_unbounded"
     assert "delegation source traversal" in failure.value.message
+
+
+def test_projected_row_bound_rejects_the_257th_authority_row() -> None:
+    target = role()
+    subject = uuid4()
+    permission_row = permission(target, FIRST)
+    assignment_row = assignment(target, subject)
+    delegation_row = delegation(target, subject, uuid4())
+    rule_row = rule()
+    projections = (
+        (
+            graph(roles=(target,), permissions=(permission_row,) * 256),
+            graph(roles=(target,), permissions=(permission_row,) * 257),
+        ),
+        (
+            graph(roles=(target,), assignments=(assignment_row,) * 256),
+            graph(roles=(target,), assignments=(assignment_row,) * 257),
+        ),
+        (
+            graph(roles=(target,), delegations=(delegation_row,) * 256),
+            graph(roles=(target,), delegations=(delegation_row,) * 257),
+        ),
+        (
+            graph(roles=(target,), rules=(rule_row,) * 256),
+            graph(roles=(target,), rules=(rule_row,) * 257),
+        ),
+    )
+    for base, projected in projections:
+        base._validate_shape()
+        with pytest.raises(BusinessOSError) as failure:
+            base.reject_new_conflicts(projected)
+        assert failure.value.code == "authority_unbounded"
+
+    base = graph(roles=(target,) * 256)
+    base._validate_shape()
+    with pytest.raises(BusinessOSError) as failure:
+        base.with_role(role())
+    assert failure.value.code == "authority_unbounded"

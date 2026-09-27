@@ -1,8 +1,11 @@
 """Real PostgreSQL checks for ADR-022's protected execution boundary."""
 
 import asyncio
+import json
+import logging
 from dataclasses import replace
-from typing import Any, cast
+from io import StringIO
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import psycopg
@@ -22,6 +25,7 @@ from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
 from businessos.errors import ConfigurationError, NotFoundError
+from businessos.logging import JsonFormatter
 from businessos.messages import Command
 from businessos.modules import discover_modules
 from businessos.persistence import PendingOutboxMessage
@@ -33,10 +37,13 @@ def _raw(url: str) -> str:
     return url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
-def _application(database: PostgreSQLTestDatabase) -> BusinessOSApplication:
+def _application(
+    database: PostgreSQLTestDatabase, *, log_level: Literal["INFO", "WARNING"] = "INFO"
+) -> BusinessOSApplication:
     return create_application(
         Settings(
             environment="test",
+            log_level=log_level,
             database_url=database.runtime_url,
             governance_database_url=database.governance_url,
         ),
@@ -199,10 +206,12 @@ def test_adr022_exact_role_grants_and_tenant_rls(
 @pytest.mark.integration
 @pytest.mark.postgres
 @pytest.mark.asyncio
+@pytest.mark.parametrize("log_level", ("INFO", "WARNING"))
 async def test_adr022_exact_routing_identity_and_failed_rotation(
     postgres_database: PostgreSQLTestDatabase,
+    log_level: Literal["INFO", "WARNING"],
 ) -> None:
-    app = _application(postgres_database)
+    app = _application(postgres_database, log_level=log_level)
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
@@ -225,6 +234,7 @@ async def test_adr022_exact_routing_identity_and_failed_rotation(
         placed_by="actor",
     )
     protected = dispatcher.commands.resolve(protected_command)
+    assert protected.generation is not None
     ordinary_command = CreateTenantClassificationV2Command(
         code="PERSONAL",
         name="Personal",
@@ -243,8 +253,25 @@ async def test_adr022_exact_routing_identity_and_failed_rotation(
     assert not authority.requires_protected(ordinary, type(ordinary_command))
     assert not authority.requires_protected(query, cast(type[Command], CheckPurgeEligibilityQuery))
     request = RequestContext(correlation_id="adr022-dispatch", trace_id=uuid4().hex, tenant=tenant)
-    async with app.container.request_scope() as dependencies:
-        result = await dispatcher.command(protected_command, request, dependencies)
+    log_output = StringIO()
+    log_handler = logging.StreamHandler(log_output)
+    log_handler.setFormatter(JsonFormatter())
+    execution_logger = logging.getLogger("businessos.audit.protected-database")
+    execution_logger.addHandler(log_handler)
+    try:
+        async with app.container.request_scope() as dependencies:
+            result = await dispatcher.command(protected_command, request, dependencies)
+    finally:
+        execution_logger.removeHandler(log_handler)
+    selection = [
+        json.loads(line)
+        for line in log_output.getvalue().splitlines()
+        if "Protected database execution selected" in line
+    ]
+    assert len(selection) == 1
+    assert selection[0]["protected_database_profile"] == "foundation.data_governance"
+    assert selection[0]["handler_generation_owner"] == protected.generation.owner
+    assert selection[0]["handler_generation_number"] == protected.generation.number
     assert isinstance(result, LegalHoldRecord)
     assert result.tenant_id == tenant.tenant_id
     with psycopg.connect(_raw(postgres_database.governance_url)) as governance:

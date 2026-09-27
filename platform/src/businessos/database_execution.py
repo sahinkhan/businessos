@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
 
 GOVERNANCE_PROFILE = "foundation.data_governance"
 GOVERNANCE_ROLE = "businessos_governance"
+_logger = logging.getLogger("businessos.audit.protected-database")
+# This security evidence must survive an installation's diagnostic log level.
+_logger.setLevel(logging.INFO)
 _GOVERNANCE_COMMANDS = frozenset(
     {
         "CreateRetentionPolicyCommand",
@@ -547,6 +551,14 @@ class ProtectedDatabaseExecutionAuthority:
                 raise
             if not self._gate.is_active(registration.generation):
                 raise NotFoundError("Module contribution is not active")
+            _logger.info(
+                "Protected database execution selected",
+                extra={
+                    "protected_database_profile": GOVERNANCE_PROFILE,
+                    "handler_generation_owner": registration.generation.owner,
+                    "handler_generation_number": registration.generation.number,
+                },
+            )
             self._leases[pool] = self._leases.get(pool, 0) + 1
         try:
             yield pool.for_tenant(tenant)

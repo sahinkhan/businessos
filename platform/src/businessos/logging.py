@@ -31,6 +31,17 @@ class JsonFormatter(logging.Formatter):
         error_type = getattr(record, "error_type", None)
         if isinstance(error_type, str):
             payload["error_type"] = error_type
+        profile = getattr(record, "protected_database_profile", None)
+        generation_owner = getattr(record, "handler_generation_owner", None)
+        generation_number = getattr(record, "handler_generation_number", None)
+        if (
+            isinstance(profile, str)
+            and isinstance(generation_owner, str)
+            and isinstance(generation_number, int)
+        ):
+            payload["protected_database_profile"] = profile
+            payload["handler_generation_owner"] = generation_owner
+            payload["handler_generation_number"] = generation_number
         return json.dumps(payload, separators=(",", ":"), default=str)
 
 

@@ -45,7 +45,11 @@ from .contracts import (
     SupportAccessGranted,
     SupportAccessRevoked,
 )
-from .delegation_authority import PolicyDelegationActionAuthority, has_effective_role_source
+from .delegation_authority import (
+    MAX_SOURCE_TRAVERSALS,
+    PolicyDelegationActionAuthority,
+    has_effective_role_source,
+)
 from .models import (
     APPROVAL_LIMITS,
     DELEGATIONS,
@@ -76,6 +80,7 @@ from .models import (
     SubjectRoleAssignmentRecord,
     SupportAccessGrantRecord,
 )
+from .sod_authority import SoDAuthority
 from .v2_contracts import POLICY_AUTHORIZATION_V2
 from .v2_runtime import PolicyV2Service
 
@@ -431,7 +436,7 @@ class PolicyModule:
         tenant = _require_tenant(ctx.request, cmd.tenant_id)
         await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         if cmd.parent_role_id is not None:
-            await _require_role(ctx, cmd.tenant_id, cmd.parent_role_id)
+            await _validate_new_role_parent(ctx, cmd.tenant_id, cmd.parent_role_id)
         now = datetime.now(UTC)
         role_id = uuid4()
         stmt = insert(ROLES).values(
@@ -476,6 +481,15 @@ class PolicyModule:
         await _require_role(ctx, cmd.tenant_id, cmd.role_id)
         now = datetime.now(UTC)
         rp_id = uuid4()
+        record = RolePermissionRecord(
+            id=rp_id,
+            tenant_id=cmd.tenant_id,
+            role_id=cmd.role_id,
+            permission_code=cmd.permission_code,
+            created_at=now,
+        )
+        authority = await SoDAuthority.load(ctx.unit_of_work.persistence, cmd.tenant_id)
+        authority.reject_new_conflicts(authority.with_permission(record))
         stmt = insert(ROLE_PERMISSIONS).values(
             id=rp_id,
             tenant_id=cmd.tenant_id,
@@ -484,13 +498,6 @@ class PolicyModule:
             created_at=now,
         )
         await ctx.unit_of_work.persistence.execute(stmt)
-        record = RolePermissionRecord(
-            id=rp_id,
-            tenant_id=cmd.tenant_id,
-            role_id=cmd.role_id,
-            permission_code=cmd.permission_code,
-            created_at=now,
-        )
         ctx.emit(
             PermissionAssignedToRole(
                 tenant_id=tenant.tenant_id,
@@ -509,45 +516,22 @@ class PolicyModule:
         await _require_role(ctx, cmd.tenant_id, cmd.role_id)
         _validate_scope(cmd.scope_type, cmd.scope_id)
         _validate_window(cmd.valid_from, cmd.valid_to)
-        permission_rows = await ctx.unit_of_work.persistence.execute(
-            select(ROLE_PERMISSIONS.c.permission_code)
-            .select_from(
-                SUBJECT_ROLE_ASSIGNMENTS.join(
-                    ROLE_PERMISSIONS,
-                    SUBJECT_ROLE_ASSIGNMENTS.c.role_id == ROLE_PERMISSIONS.c.role_id,
-                )
-            )
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == cmd.tenant_id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_id == cmd.subject_id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.subject_type == cmd.subject_type)
-        )
-        new_permission_rows = await ctx.unit_of_work.persistence.execute(
-            select(ROLE_PERMISSIONS.c.permission_code)
-            .where(ROLE_PERMISSIONS.c.tenant_id == cmd.tenant_id)
-            .where(ROLE_PERMISSIONS.c.role_id == cmd.role_id)
-        )
-        candidate_permissions = {
-            row[0] for row in [*permission_rows.fetchall(), *new_permission_rows.fetchall()]
-        }
-        rule_rows = await ctx.unit_of_work.persistence.execute(
-            select(SOD_RULES).where(
-                SOD_RULES.c.tenant_id == cmd.tenant_id,
-                SOD_RULES.c.severity == SoDSeverity.PREVENTATIVE.value,
-            )
-        )
-        rules = [
-            SegregationOfDutiesRuleRecord.model_validate(dict(row)) for row in rule_rows.mappings()
-        ]
-        conflict = self.evaluator.check_sod_conflict(candidate_permissions, rules)
-        if conflict.has_conflict:
-            raise BusinessOSError(
-                "segregation_of_duties_conflict",
-                "Role assignment violates a preventative segregation-of-duties rule",
-                status_code=409,
-                details={"conflicts": conflict.conflicting_rules},
-            )
         now = datetime.now(UTC)
         assignment_id = uuid4()
+        record = SubjectRoleAssignmentRecord(
+            id=assignment_id,
+            tenant_id=cmd.tenant_id,
+            subject_id=cmd.subject_id,
+            subject_type=cmd.subject_type,
+            role_id=cmd.role_id,
+            scope_type=cmd.scope_type,
+            scope_id=cmd.scope_id,
+            valid_from=cmd.valid_from,
+            valid_to=cmd.valid_to,
+            created_at=now,
+        )
+        authority = await SoDAuthority.load(ctx.unit_of_work.persistence, cmd.tenant_id)
+        authority.reject_new_conflicts(authority.with_assignment(record))
         stmt = insert(SUBJECT_ROLE_ASSIGNMENTS).values(
             id=assignment_id,
             tenant_id=cmd.tenant_id,
@@ -561,18 +545,6 @@ class PolicyModule:
             created_at=now,
         )
         await ctx.unit_of_work.persistence.execute(stmt)
-        record = SubjectRoleAssignmentRecord(
-            id=assignment_id,
-            tenant_id=cmd.tenant_id,
-            subject_id=cmd.subject_id,
-            subject_type=cmd.subject_type,
-            role_id=cmd.role_id,
-            scope_type=cmd.scope_type,
-            scope_id=cmd.scope_id,
-            valid_from=cmd.valid_from,
-            valid_to=cmd.valid_to,
-            created_at=now,
-        )
         ctx.emit(
             RoleAssignedToSubject(
                 tenant_id=tenant.tenant_id,
@@ -688,8 +660,24 @@ class PolicyModule:
         self, cmd: CreateSoDRuleCommand, ctx: HandlingContext
     ) -> SegregationOfDutiesRuleRecord:
         _require_tenant(ctx.request, cmd.tenant_id)
+        if cmd.severity is SoDSeverity.PREVENTATIVE:
+            await self.delegation_authority.acquire(cmd.tenant_id, ctx.unit_of_work.persistence)
         now = datetime.now(UTC)
         rule_id = uuid4()
+        record = SegregationOfDutiesRuleRecord(
+            id=rule_id,
+            tenant_id=cmd.tenant_id,
+            code=cmd.code,
+            name=cmd.name,
+            permission_a=cmd.permission_a,
+            permission_b=cmd.permission_b,
+            severity=cmd.severity,
+            description=cmd.description,
+            created_at=now,
+        )
+        if cmd.severity is SoDSeverity.PREVENTATIVE:
+            authority = await SoDAuthority.load(ctx.unit_of_work.persistence, cmd.tenant_id)
+            authority.reject_new_conflicts(authority.with_rule(record), new_rule=True)
         stmt = insert(SOD_RULES).values(
             id=rule_id,
             tenant_id=cmd.tenant_id,
@@ -702,17 +690,7 @@ class PolicyModule:
             created_at=now,
         )
         await ctx.unit_of_work.persistence.execute(stmt)
-        return SegregationOfDutiesRuleRecord(
-            id=rule_id,
-            tenant_id=cmd.tenant_id,
-            code=cmd.code,
-            name=cmd.name,
-            permission_a=cmd.permission_a,
-            permission_b=cmd.permission_b,
-            severity=cmd.severity,
-            description=cmd.description,
-            created_at=now,
-        )
+        return record
 
     async def _create_delegation(
         self, cmd: CreateDelegationCommand, ctx: HandlingContext
@@ -737,24 +715,7 @@ class PolicyModule:
                 "Delegation requires verified typed and timezone-aware authority",
                 status_code=403,
             )
-        assignment_result = await ctx.unit_of_work.persistence.execute(
-            select(SUBJECT_ROLE_ASSIGNMENTS)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.tenant_id == cmd.tenant_id)
-            .where(SUBJECT_ROLE_ASSIGNMENTS.c.role_id == cmd.role_id)
-        )
-        assignments = [
-            SubjectRoleAssignmentRecord.model_validate(dict(row))
-            for row in assignment_result.mappings()
-        ]
-        delegation_result = await ctx.unit_of_work.persistence.execute(
-            select(DELEGATIONS)
-            .where(DELEGATIONS.c.tenant_id == cmd.tenant_id)
-            .where(DELEGATIONS.c.role_id == cmd.role_id)
-            .where(DELEGATIONS.c.is_revoked.is_(False))
-        )
-        delegations = [
-            DelegationGrantRecord.model_validate(dict(row)) for row in delegation_result.mappings()
-        ]
+        authority = await SoDAuthority.load(ctx.unit_of_work.persistence, cmd.tenant_id)
         now = datetime.now(UTC)
         if not has_effective_role_source(
             tenant_id=cmd.tenant_id,
@@ -766,8 +727,9 @@ class PolicyModule:
             valid_from=cmd.valid_from,
             valid_until=cmd.valid_to,
             evaluated_at=now,
-            assignments=assignments,
-            delegations=delegations,
+            assignments=list(authority.assignments),
+            delegations=list(authority.delegations),
+            traversal_budget=[MAX_SOURCE_TRAVERSALS],
         ):
             raise BusinessOSError(
                 "delegation_authority_missing",
@@ -775,22 +737,6 @@ class PolicyModule:
                 status_code=403,
             )
         del_id = uuid4()
-        stmt = insert(DELEGATIONS).values(
-            id=del_id,
-            tenant_id=cmd.tenant_id,
-            delegator_id=cmd.delegator_id,
-            delegator_type=cmd.delegator_type,
-            delegatee_id=cmd.delegatee_id,
-            delegatee_type=cmd.delegatee_type,
-            role_id=cmd.role_id,
-            scope_type=cmd.scope_type.value,
-            scope_id=cmd.scope_id,
-            valid_from=cmd.valid_from,
-            valid_to=cmd.valid_to,
-            is_revoked=False,
-            created_at=now,
-        )
-        await ctx.unit_of_work.persistence.execute(stmt)
         record = DelegationGrantRecord(
             id=del_id,
             tenant_id=cmd.tenant_id,
@@ -807,6 +753,23 @@ class PolicyModule:
             revocation_reason=None,
             created_at=now,
         )
+        authority.reject_new_conflicts(authority.with_delegation(record))
+        stmt = insert(DELEGATIONS).values(
+            id=del_id,
+            tenant_id=cmd.tenant_id,
+            delegator_id=cmd.delegator_id,
+            delegator_type=cmd.delegator_type,
+            delegatee_id=cmd.delegatee_id,
+            delegatee_type=cmd.delegatee_type,
+            role_id=cmd.role_id,
+            scope_type=cmd.scope_type.value,
+            scope_id=cmd.scope_id,
+            valid_from=cmd.valid_from,
+            valid_to=cmd.valid_to,
+            is_revoked=False,
+            created_at=now,
+        )
+        await ctx.unit_of_work.persistence.execute(stmt)
         ctx.emit(
             DelegationGranted(
                 tenant_id=tenant.tenant_id,
@@ -1003,6 +966,31 @@ async def _require_role(ctx: HandlingContext, tenant_id: UUID, role_id: UUID) ->
     )
     if result.scalar_one_or_none() is None:
         raise BusinessOSError("invalid_role", "Role does not belong to the tenant", status_code=422)
+
+
+async def _validate_new_role_parent(ctx: HandlingContext, tenant_id: UUID, parent_id: UUID) -> None:
+    """Keep the new child plus its existing parent chain within V2's bound."""
+    seen: set[UUID] = set()
+    current: UUID | None = parent_id
+    while current is not None:
+        if current in seen or len(seen) >= 15:
+            raise BusinessOSError(
+                "authority_unbounded",
+                "Policy role hierarchy is cyclic or too deep",
+                status_code=403,
+            )
+        seen.add(current)
+        result = await ctx.unit_of_work.persistence.execute(
+            select(ROLES.c.parent_role_id).where(
+                ROLES.c.tenant_id == tenant_id, ROLES.c.id == current
+            )
+        )
+        row = result.first()
+        if row is None:
+            raise BusinessOSError(
+                "invalid_role", "Role does not belong to the tenant", status_code=422
+            )
+        current = row[0]
 
 
 def _validate_scope(scope_type: ScopeType, scope_id: UUID | None) -> None:

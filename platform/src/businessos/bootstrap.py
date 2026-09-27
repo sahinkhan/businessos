@@ -17,6 +17,7 @@ from businessos.dependencies import (
     EVENT_PUBLISHER,
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE,
+    OBJECT_STORAGE_DELETE,
     RESOURCE_OWNER_RESOLVER,
     UNIT_OF_WORK_FACTORY,
 )
@@ -42,7 +43,12 @@ from businessos.modules.artifact import ApprovedModuleArtifact
 from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
-from businessos.providers import ProviderRegistry, S3ObjectStorageProvider, tenant_bound_provider
+from businessos.providers import (
+    ObjectStorageDeleteProvider,
+    ProviderRegistry,
+    S3ObjectStorageProvider,
+    tenant_bound_provider,
+)
 from businessos.resources import ResourceOwnershipRegistry
 from businessos.runtime import FrameworkRuntime
 from businessos.security import (
@@ -195,6 +201,15 @@ def create_application(
                     dependency_provider(provider),
                     scope=DependencyScope.SINGLETON,
                 )
+        if capability == "object-storage" and callable(getattr(provider, "delete", None)):
+            container.register(
+                OBJECT_STORAGE_DELETE,
+                cast(
+                    Callable[[DependencyResolver], ObjectStorageDeleteProvider],
+                    bound_dependency_provider("object-storage-delete", provider),
+                ),
+                scope=DependencyScope.REQUEST,
+            )
     features = FeatureFlagRegistry(contributions)
     jobs = JobHandlerRegistry(contributions, resolved_authorizer)
     module_registry = ModuleRegistry(

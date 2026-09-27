@@ -63,6 +63,12 @@ class ObjectStorageProvider(HealthProvider, Protocol):
     async def get(self, tenant_id: UUID, key: str) -> bytes: ...
 
 
+class ObjectStorageDeleteProvider(Protocol):
+    """Optional tenant-bound erasure capability; existing storage stays unchanged."""
+
+    async def delete(self, tenant_id: UUID, key: str) -> None: ...
+
+
 def _require_provider_tenant(tenant_id: UUID) -> None:
     context = current_request_context()
     if context is None or context.tenant is None or context.tenant.tenant_id != tenant_id:
@@ -113,6 +119,18 @@ class _BoundObjectStorageProvider:
         await self.provider.readiness()
 
 
+@dataclass(frozen=True, slots=True)
+class _BoundObjectStorageDeleteProvider:
+    provider: ObjectStorageDeleteProvider
+    tenant_id: UUID
+
+    async def delete(self, tenant_id: UUID, key: str) -> None:
+        _require_provider_tenant(tenant_id)
+        if tenant_id != self.tenant_id:
+            raise PermissionError("Provider is bound to another request tenant")
+        await self.provider.delete(tenant_id, key)
+
+
 def tenant_bound_provider(capability: str, provider: object) -> object:
     """Expose tenant data providers only inside a trusted request or delivery."""
     context = current_request_context()
@@ -123,6 +141,10 @@ def tenant_bound_provider(capability: str, provider: object) -> object:
         return _BoundCacheProvider(cast(CacheProvider, provider), tenant_id)
     if capability == "object-storage":
         return _BoundObjectStorageProvider(cast(ObjectStorageProvider, provider), tenant_id)
+    if capability == "object-storage-delete":
+        return _BoundObjectStorageDeleteProvider(
+            cast(ObjectStorageDeleteProvider, provider), tenant_id
+        )
     raise ValueError(f"Unsupported tenant provider: {capability}")
 
 
@@ -403,6 +425,15 @@ class S3ObjectStorageProvider:
         )
         body = response["Body"]
         return await asyncio.to_thread(body.read)
+
+    async def delete(self, tenant_id: UUID, key: str) -> None:
+        """S3 DeleteObject is idempotent, including when the key is absent."""
+        _require_provider_tenant(tenant_id)
+        await asyncio.to_thread(
+            self._client.delete_object,
+            Bucket=self._bucket,
+            Key=self._key(tenant_id, key),
+        )
 
     async def readiness(self) -> None:
         await asyncio.to_thread(self._client.head_bucket, Bucket=self._bucket)

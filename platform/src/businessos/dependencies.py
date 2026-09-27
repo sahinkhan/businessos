@@ -3,7 +3,12 @@
 from businessos.di import DependencyKey
 from businessos.messages import MessageDispatcher
 from businessos.persistence import Database, UnitOfWorkFactory
-from businessos.providers import CacheProvider, EventPublisher, ObjectStorageProvider
+from businessos.providers import (
+    CacheProvider,
+    EventPublisher,
+    ObjectStorageDeleteProvider,
+    ObjectStorageProvider,
+)
 from businessos.resources import ResourceOwnerResolver
 from businessos.security import Authorizer
 
@@ -14,4 +19,7 @@ MESSAGE_DISPATCHER = DependencyKey[MessageDispatcher]("businessos.message_dispat
 CACHE = DependencyKey[CacheProvider]("businessos.cache")
 EVENT_PUBLISHER = DependencyKey[EventPublisher]("businessos.event_publisher")
 OBJECT_STORAGE = DependencyKey[ObjectStorageProvider]("businessos.object_storage")
+OBJECT_STORAGE_DELETE = DependencyKey[ObjectStorageDeleteProvider](
+    "businessos.object_storage_delete"
+)
 RESOURCE_OWNER_RESOLVER = DependencyKey[ResourceOwnerResolver]("businessos.resource_owner_resolver")

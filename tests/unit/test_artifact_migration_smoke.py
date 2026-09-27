@@ -68,18 +68,19 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
         "0006_governance_outbox",
         "audit_0004",
         "geography_0003",
-        "gov_0004",
+        "gov_0005",
         "identity_0005",
         "organization_0003",
         "party_0002",
         "policy_0004",
-        "proof_0003",
+        "proof_0004",
         "tenant_0002",
     )
     parents = {revision.revision: revision.down_revisions for revision in plan.revisions}
     assert parents["proof_0001"] == ("0001_phase1_kernel",)
     assert parents["proof_0002"] == ("proof_0001",)
     assert parents["proof_0003"] == ("proof_0002",)
+    assert parents["proof_0004"] == ("proof_0003",)
     assert parents["tenant_0001"] == ("0005_durable_event_subscribers",)
     assert parents["tenant_0002"] == ("tenant_0001",)
     assert parents["identity_0001"] == ("tenant_0001",)
@@ -112,6 +113,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["gov_0002"] == ("gov_0001",)
     assert parents["gov_0003"] == ("gov_0002",)
     assert parents["gov_0004"] == ("gov_0003",)
+    assert parents["gov_0005"] == ("gov_0004",)
     assert parents["0006_governance_outbox"] == ("0005_durable_event_subscribers",)
     smoke._verify_installed_plan(_plan_json(plan), plan)
     smoke._verify_state(set(plan.heads), _inventory(plan), plan)
@@ -169,10 +171,24 @@ def test_cross_owner_migration_parent_requires_declared_dependency(
             }
         ),
     )
+    proof = next(
+        module for module in modules if module.manifest.module_id == "example.phase1-proof"
+    )
+    proof_grant = ApprovedModuleArtifact(
+        loaded_module=proof,
+        module_id=proof.manifest.module_id,
+        publisher=proof.manifest.publisher,
+        package_identity="businessos-phase1-proof",
+        loaded_type=f"{type(proof).__module__}:{type(proof).__qualname__}",
+        install_identity="unit-test-migration-catalog-proof-owner",
+    )
     registry = ModuleRegistry(
         platform_version=runtime_version(),
         sdk_version="0.1.0",
-        approved_artifacts={"foundation.data_governance": grant},
+        approved_artifacts={
+            "foundation.data_governance": grant,
+            "example.phase1-proof": proof_grant,
+        },
     )
     for module in modules:
         registry.add(module)

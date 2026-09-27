@@ -39,10 +39,42 @@ _GOVERNANCE_COMMANDS = frozenset(
         "CreateRetentionPolicyV2Command",
         "PlaceLegalHoldCommand",
         "ReleaseLegalHoldCommand",
+        "SetRetentionPolicyV2",
+        "ReplaceRetentionPolicyV2",
+        "PlaceRetentionHoldV2",
+        "ReleaseRetentionHoldV2",
+        "ExecuteDestructiveLifecycleV2",
+        "RecordDestructiveCleanupResultV2",
     }
 )
-_GOVERNANCE_COMMAND_MODULE = "businessos_data_governance.module"
+_GOVERNANCE_COMMAND_MODULES = frozenset(
+    {"businessos_data_governance.module", "businessos_data_governance.retention_v2"}
+)
 _TENANT_POLICY = "tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid"
+
+
+@dataclass(frozen=True, slots=True)
+class _ParticipatingOwnerRelation:
+    """Private, reviewed enrollment for one protected command's owner write."""
+
+    command: str
+    relation: str
+    policy: str
+    protected_update_columns: frozenset[str]
+    ordinary_insert_columns: frozenset[str]
+    ordinary_update_columns: frozenset[str]
+
+
+_PARTICIPATING_OWNER_RELATIONS = (
+    _ParticipatingOwnerRelation(
+        command="ExecuteDestructiveLifecycleV2",
+        relation="mod_example_phase1_proof.proof_records",
+        policy="proof_records_governance_tenant",
+        protected_update_columns=frozenset({"lifecycle", "value", "description"}),
+        ordinary_insert_columns=frozenset({"id", "tenant_id", "command_id", "value"}),
+        ordinary_update_columns=frozenset({"description"}),
+    ),
+)
 
 
 def _normalized_policy(expression: object) -> str:
@@ -141,6 +173,17 @@ class _GovernancePool:
                 protected = (
                     ("platform_gov", "retention_policies", "retention_policies_governance_tenant"),
                     ("platform_gov", "legal_holds", "legal_holds_governance_tenant"),
+                    (
+                        "platform_gov",
+                        "retention_policies_v2",
+                        "retention_policies_v2_governance_tenant",
+                    ),
+                    ("platform_gov", "legal_holds_v2", "legal_holds_v2_governance_tenant"),
+                    (
+                        "platform_gov",
+                        "destructive_decisions_v2",
+                        "destructive_decisions_v2_governance_tenant",
+                    ),
                     ("platform_audit", "audit_logs", "audit_logs_governance_tenant"),
                     ("eventing", "outbox_messages", "outbox_messages_governance_tenant"),
                 )
@@ -287,6 +330,104 @@ class _GovernancePool:
                         }
                     if classification_policies != expected:
                         raise ConfigurationError("Protected database RLS policy is unsafe")
+                for owner_relation in _PARTICIPATING_OWNER_RELATIONS:
+                    if owner_relation.command not in _GOVERNANCE_COMMANDS:
+                        raise ConfigurationError("Governed owner enrollment is unsafe")
+                    proof_table = owner_relation.relation
+                    proof_exists = await connection.execute(
+                        text("SELECT to_regclass(:table)"), {"table": proof_table}
+                    )
+                    if proof_exists.scalar_one() is None:
+                        continue
+                    schema_name, table_name = proof_table.split(".", 1)
+                    proof_state = await connection.execute(
+                        text(
+                            "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+                            "WHERE oid = CAST(:table AS regclass)"
+                        ),
+                        {"table": proof_table},
+                    )
+                    if proof_state.one() != (True, True):
+                        raise ConfigurationError("Governed owner RLS is unsafe")
+                    proof_policies = await connection.execute(
+                        text(
+                            "SELECT policyname, roles, cmd, qual, with_check "
+                            "FROM pg_policies WHERE schemaname = :schema "
+                            "AND tablename = :table "
+                            "AND (roles @> ARRAY['public']::name[] "
+                            "OR roles @> ARRAY[:role]::name[])"
+                        ),
+                        {"role": GOVERNANCE_ROLE, "schema": schema_name, "table": table_name},
+                    )
+                    owner_policies = proof_policies.all()
+                    if (
+                        len(owner_policies) != 1
+                        or owner_policies[0][:3]
+                        != (owner_relation.policy, [GOVERNANCE_ROLE], "ALL")
+                        or any(
+                            _normalized_policy(expression) != _normalized_policy(_TENANT_POLICY)
+                            for expression in owner_policies[0][3:]
+                        )
+                    ):
+                        raise ConfigurationError("Governed owner RLS policy is unsafe")
+                    for role_name in ("businessos_app", "businessos_worker", GOVERNANCE_ROLE):
+                        for privilege in ("DELETE", "TRUNCATE"):
+                            grant = await connection.execute(
+                                text("SELECT has_table_privilege(:role, :table, :privilege)"),
+                                {"role": role_name, "table": proof_table, "privilege": privilege},
+                            )
+                            if grant.scalar_one():
+                                raise ConfigurationError("Governed owner grants are unsafe")
+                    for privilege in ("INSERT", "UPDATE"):
+                        grant = await connection.execute(
+                            text("SELECT has_table_privilege(:role, :table, :privilege)"),
+                            {"role": GOVERNANCE_ROLE, "table": proof_table, "privilege": privilege},
+                        )
+                        if grant.scalar_one():
+                            raise ConfigurationError("Governed owner grants are unsafe")
+                    columns = await connection.execute(
+                        text(
+                            "SELECT a.attname, "
+                            "has_column_privilege(:role, c.oid, a.attname, 'INSERT'), "
+                            "has_column_privilege(:role, c.oid, a.attname, 'UPDATE') "
+                            "FROM pg_attribute AS a JOIN pg_class AS c ON c.oid = a.attrelid "
+                            "WHERE c.oid = CAST(:table AS regclass) "
+                            "AND a.attnum > 0 AND NOT a.attisdropped"
+                        ),
+                        {"role": GOVERNANCE_ROLE, "table": proof_table},
+                    )
+                    if any(
+                        insert or update != (column in owner_relation.protected_update_columns)
+                        for column, insert, update in columns
+                    ):
+                        raise ConfigurationError("Governed owner column grants are unsafe")
+                    for role_name in ("businessos_app", "businessos_worker"):
+                        ordinary_table = await connection.execute(
+                            text(
+                                "SELECT has_table_privilege(:role, :table, "
+                                "'INSERT, UPDATE, DELETE, TRUNCATE')"
+                            ),
+                            {"role": role_name, "table": proof_table},
+                        )
+                        if ordinary_table.scalar_one():
+                            raise ConfigurationError("Governed owner grants are unsafe")
+                        ordinary_columns = await connection.execute(
+                            text(
+                                "SELECT a.attname, "
+                                "has_column_privilege(:role, c.oid, a.attname, 'INSERT'), "
+                                "has_column_privilege(:role, c.oid, a.attname, 'UPDATE') "
+                                "FROM pg_attribute AS a JOIN pg_class AS c ON c.oid = a.attrelid "
+                                "WHERE c.oid = CAST(:table AS regclass) "
+                                "AND a.attnum > 0 AND NOT a.attisdropped"
+                            ),
+                            {"role": role_name, "table": proof_table},
+                        )
+                        if any(
+                            (insert and column not in owner_relation.ordinary_insert_columns)
+                            or (update and column not in owner_relation.ordinary_update_columns)
+                            for column, insert, update in ordinary_columns
+                        ):
+                            raise ConfigurationError("Governed owner grants are unsafe")
                 extra = await connection.execute(
                     text(
                         "SELECT n.nspname, c.relname FROM pg_class AS c "
@@ -298,6 +439,10 @@ class _GovernancePool:
                         "OR has_any_column_privilege(:role, c.oid, 'INSERT, UPDATE')) "
                         "AND (n.nspname, c.relname) NOT IN "
                         "(('platform_gov','retention_policies'),('platform_gov','legal_holds'),"
+                        "('platform_gov','retention_policies_v2'),"
+                        "('platform_gov','legal_holds_v2'),"
+                        "('platform_gov','destructive_decisions_v2'),"
+                        "('mod_example_phase1_proof','proof_records'),"
                         "('platform_audit','audit_logs'),('eventing','outbox_messages'),"
                         "('platform_gov','tenant_classifications'),"
                         "('platform_gov','tenant_classification_versions'),"
@@ -341,7 +486,12 @@ class _GovernancePool:
                     text(
                         "WITH RECURSIVE dependent_views(oid) AS ("
                         "SELECT unnest(ARRAY['platform_gov.retention_policies'::regclass, "
-                        "'platform_gov.legal_holds'::regclass])::oid "
+                        "'platform_gov.legal_holds'::regclass, "
+                        "'platform_gov.retention_policies_v2'::regclass, "
+                        "'platform_gov.legal_holds_v2'::regclass, "
+                        "'platform_gov.destructive_decisions_v2'::regclass])::oid "
+                        "UNION SELECT to_regclass(name)::oid "
+                        "FROM unnest(CAST(:owner_relations AS text[])) AS name "
                         "UNION SELECT rw.ev_class FROM pg_rewrite AS rw "
                         "JOIN pg_depend AS dep ON dep.objid = rw.oid "
                         "JOIN dependent_views AS prior ON dep.refobjid = prior.oid "
@@ -402,13 +552,27 @@ class _GovernancePool:
                         "UNION ALL SELECT 1 FROM pg_default_acl AS d "
                         "LEFT JOIN pg_namespace AS n ON n.oid = d.defaclnamespace "
                         "CROSS JOIN LATERAL aclexplode(d.defaclacl) AS a "
-                        "WHERE (n.nspname = 'platform_gov' OR d.defaclnamespace = 0) "
+                        "WHERE (n.nspname = ANY(CAST(:owner_schemas AS text[])) "
+                        "OR d.defaclnamespace = 0) "
                         "AND d.defaclobjtype = 'r' "
                         "AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE') "
                         "AND (a.grantee = 0 OR a.grantee IN "
                         "(SELECT oid FROM pg_roles WHERE rolname IN "
-                        "('businessos_app', 'businessos_worker'))) LIMIT 1"
-                    )
+                        "('businessos_app', 'businessos_worker', "
+                        "'businessos_governance'))) LIMIT 1"
+                    ),
+                    {
+                        "owner_relations": [
+                            profile.relation for profile in _PARTICIPATING_OWNER_RELATIONS
+                        ],
+                        "owner_schemas": [
+                            "platform_gov",
+                            *(
+                                profile.relation.split(".", 1)[0]
+                                for profile in _PARTICIPATING_OWNER_RELATIONS
+                            ),
+                        ],
+                    },
                 )
                 if indirect.first() is not None:
                     raise ConfigurationError(
@@ -478,7 +642,7 @@ class ProtectedDatabaseExecutionAuthority:
     def _protected_command(owner: str, command_type: type[Command]) -> bool:
         return (
             owner == GOVERNANCE_PROFILE
-            and command_type.__module__ == _GOVERNANCE_COMMAND_MODULE
+            and command_type.__module__ in _GOVERNANCE_COMMAND_MODULES
             and command_type.__name__ in _GOVERNANCE_COMMANDS
         )
 

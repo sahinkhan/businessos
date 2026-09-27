@@ -155,9 +155,9 @@ def test_adr022_exact_role_grants_and_tenant_rls(
         governance.execute("SELECT set_config('app.tenant_id', %s, false)", (str(tenant_a),))
         governance.execute(
             "INSERT INTO platform_gov.legal_holds "
-            "(id, tenant_id, code, name, reason, entity_type, entity_id, placed_by, "
+            "(id, tenant_id, code, name, reason, entity_type, entity_id, hold_scope, placed_by, "
             "placed_at, is_active) VALUES "
-            "(%s,%s,'case','Case','reason','party','1','actor',now(),true)",
+            "(%s,%s,'case','Case','reason','party','1','RECORD','actor',now(),true)",
             (hold_id, tenant_a),
         )
         governance.commit()
@@ -178,8 +178,9 @@ def test_adr022_exact_role_grants_and_tenant_rls(
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             governance.execute(
                 "INSERT INTO platform_gov.legal_holds "
-                "(id, tenant_id, code, name, reason, entity_type, entity_id, placed_by, "
-                "placed_at, is_active) VALUES (%s,%s,'other','Other','reason','party','2',"
+                "(id, tenant_id, code, name, reason, entity_type, entity_id, "
+                "hold_scope, placed_by, "
+                "placed_at, is_active) VALUES (%s,%s,'other','Other','reason','party','2','RECORD',"
                 "'actor',now(),true)",
                 (uuid4(), tenant_a),
             )
@@ -359,9 +360,10 @@ async def test_adr022_one_uow_commit_cancellation_and_next_tenant(
         await uow.persistence.execute(
             text(
                 "INSERT INTO platform_gov.legal_holds "
-                "(id, tenant_id, code, name, reason, entity_type, entity_id, placed_by, "
+                "(id, tenant_id, code, name, reason, entity_type, entity_id, "
+                "hold_scope, placed_by, "
                 "placed_at, is_active) VALUES "
-                "(:id,:tenant,'case','Case','reason','party','1','actor',now(),true)"
+                "(:id,:tenant,'case','Case','reason','party','1','RECORD','actor',now(),true)"
             ),
             {"id": hold, "tenant": tenant_id},
         )

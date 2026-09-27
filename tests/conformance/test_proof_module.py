@@ -80,7 +80,7 @@ async def test_external_module_registers_typed_dependency_through_public_sdk() -
 
 @pytest.mark.integration
 @pytest.mark.postgres
-def test_external_module_owns_replayable_v1_to_v2_migrations(
+def test_external_module_preserves_v1_data_through_governed_owner_migration(
     postgres_database_url: str,
     postgres_migration_database_url: str,
 ) -> None:
@@ -130,17 +130,28 @@ def test_external_module_owns_replayable_v1_to_v2_migrations(
         "description",
         "command_id",
         "created_at",
+        "retention_category",
+        "retention_anchor_at",
+        "lifecycle",
     ]
     assert set(policies) == {
         ("proof_records_migration_access",),
-        ("proof_records_tenant_isolation",),
+        ("proof_records_app_select",),
+        ("proof_records_app_insert",),
+        ("proof_records_app_update",),
+        ("proof_records_governance_tenant",),
     }
     assert historical_command_id is not None
     assert historical_command_id[0] is not None
 
-    app.runtime.migrations.downgrade(postgres_migration_database_url)
-    app.runtime.migrations.upgrade(postgres_migration_database_url)
-    app.runtime.migrations.downgrade(postgres_migration_database_url)
+    with pytest.raises(RuntimeError, match="proof_0004 downgrade refused"):
+        app.runtime.migrations.downgrade(postgres_migration_database_url)
+    with psycopg.connect(connection_url) as connection:
+        assert connection.execute(
+            "SELECT value, description, retention_category, lifecycle "
+            "FROM mod_example_phase1_proof.proof_records WHERE id = %s",
+            (historical_id,),
+        ).fetchone() == ("pre-idempotency", None, "proof", "current")
 
 
 @pytest.mark.integration
@@ -244,4 +255,5 @@ async def test_external_module_conforms_without_protected_core_edits(
     await app.shutdown()
     await app.runtime.lifecycle.retire(module.manifest.module_id)
     assert app.runtime.modules.get(module.manifest.module_id).state is ModuleState.REMOVED
-    await app.runtime.migrations.downgrade_async(postgres_migration_database_url)
+    with pytest.raises(RuntimeError, match="proof_0004 downgrade refused"):
+        await app.runtime.migrations.downgrade_async(postgres_migration_database_url)

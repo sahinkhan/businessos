@@ -4,6 +4,7 @@ from businessos.context import RequestContext, TenantContext
 from businessos.dependencies import (
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE,
+    OBJECT_STORAGE_DELETE,
     RESOURCE_OWNER_RESOLVER,
     UNIT_OF_WORK_FACTORY,
 )
@@ -57,6 +58,7 @@ from businessos.workload import WorkloadAdmissionDenied
 __all__ = [
     "MESSAGE_DISPATCHER",
     "OBJECT_STORAGE",
+    "OBJECT_STORAGE_DELETE",
     "RESOURCE_OWNER_RESOLVER",
     "UNIT_OF_WORK_FACTORY",
     "AdmittedResourceProvider",

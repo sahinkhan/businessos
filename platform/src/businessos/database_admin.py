@@ -175,6 +175,8 @@ def _revoke_relation_access(
 
 def _grant_exact_runtime_access(
     connection: psycopg.Connection[tuple[object, ...]],
+    *,
+    governed_proof: bool,
 ) -> None:
     schema_grants = {
         "eventing": (APPLICATION_ROLE, OPERATIONS_ROLE),
@@ -221,12 +223,6 @@ def _grant_exact_runtime_access(
             APPLICATION_ROLE,
             sql.SQL("SELECT"),
         ),
-        (
-            "mod_example_phase1_proof",
-            "proof_records",
-            APPLICATION_ROLE,
-            sql.SQL("SELECT, INSERT, UPDATE, DELETE"),
-        ),
     )
     for schema_name, table_name, role, privileges in relation_grants:
         if not _relation_exists(connection, f"{schema_name}.{table_name}"):
@@ -238,6 +234,24 @@ def _grant_exact_runtime_access(
                 sql.Identifier(role),
             )
         )
+    if _relation_exists(connection, "mod_example_phase1_proof.proof_records"):
+        if governed_proof:
+            connection.execute(
+                "GRANT SELECT ON mod_example_phase1_proof.proof_records TO businessos_app"
+            )
+            connection.execute(
+                "GRANT INSERT (id, tenant_id, command_id, value) "
+                "ON mod_example_phase1_proof.proof_records TO businessos_app"
+            )
+            connection.execute(
+                "GRANT UPDATE (description) "
+                "ON mod_example_phase1_proof.proof_records TO businessos_app"
+            )
+        else:
+            connection.execute(
+                "GRANT SELECT, INSERT, UPDATE, DELETE "
+                "ON mod_example_phase1_proof.proof_records TO businessos_app"
+            )
 
 
 def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) -> None:
@@ -352,12 +366,24 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
                 )
 
             _correct_legacy_inbox_key(connection)
+            governed_proof = (
+                connection.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'mod_example_phase1_proof' "
+                    "AND table_name = 'proof_records' AND column_name = 'lifecycle'"
+                ).fetchone()
+                is not None
+            )
             for schema_name, table_name in (
                 ("eventing", "outbox_messages"),
                 ("eventing", "inbox_receipts"),
                 ("mod_example_phase1_proof", "proof_records"),
             ):
-                _set_tenant_policy(connection, schema_name, table_name)
+                if (schema_name, table_name) != (
+                    "mod_example_phase1_proof",
+                    "proof_records",
+                ) or not governed_proof:
+                    _set_tenant_policy(connection, schema_name, table_name)
             for schema_name, table_name in (
                 ("eventing", "outbox_messages"),
                 ("eventing", "inbox_receipts"),
@@ -367,7 +393,7 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
                 ("mod_example_phase1_proof", "proof_records"),
             ):
                 _revoke_relation_access(connection, schema_name, table_name)
-            _grant_exact_runtime_access(connection)
+            _grant_exact_runtime_access(connection, governed_proof=governed_proof)
     except DatabaseTransitionError:
         raise
     except Exception:

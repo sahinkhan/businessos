@@ -16,6 +16,7 @@ from businessos.di import Container, RequestDependencyScope
 from businessos.messages import Command, DomainEvent, EventBus, HandlingContext, MessageDispatcher
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleRegistry
+from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 
 
@@ -53,8 +54,13 @@ async def _migrated_proof_database(
 ) -> AsyncGenerator[Database]:
     from businessos_proof import ProofModule
 
-    modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
-    modules.add(ProofModule())
+    proof = ProofModule()
+    modules = ModuleRegistry(
+        platform_version="0.1.0",
+        sdk_version="0.1.0",
+        approved_artifacts=approved_artifacts_from_operator_inventory((proof,)),
+    )
+    modules.add(proof)
     migrations = MigrationCoordinator(modules)
     await migrations.upgrade_async(migration_url)
     database = Database(_settings(runtime_url))
@@ -62,7 +68,8 @@ async def _migrated_proof_database(
         yield database
     finally:
         await database.close()
-        await migrations.downgrade_async(migration_url)
+        with pytest.raises(RuntimeError, match="proof_0004 downgrade refused"):
+            await migrations.downgrade_async(migration_url)
 
 
 def _stored_counts(
@@ -351,22 +358,22 @@ async def test_runtime_rls_blocks_cross_tenant_proof_mutations(
             visible = (
                 (await unit_of_work.persistence.execute(select(PROOF_RECORDS.c.id))).scalars().all()
             )
-            updated = await unit_of_work.persistence.execute(
-                update(PROOF_RECORDS)
-                .where(PROOF_RECORDS.c.id == record_b)
-                .values(value="forged")
-                .returning(PROOF_RECORDS.c.id)
-            )
-            deleted = await unit_of_work.persistence.execute(
-                delete(PROOF_RECORDS)
-                .where(PROOF_RECORDS.c.id == record_b)
-                .returning(PROOF_RECORDS.c.id)
-            )
-            await unit_of_work.commit()
-
         assert visible == [record_a]
-        assert updated.scalar_one_or_none() is None
-        assert deleted.scalar_one_or_none() is None
+
+        # The enrolled owner now denies ordinary destructive SQL outright,
+        # including an attempted cross-tenant write.
+        async with factory.for_tenant(tenant_a) as unit_of_work:
+            with pytest.raises(DBAPIError):
+                await unit_of_work.persistence.execute(
+                    update(PROOF_RECORDS)
+                    .where(PROOF_RECORDS.c.id == record_b)
+                    .values(value="forged")
+                )
+        async with factory.for_tenant(tenant_a) as unit_of_work:
+            with pytest.raises(DBAPIError):
+                await unit_of_work.persistence.execute(
+                    delete(PROOF_RECORDS).where(PROOF_RECORDS.c.id == record_b)
+                )
 
         async with factory.for_tenant(tenant_a) as unit_of_work:
             with pytest.raises(DBAPIError):

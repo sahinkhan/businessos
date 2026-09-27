@@ -10,6 +10,8 @@ from businessos.providers import (
     BrokerEvent,
     CacheProvider,
     NatsJetStreamPublisher,
+    ObjectStorageDeleteProvider,
+    ObjectStorageProvider,
     PermanentDeliveryError,
     tenant_bound_provider,
 )
@@ -47,6 +49,44 @@ async def test_injected_cache_rejects_foreign_tenant_before_calling_custom_adapt
         with pytest.raises(PermissionError):
             await cache.get(own.tenant_id, "item")
     assert calls == [(own.tenant_id, "item"), (own.tenant_id, "item")]
+
+
+@pytest.mark.asyncio
+async def test_additive_object_delete_is_tenant_bound_and_old_storage_stays_compatible() -> None:
+    calls: list[tuple[UUID, str]] = []
+
+    class Storage:
+        async def readiness(self) -> None:
+            pass
+
+        async def put(self, tenant_id: UUID, key: str, content: bytes) -> None:
+            calls.append((tenant_id, key))
+
+        async def get(self, tenant_id: UUID, key: str) -> bytes:
+            return b"retained"
+
+        async def delete(self, tenant_id: UUID, key: str) -> None:
+            calls.append((tenant_id, key))
+
+    own = TenantContext(uuid4(), uuid4(), uuid4())
+    foreign = TenantContext(uuid4(), uuid4(), uuid4())
+    provider = Storage()
+    with bind_request_context(RequestContext(tenant=own)):
+        original = cast(ObjectStorageProvider, tenant_bound_provider("object-storage", provider))
+        erasure = cast(
+            ObjectStorageDeleteProvider,
+            tenant_bound_provider("object-storage-delete", provider),
+        )
+        await original.put(own.tenant_id, "record", b"retained")
+        assert await original.get(own.tenant_id, "record") == b"retained"
+        await erasure.delete(own.tenant_id, "record")
+        await erasure.delete(own.tenant_id, "record")
+        with pytest.raises(PermissionError):
+            await erasure.delete(foreign.tenant_id, "record")
+    with bind_request_context(RequestContext(tenant=foreign)):
+        with pytest.raises(PermissionError):
+            await erasure.delete(own.tenant_id, "record")
+    assert calls == [(own.tenant_id, "record")] * 3
 
 
 class _Connection:

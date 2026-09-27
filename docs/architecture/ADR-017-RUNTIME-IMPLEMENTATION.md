@@ -38,8 +38,11 @@ monotonic **5-second** deadline covers advisory-lock acquisition, using
 PostgreSQL transaction advisory try-locks. Expiry returns the retryable
 `retention_lock_timeout` outcome; rollback releases earlier transaction
 locks. Policy replacement, category/anchor/lifecycle mutations, hold changes,
-and destructive execution participate in this ordering. No advisory lock is
-held through asynchronous object-storage cleanup.
+and destructive execution participate in this ordering. Transaction A
+releases its entity, subject, and policy locks at commit; none spans the
+later asynchronous cleanup. The proof worker uses a distinct transaction
+advisory lock during S3 reconciliation of the legacy shared object, so
+concurrent deliveries cannot restore purged plaintext.
 
 ## Additive external-erasure capability
 

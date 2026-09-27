@@ -42,6 +42,8 @@ def test_external_proof_module_declares_every_direct_runtime_dependency() -> Non
     assert configuration["project"]["dependencies"] == [
         "alembic>=1.14,<2",
         "businessos>=0.1,<1",
+        "businessos-foundation-data-governance>=0.4,<1",
+        "businessos-foundation-identity>=0.3,<1",
         "pydantic>=2.10,<3",
         "sqlalchemy>=2.0.36,<3",
     ]

@@ -49,6 +49,7 @@ services:
     environment:
       BOS_EVENT_WORKER_RUNTIME_DATABASE_URL: postgresql+psycopg://businessos_worker:businessos-worker@postgres:5432/businessos
       BOS_EVENT_WORKER_OPERATIONS_DATABASE_URL: postgresql+psycopg://businessos_ops:businessos-operations@postgres:5432/businessos
+      BOS_EVENT_WORKER_GOVERNANCE_DATABASE_URL: postgresql+psycopg://businessos_governance:${BOS_GOVERNANCE_PASSWORD:-businessos-governance}@postgres:5432/businessos
       BOS_EVENT_WORKER_NATS_URL: nats://nats:4222
       BOS_EVENT_WORKER_INSTALLATION_ID: 00000000-0000-0000-0000-000000000001
       BOS_APPROVED_MODULE_INVENTORY: ${BOS_APPROVED_MODULE_INVENTORY:-}
@@ -56,7 +57,7 @@ services:
       BOS_EVENT_WORKER_WORKLOAD_ID: 00000000-0000-0000-0000-000000000003
       BOS_EVENT_WORKER_WORKLOAD_CREDENTIAL_REFERENCE: development-file-v1
       BOS_EVENT_WORKER_WORKLOAD_CREDENTIAL_FILE: /run/secrets/businessos-event-worker
-      BOS_EVENT_WORKER_PERMISSIONS: example.phase1-proof.read,example.phase1-proof.write,foundation.tenant.manage,foundation.audit.write
+      BOS_EVENT_WORKER_PERMISSIONS: example.phase1-proof.read,example.phase1-proof.write,example.phase1-proof.cleanup,foundation.governance.cleanup.report,foundation.tenant.manage,foundation.audit.write
       BOS_EVENT_WORKER_SHUTDOWN_TIMEOUT_SECONDS: "10"
       BOS_EVENT_WORKER_PROCESS_SHUTDOWN_TIMEOUT_SECONDS: "60"
       BOS_EVENT_WORKER_S3_BUCKET: businessos-development

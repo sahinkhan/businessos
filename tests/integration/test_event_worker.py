@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from typing import ClassVar, Protocol
@@ -12,18 +13,29 @@ from uuid import UUID, uuid4
 import boto3
 import psycopg
 import pytest
-from businessos_identity import IdentityModule
-from businessos_proof.module import PROOF_RECORDS, ProofModule, ProofStored
+from businessos_data_governance import (
+    DestructiveCleanupRequestedV2,
+    ExecuteDestructiveLifecycleV2,
+    ExpiryAction,
+    RecordDestructiveCleanupResultV2,
+    RetentionSubjectKey,
+    SetRetentionPolicyV2,
+)
+from businessos_identity import IdentityModule, PrincipalIdentity
+from businessos_identity.principal_binding import bind_authenticated_principal
+from businessos_proof.module import PROOF_RECORDS, ProofModule, ProofStored, StoreProof
 from businessos_tenant import TenantModule
 from sqlalchemy import insert, select, text
 
+from businessos.bootstrap import create_application
 from businessos.config import Settings
-from businessos.context import TenantContext
-from businessos.errors import DeliveryUnavailableError
+from businessos.context import RequestContext, TenantContext
+from businessos.errors import BusinessOSError, DeliveryUnavailableError
 from businessos.event_worker import EventWorkerSettings, create_event_worker
-from businessos.messages import DomainEvent, EventHandlingContext
+from businessos.messages import Command, DomainEvent, EventHandlingContext
 from businessos.migrations import MigrationCoordinator
-from businessos.modules import ModuleManifest, ModuleRegistration, ModuleRegistry
+from businessos.modules import ModuleManifest, ModuleRegistration, ModuleRegistry, discover_modules
+from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence import (
     Database,
@@ -32,7 +44,8 @@ from businessos.persistence import (
     OutboxMessage,
     SQLAlchemyUnitOfWorkFactory,
 )
-from businessos.providers import NatsJetStreamPublisher, S3ObjectStorageProvider
+from businessos.providers import BrokerEvent, NatsJetStreamPublisher, S3ObjectStorageProvider
+from businessos.security import Authorizer
 from tests.conftest import PostgreSQLTestDatabase
 
 
@@ -169,18 +182,9 @@ async def test_running_worker_stops_when_test_body_raises() -> None:
     assert worker.stopped == 1
 
 
-class _RetryingProofModule(ProofModule):
-    def __init__(self) -> None:
-        super().__init__()
-        self.delivery_attempts = 0
-        self.projected = asyncio.Event()
-
-    async def _project(self, event: ProofStored, context: EventHandlingContext) -> None:
-        self.delivery_attempts += 1
-        if self.delivery_attempts == 1:
-            raise RuntimeError("deterministic first delivery failure")
-        await super()._project(event, context)
-        self.projected.set()
+class _AllowEveryPermission:
+    async def is_allowed(self, principal_id: UUID, tenant: TenantContext, permission: str) -> bool:
+        return True
 
 
 class _ObligationEvent(DomainEvent):
@@ -237,13 +241,32 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     postgres_database: PostgreSQLTestDatabase,
     request: pytest.FixtureRequest,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    delivery_attempts: dict[ProofModule, int] = {}
+    projected: dict[ProofModule, asyncio.Event] = {}
+    original_project = ProofModule._project
+
+    async def retry_project(
+        self: ProofModule, event: ProofStored, context: EventHandlingContext
+    ) -> None:
+        delivery_attempts[self] += 1
+        if delivery_attempts[self] == 1:
+            raise RuntimeError("deterministic first delivery failure")
+        await original_project(self, event, context)
+        projected[self].set()
+
+    monkeypatch.setattr(ProofModule, "_project", retry_project)
     runtime_url = postgres_database.worker_url
     operations_url = postgres_database.operations_url
-    migration_modules = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
-    migration_modules.add(TenantModule())
-    migration_modules.add(IdentityModule())
-    migration_modules.add(ProofModule())
+    migration_candidates = (TenantModule(), IdentityModule(), ProofModule())
+    migration_modules = ModuleRegistry(
+        platform_version="0.1.0",
+        sdk_version="0.1.0",
+        approved_artifacts=approved_artifacts_from_operator_inventory(migration_candidates),
+    )
+    for module in migration_candidates:
+        migration_modules.add(module)
     migrations = MigrationCoordinator(migration_modules)
     await migrations.upgrade_async(postgres_database.migration_url)
     endpoint = _required_env("BOS_TEST_S3_ENDPOINT")
@@ -293,7 +316,9 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
             secret_key=secret_key,
         )
 
-    first_module = _RetryingProofModule()
+    first_module = ProofModule()
+    delivery_attempts[first_module] = 0
+    projected[first_module] = asyncio.Event()
     first_broker = NatsJetStreamPublisher((worker_settings.nats_url,))
     first_worker = create_event_worker(
         worker_settings,
@@ -328,8 +353,8 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
         )
         await unit_of_work.commit()
     await source_database.close()
-    await asyncio.wait_for(first_module.projected.wait(), timeout=10.0)
-    assert first_module.delivery_attempts == 2
+    await asyncio.wait_for(projected[first_module].wait(), timeout=10.0)
+    assert delivery_attempts[first_module] == 2
 
     inspection_database = Database(
         first_worker.application.settings.model_copy(update={"database_url": runtime_url})
@@ -410,7 +435,9 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
         assert result.scalar_one_or_none() is None
     await first_worker.stop()
 
-    second_module = _RetryingProofModule()
+    second_module = ProofModule()
+    delivery_attempts[second_module] = 0
+    projected[second_module] = asyncio.Event()
     second_broker = NatsJetStreamPublisher((worker_settings.nats_url,))
     second_worker = create_event_worker(
         worker_settings,
@@ -431,7 +458,7 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
         },
     )
     await asyncio.sleep(0.5)
-    assert second_module.delivery_attempts == 0
+    assert delivery_attempts[second_module] == 0
     async with inspection_factory.for_tenant(tenant) as unit_of_work:
         assert unit_of_work.session is not None
         receipts_after_restart = (
@@ -454,7 +481,7 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
         unit_of_work.add_outbox(deferred_event.to_outbox())
         await unit_of_work.commit()
     await asyncio.sleep(0.5)
-    assert second_module.delivery_attempts == 0
+    assert delivery_attempts[second_module] == 0
     async with inspection_factory.for_tenant(tenant) as unit_of_work:
         assert unit_of_work.session is not None
         receipts_while_disabled = (
@@ -465,8 +492,8 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     assert receipts_while_disabled == []
 
     await second_worker.application.runtime.lifecycle.enable(second_module.manifest.module_id)
-    await asyncio.wait_for(second_module.projected.wait(), timeout=10.0)
-    assert second_module.delivery_attempts == 2
+    await asyncio.wait_for(projected[second_module].wait(), timeout=10.0)
+    assert delivery_attempts[second_module] == 2
     deferred_receipts = await _wait_for_inbox_receipt_count(
         inspection_factory, tenant, deferred_event.event_id, expected=1
     )
@@ -475,7 +502,8 @@ async def test_event_worker_delivers_outbox_with_nats_redelivery_and_restart_ide
     await inspection_database.close()
 
     await _remove_workload(postgres_database.migration_url, tenant.installation_id, workload_id)
-    await migrations.downgrade_async(postgres_database.migration_url)
+    with pytest.raises(RuntimeError, match="proof_0004 downgrade refused"):
+        await migrations.downgrade_async(postgres_database.migration_url)
 
 
 @pytest.mark.integration
@@ -708,3 +736,368 @@ async def test_worker_stop_retains_real_uow_cleanup_until_backend_closes(
             (backend_pid,),
         ).fetchone()
     assert backend_count == (0,)
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.providers
+@pytest.mark.asyncio
+@pytest.mark.parametrize("survivor", (False, True))
+async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_erasure(
+    postgres_database: PostgreSQLTestDatabase,
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    survivor: bool,
+) -> None:
+    endpoint = _required_env("BOS_TEST_S3_ENDPOINT")
+    access_key = _required_env("BOS_TEST_S3_ACCESS_KEY")
+    secret_key = _required_env("BOS_TEST_S3_SECRET_KEY")
+    nats_url = _required_env("BOS_TEST_NATS_URL")
+    bucket = f"businessos-adr017-cleanup-{uuid4().hex}"
+    s3_client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="us-east-1",
+    )
+    s3_client.create_bucket(Bucket=bucket)
+
+    def remove_bucket() -> None:
+        for item in s3_client.list_objects_v2(Bucket=bucket).get("Contents", []):
+            s3_client.delete_object(Bucket=bucket, Key=item["Key"])
+        s3_client.delete_bucket(Bucket=bucket)
+
+    request.addfinalizer(remove_bucket)
+    tenant = TenantContext(uuid4(), uuid4(), uuid4(), authentication_strength="mfa")
+    credential_file = tmp_path / "adr017-workload-secret"
+    modules = tuple(discover_modules())
+    source_app = create_application(
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            governance_database_url=postgres_database.governance_url,
+        ),
+        modules=modules,
+        approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
+        resource_coordinator_ids=frozenset({"foundation.data_governance"}),
+        authorizer=Authorizer(_AllowEveryPermission()),
+        infrastructure_providers={
+            "object-storage": S3ObjectStorageProvider(
+                bucket=bucket,
+                endpoint_url=endpoint,
+                access_key=access_key,
+                secret_key=secret_key,
+                region_name="us-east-1",
+            )
+        },
+    )
+    assert source_app.runtime is not None
+    source_app.runtime.migrations.upgrade(postgres_database.migration_url)
+    await source_app.startup()
+    workload_id = await _provision_workload(
+        postgres_database.operations_url, tenant.installation_id, credential_file
+    )
+    settings = EventWorkerSettings(
+        runtime_database_url=postgres_database.worker_url,
+        operations_database_url=postgres_database.operations_url,
+        governance_database_url=postgres_database.governance_url,
+        nats_url=nats_url,
+        installation_id=tenant.installation_id,
+        principal_id=tenant.principal_id,
+        workload_id=workload_id,
+        workload_credential_reference="integration-file-v1",
+        workload_credential_file=credential_file,
+        permissions=(
+            "example.phase1-proof.write,example.phase1-proof.cleanup,"
+            "foundation.governance.cleanup.report"
+        ),
+        durable_name=f"businessos-adr017-{uuid4().hex}",
+        publish_interval_seconds=0.02,
+    )
+
+    def storage() -> S3ObjectStorageProvider:
+        return S3ObjectStorageProvider(
+            bucket=bucket,
+            endpoint_url=endpoint,
+            region_name="us-east-1",
+            access_key=access_key,
+            secret_key=secret_key,
+        )
+
+    async def dispatch(command: Command, context: RequestContext) -> object:
+        assert source_app.runtime is not None
+        async with source_app.container.request_scope() as dependencies:
+            return await source_app.runtime.messages.command(command, context, dependencies)
+
+    context = RequestContext(tenant=tenant)
+    bind_authenticated_principal(
+        context,
+        PrincipalIdentity(
+            tenant_id=tenant.tenant_id,
+            principal_id=tenant.principal_id,
+            principal_type="user",
+            authentication_strength="mfa",
+        ),
+    )
+    first_worker = create_event_worker(settings, modules=modules, object_storage=storage())
+    try:
+        await first_worker.start()
+        command_id = uuid4()
+        assert await dispatch(StoreProof(command_id=command_id, value="erase-me"), context) == {
+            "stored": True
+        }
+        with psycopg.connect(postgres_database.administrator_url) as admin:
+            record_row = admin.execute(
+                "SELECT id FROM mod_example_phase1_proof.proof_records WHERE command_id = %s",
+                (command_id,),
+            ).fetchone()
+            assert record_row is not None
+            record_id = record_row[0]
+        record_key = f"tenant/{tenant.tenant_id}/phase1-proof/records/{record_id}.txt"
+        shared_key = f"tenant/{tenant.tenant_id}/phase1-proof/value.txt"
+
+        async def wait_for_object() -> None:
+            deadline = monotonic() + 15
+            while monotonic() < deadline:
+                if any(
+                    item["Key"] == record_key
+                    for item in s3_client.list_objects_v2(Bucket=bucket).get("Contents", [])
+                ):
+                    return
+                await asyncio.sleep(0.05)
+            raise AssertionError("proof record projection was not delivered")
+
+        await wait_for_object()
+        surviving_key: str | None = None
+        if survivor:
+            surviving_command_id = uuid4()
+            assert await dispatch(
+                StoreProof(command_id=surviving_command_id, value="keep-me"), context
+            ) == {"stored": True}
+            with psycopg.connect(postgres_database.administrator_url) as admin:
+                surviving_row = admin.execute(
+                    "SELECT id FROM mod_example_phase1_proof.proof_records WHERE command_id = %s",
+                    (surviving_command_id,),
+                ).fetchone()
+                assert surviving_row is not None
+                surviving_record_id = surviving_row[0]
+            surviving_key = (
+                f"tenant/{tenant.tenant_id}/phase1-proof/records/{surviving_record_id}.txt"
+            )
+            deadline = monotonic() + 15
+            while True:
+                keys = {
+                    item["Key"]
+                    for item in s3_client.list_objects_v2(Bucket=bucket).get("Contents", [])
+                }
+                if surviving_key in keys:
+                    break
+                if monotonic() >= deadline:
+                    raise AssertionError("surviving proof projection was not delivered")
+                await asyncio.sleep(0.05)
+        await first_worker.stop()
+        with psycopg.connect(postgres_database.administrator_url) as admin:
+            admin.execute(
+                "UPDATE mod_example_phase1_proof.proof_records "
+                "SET retention_anchor_at = %s WHERE id = %s",
+                (datetime.now(UTC) - timedelta(days=2), record_id),
+            )
+            admin.commit()
+        await dispatch(
+            SetRetentionPolicyV2(
+                tenant_id=tenant.tenant_id,
+                owner_module_id="example.phase1-proof",
+                resource_namespace="example.phase1-proof.proof-record",
+                contract_version="1",
+                entity_type="proof_record",
+                retention_category="proof",
+                retention_period_days=1,
+                action_on_expiry=ExpiryAction.PURGE,
+                valid_from=datetime.now(UTC) - timedelta(days=1),
+            ),
+            context,
+        )
+        decision_id = await dispatch(
+            ExecuteDestructiveLifecycleV2(
+                subject=RetentionSubjectKey(
+                    tenant_id=tenant.tenant_id,
+                    owner_module_id="example.phase1-proof",
+                    resource_namespace="example.phase1-proof.proof-record",
+                    contract_version="1",
+                    entity_type="proof_record",
+                    record_id=record_id,
+                ),
+                action=ExpiryAction.PURGE,
+            ),
+            context,
+        )
+        with psycopg.connect(postgres_database.administrator_url) as admin:
+            assert admin.execute(
+                "SELECT external_cleanup_status FROM platform_gov.destructive_decisions_v2 "
+                "WHERE id = %s",
+                (decision_id,),
+            ).fetchone() == ("pending",)
+        assert s3_client.get_object(Bucket=bucket, Key=record_key)["Body"].read() == b"erase-me"
+        assert s3_client.get_object(Bucket=bucket, Key=shared_key)["Body"].read() == (
+            b"keep-me" if survivor else b"erase-me"
+        )
+        with psycopg.connect(
+            postgres_database.worker_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        ) as worker_connection:
+            worker_connection.execute(
+                "SELECT set_config('app.tenant_id', %s, true)", (str(tenant.tenant_id),)
+            )
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                worker_connection.execute(
+                    "UPDATE platform_gov.destructive_decisions_v2 "
+                    "SET external_cleanup_status = 'completed' WHERE id = %s",
+                    (decision_id,),
+                )
+        # A same-tenant caller can commit an outbox event. Its existence must
+        # not grant authority over another record or this protected decision.
+        forged_record = uuid4()
+        forged_key = f"tenant/{tenant.tenant_id}/phase1-proof/records/{forged_record}.txt"
+        with psycopg.connect(postgres_database.administrator_url) as admin:
+            admin.execute(
+                "INSERT INTO mod_example_phase1_proof.proof_records "
+                "(id, tenant_id, command_id, value, lifecycle) "
+                "VALUES (%s, %s, %s, '', 'purged')",
+                (forged_record, tenant.tenant_id, uuid4()),
+            )
+            admin.commit()
+        s3_client.put_object(Bucket=bucket, Key=forged_key, Body=b"unrelated-secret")
+        forged = DestructiveCleanupRequestedV2(
+            tenant_id=tenant.tenant_id,
+            correlation_id="committed-forgery",
+            decision_id=decision_id,
+            owner_module_id="example.phase1-proof",
+            resource_namespace="example.phase1-proof.proof-record",
+            contract_version="1",
+            entity_type="proof_record",
+            record_id=forged_record,
+            action=ExpiryAction.PURGE,
+        )
+        forged_database = Database(Settings(database_url=postgres_database.runtime_url))
+        try:
+            forged_factory = SQLAlchemyUnitOfWorkFactory(forged_database.sessions)
+            async with forged_factory.for_tenant(tenant) as unit:
+                unit.add_outbox(forged.to_outbox())
+                await unit.commit()
+        finally:
+            await forged_database.close()
+        with psycopg.connect(postgres_database.administrator_url) as admin:
+            admin.execute(
+                "UPDATE eventing.outbox_messages SET published_at = now() WHERE id = %s",
+                (forged.event_id,),
+            )
+            admin.commit()
+
+        failed = asyncio.Event()
+        retry_started = asyncio.Event()
+        permit_retry = asyncio.Event()
+
+        class FlakyDeleteStorage(S3ObjectStorageProvider):
+            attempts = 0
+
+            async def delete(self, tenant_id: UUID, key: str) -> None:
+                self.attempts += 1
+                if self.attempts == 1:
+                    failed.set()
+                    raise RuntimeError("deterministic S3 deletion failure")
+                retry_started.set()
+                await permit_retry.wait()
+                await super().delete(tenant_id, key)
+
+        flaky_storage = FlakyDeleteStorage(
+            bucket=bucket,
+            endpoint_url=endpoint,
+            region_name="us-east-1",
+            access_key=access_key,
+            secret_key=secret_key,
+        )
+        retry_worker = create_event_worker(
+            settings, modules=tuple(discover_modules()), object_storage=flaky_storage
+        )
+        try:
+            await retry_worker.start()
+            with pytest.raises(BusinessOSError) as rejected:
+                await retry_worker._consume_delivery(
+                    BrokerEvent(
+                        subject=(
+                            f"businessos.events.tenant.{tenant.tenant_id}.{forged.event_type}"
+                        ),
+                        payload=json.dumps(
+                            forged.model_dump(mode="json"), separators=(",", ":")
+                        ).encode(),
+                        headers={
+                            "event-id": str(forged.event_id),
+                            "event-type": forged.event_type,
+                            "tenant-id": str(tenant.tenant_id),
+                            "schema-version": str(forged.schema_version),
+                            "correlation-id": forged.correlation_id,
+                        },
+                    )
+                )
+            assert rejected.value.code == "proof_cleanup_decision_invalid"
+            assert s3_client.get_object(Bucket=bucket, Key=forged_key)["Body"].read() == (
+                b"unrelated-secret"
+            )
+            await asyncio.wait_for(failed.wait(), timeout=15)
+            await asyncio.wait_for(retry_started.wait(), timeout=15)
+            with psycopg.connect(postgres_database.administrator_url) as admin:
+                assert admin.execute(
+                    "SELECT external_cleanup_status "
+                    "FROM platform_gov.destructive_decisions_v2 WHERE id = %s",
+                    (decision_id,),
+                ).fetchone() == ("pending",)
+            permit_retry.set()
+            deadline = monotonic() + 15
+            while True:
+                with psycopg.connect(postgres_database.administrator_url) as admin:
+                    status = admin.execute(
+                        "SELECT external_cleanup_status "
+                        "FROM platform_gov.destructive_decisions_v2 WHERE id = %s",
+                        (decision_id,),
+                    ).fetchone()
+                if status == ("completed",):
+                    break
+                if monotonic() >= deadline:
+                    raise AssertionError(f"cleanup completion did not commit: {status}")
+                await asyncio.sleep(0.05)
+            assert flaky_storage.attempts == (2 if survivor else 3)
+            keys = {
+                item["Key"] for item in s3_client.list_objects_v2(Bucket=bucket).get("Contents", [])
+            }
+            assert record_key not in keys
+            if survivor:
+                assert surviving_key in keys
+                assert s3_client.get_object(Bucket=bucket, Key=shared_key)["Body"].read() == (
+                    b"keep-me"
+                )
+            else:
+                assert shared_key not in keys
+            bind_authenticated_principal(
+                context,
+                PrincipalIdentity(
+                    tenant_id=tenant.tenant_id,
+                    principal_id=tenant.principal_id,
+                    principal_type="service_account",
+                    authentication_strength="verified-workload",
+                ),
+            )
+            with pytest.raises(BusinessOSError) as rejected_completion:
+                await dispatch(
+                    RecordDestructiveCleanupResultV2(
+                        tenant_id=tenant.tenant_id, decision_id=decision_id, completed=True
+                    ),
+                    context,
+                )
+            assert rejected_completion.value.code == "cleanup_delivery_invalid"
+        finally:
+            permit_retry.set()
+            await retry_worker.stop()
+    finally:
+        await first_worker.stop()
+        await source_app.shutdown()
+        await _remove_workload(postgres_database.migration_url, tenant.installation_id, workload_id)

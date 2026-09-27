@@ -12,6 +12,7 @@ from sqlalchemy.engine import make_url
 from businessos.database_admin import DatabaseRolePasswords, transition_database_roles
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleRegistry
+from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 
 
 def _url_for(
@@ -245,8 +246,13 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
             )
         assert repeated_runs == (None, None)
 
-        registry = ModuleRegistry(platform_version="0.1.0", sdk_version="0.1.0")
-        registry.add(ProofModule())
+        proof_module = ProofModule()
+        registry = ModuleRegistry(
+            platform_version="0.1.0",
+            sdk_version="0.1.0",
+            approved_artifacts=approved_artifacts_from_operator_inventory((proof_module,)),
+        )
+        registry.add(proof_module)
         MigrationCoordinator(registry).upgrade(migration_database_url)
 
         with psycopg.connect(admin_database_url) as connection:
@@ -295,7 +301,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
                 "SELECT oid FROM pg_database WHERE datname = current_database()"
             ).fetchone()
         assert retained == ("retained-value", "retained-description")
-        assert revisions == {("0006_governance_outbox",), ("proof_0003",)}
+        assert revisions == {("0006_governance_outbox",), ("proof_0004",)}
         assert roles == [
             ("businessos_app", False, False, False),
             ("businessos_migrator", False, False, False),
@@ -307,7 +313,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
         assert all(enabled and forced for _, _, enabled, forced in rls)
         assert inventory is not None
         assert inventory[0] == 2
-        assert inventory[1] == ["proof_0001", "proof_0002", "proof_0003"]
+        assert inventory[1] == ["proof_0001", "proof_0002", "proof_0003", "proof_0004"]
         assert [item["revision"] for item in inventory[2]] == inventory[1]
         assert transitioned_database_oid == (database_oid,)
 

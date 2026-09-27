@@ -71,6 +71,7 @@ class EventWorkerSettings(BaseSettings):
 
     runtime_database_url: str = Field(repr=False, exclude=True)
     operations_database_url: str = Field(repr=False, exclude=True)
+    governance_database_url: str | None = Field(default=None, repr=False, exclude=True)
     nats_url: str = "nats://localhost:4222"
     installation_id: UUID
     principal_id: UUID
@@ -116,6 +117,24 @@ class EventWorkerSettings(BaseSettings):
             operations_url.query,
         ):
             raise ValueError("runtime and operations roles must use the same source database")
+        if self.governance_database_url is not None:
+            if not self.governance_database_url.startswith("postgresql+psycopg://"):
+                raise ValueError("governance database URL must use postgresql+psycopg")
+            governance_url = make_url(self.governance_database_url)
+            if governance_url.username != "businessos_governance" or (
+                governance_url.drivername,
+                governance_url.host,
+                governance_url.port,
+                governance_url.database,
+                governance_url.query,
+            ) != (
+                runtime_url.drivername,
+                runtime_url.host,
+                runtime_url.port,
+                runtime_url.database,
+                runtime_url.query,
+            ):
+                raise ValueError("governance role must use the same source database")
         storage_values = (self.s3_bucket, self.s3_access_key, self.s3_secret_key)
         if any(storage_values) and not all(storage_values):
             raise ValueError("S3 bucket, access key and secret key must be configured together")
@@ -684,6 +703,7 @@ def create_event_worker(
     application = create_application(
         Settings(
             database_url=settings.runtime_database_url,
+            governance_database_url=settings.governance_database_url,
             installation_id=settings.installation_id,
             shutdown_timeout_seconds=settings.shutdown_timeout_seconds,
         ),
@@ -691,10 +711,17 @@ def create_event_worker(
         approved_module_artifacts=approved_artifacts_from_operator_inventory(
             loaded_modules, inventory=operator_inventory
         ),
+        authorizer=Authorizer(
+            _WorkerPermissionPolicy(
+                settings.principal_id,
+                settings.allowed_permissions & frozenset({"foundation.governance.cleanup.report"}),
+            )
+        ),
         durable_subscriber_authorizer=Authorizer(
             _WorkerPermissionPolicy(settings.principal_id, settings.allowed_permissions)
         ),
         infrastructure_providers=providers,
+        resource_coordinator_ids=frozenset({"foundation.data_governance"}),
     )
     operations_database = Database(Settings(database_url=settings.operations_database_url))
     return EventWorker(

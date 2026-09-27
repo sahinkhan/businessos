@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
 
+import pytest
 from businessos_audit import compute_audit_checksum
 from businessos_data_governance import DataGovernanceHooks
 from businessos_policy import (
@@ -681,5 +682,6 @@ async def test_governance_export_and_anonymization_hooks_are_deterministic() -> 
     tenant_id = uuid4()
     subject_id = uuid4()
     assert await hooks.export_tenant_data(tenant_id) == {"module": {"ok": True}}
-    await hooks.anonymize_subject(tenant_id, subject_id)
-    assert calls == [f"export:{tenant_id}", f"anonymize:{tenant_id}:{subject_id}"]
+    with pytest.raises(PermissionError, match="V1 destructive hooks cannot authorize"):
+        await hooks.anonymize_subject(tenant_id, subject_id)
+    assert calls == [f"export:{tenant_id}"]

@@ -21,14 +21,15 @@ def test_complete_artifact_graph_upgrade_and_replay(postgres_migration_database_
     coordinator = MigrationCoordinator(registry)
     plan = smoke._expected_plan()
     raw_url = postgres_migration_database_url.replace("postgresql+psycopg://", "postgresql://", 1)
-    coordinator.upgrade(postgres_migration_database_url)
-    smoke._verify(raw_url, plan)
-    coordinator.plan(postgres_migration_database_url)
+    # Replay the reversible Geography edge before installing forward-only
+    # Governance and participating-owner revisions.
+    coordinator.upgrade(postgres_migration_database_url, "geography_0003")
     coordinator.downgrade(postgres_migration_database_url, "geography_0002")
+    coordinator.upgrade(postgres_migration_database_url, "geography_0003")
     coordinator.upgrade(postgres_migration_database_url)
     smoke._verify(raw_url, plan)
     coordinator.plan(postgres_migration_database_url)
-    with pytest.raises(Exception, match="gov_0004 downgrade refused"):
+    with pytest.raises(Exception, match="gov_0005 downgrade refused"):
         coordinator.downgrade(postgres_migration_database_url)
     smoke._verify(raw_url, plan)
     coordinator.upgrade(postgres_migration_database_url)

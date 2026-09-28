@@ -19,6 +19,7 @@ from businessos.dependencies import (
     OBJECT_STORAGE,
     OBJECT_STORAGE_DELETE,
     OBJECT_STORAGE_FENCED,
+    OBJECT_STORAGE_FENCED_ERASURE,
     RESOURCE_OWNER_RESOLVER,
     UNIT_OF_WORK_FACTORY,
 )
@@ -45,6 +46,7 @@ from businessos.modules.installation_inventory import approved_artifacts_from_op
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 from businessos.providers import (
+    FencedObjectHistoryErasureProvider,
     FencedObjectStorageProvider,
     ObjectStorageDeleteProvider,
     ProviderRegistry,
@@ -220,6 +222,17 @@ def create_application(
                 cast(
                     Callable[[DependencyResolver], FencedObjectStorageProvider],
                     bound_dependency_provider("object-storage-fenced", provider),
+                ),
+                scope=DependencyScope.REQUEST,
+            )
+        if capability == "object-storage" and callable(
+            getattr(provider, "erase_prior_versions", None)
+        ):
+            container.register(
+                OBJECT_STORAGE_FENCED_ERASURE,
+                cast(
+                    Callable[[DependencyResolver], FencedObjectHistoryErasureProvider],
+                    bound_dependency_provider("object-storage-fenced-erasure", provider),
                 ),
                 scope=DependencyScope.REQUEST,
             )

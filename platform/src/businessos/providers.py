@@ -79,6 +79,14 @@ class FencedObjectStorageProvider(Protocol):
     ) -> bool: ...
 
 
+class FencedObjectHistoryErasureProvider(Protocol):
+    """Optional physical history erasure for governed fenced objects."""
+
+    async def erase_prior_versions(
+        self, tenant_id: UUID, key: str, expected_version: str
+    ) -> None: ...
+
+
 def _require_provider_tenant(tenant_id: UUID) -> None:
     context = current_request_context()
     if context is None or context.tenant is None or context.tenant.tenant_id != tenant_id:
@@ -162,6 +170,18 @@ class _BoundFencedObjectStorageProvider:
         return await self.provider.compare_and_reconcile(tenant_id, key, expected_version, content)
 
 
+@dataclass(frozen=True, slots=True)
+class _BoundFencedObjectHistoryErasureProvider:
+    provider: FencedObjectHistoryErasureProvider
+    tenant_id: UUID
+
+    async def erase_prior_versions(self, tenant_id: UUID, key: str, expected_version: str) -> None:
+        _require_provider_tenant(tenant_id)
+        if tenant_id != self.tenant_id:
+            raise PermissionError("Provider is bound to another request tenant")
+        await self.provider.erase_prior_versions(tenant_id, key, expected_version)
+
+
 def tenant_bound_provider(capability: str, provider: object) -> object:
     """Expose tenant data providers only inside a trusted request or delivery."""
     context = current_request_context()
@@ -179,6 +199,10 @@ def tenant_bound_provider(capability: str, provider: object) -> object:
     if capability == "object-storage-fenced":
         return _BoundFencedObjectStorageProvider(
             cast(FencedObjectStorageProvider, provider), tenant_id
+        )
+    if capability == "object-storage-fenced-erasure":
+        return _BoundFencedObjectHistoryErasureProvider(
+            cast(FencedObjectHistoryErasureProvider, provider), tenant_id
         )
     raise ValueError(f"Unsupported tenant provider: {capability}")
 
@@ -521,6 +545,89 @@ class S3ObjectStorageProvider:
                 return False
             raise
         return True
+
+    def _object_versions(self, object_key: str) -> list[tuple[str, str, bool]]:
+        """Enumerate the exact key, including markers, or fail on uncertain pagination."""
+        versions: list[tuple[str, str, bool]] = []
+        marker: dict[str, str] = {}
+        seen: set[tuple[str, str]] = set()
+        for _ in range(10000):
+            page = self._client.list_object_versions(
+                Bucket=self._bucket, Prefix=object_key, MaxKeys=1000, **marker
+            )
+            for field, kind in (("Versions", "version"), ("DeleteMarkers", "marker")):
+                for item in page.get(field, []):
+                    if item["Key"] == object_key:
+                        if not item.get("VersionId"):
+                            raise RuntimeError("Fenced object version identifier is missing")
+                        versions.append((kind, str(item["VersionId"]), bool(item["IsLatest"])))
+            if len(versions) > 100000:
+                raise RuntimeError("Fenced object history exceeds bounded erasure limit")
+            if not isinstance(page.get("IsTruncated"), bool):
+                raise RuntimeError("Fenced object version pagination status is missing")
+            if not page["IsTruncated"]:
+                return versions
+            next_marker = (
+                str(page.get("NextKeyMarker", "")),
+                str(page.get("NextVersionIdMarker", "")),
+            )
+            if not next_marker[0] or next_marker in seen:
+                raise RuntimeError("Fenced object version pagination is incomplete")
+            if next_marker[0] == object_key and not next_marker[1]:
+                raise RuntimeError("Fenced object version pagination lacks a version cursor")
+            seen.add(next_marker)
+            marker = {"KeyMarker": next_marker[0]}
+            if next_marker[1]:
+                marker["VersionIdMarker"] = next_marker[1]
+        raise RuntimeError("Fenced object version pagination exceeds bounded limit")
+
+    def _erase_prior_versions(self, object_key: str, expected_version: str) -> None:
+        state = self._client.get_bucket_versioning(Bucket=self._bucket).get("Status")
+        if state not in (None, "Enabled", "Suspended"):
+            raise RuntimeError("Unsupported bucket versioning state")
+        current = self._client.head_object(Bucket=self._bucket, Key=object_key)
+        if str(current["ETag"]) != expected_version:
+            raise RuntimeError("Fenced object changed before history erasure")
+        current_id = str(current.get("VersionId", "null"))
+        versions = self._object_versions(object_key)
+        latest = [entry for entry in versions if entry[2]]
+        if latest != [("version", current_id, True)]:
+            raise RuntimeError("Fenced object current version cannot be established")
+        for kind, version_id, is_latest in versions:
+            if is_latest:
+                continue
+            if kind not in {"version", "marker"}:
+                raise RuntimeError("Unsupported object history entry")
+            self._client.delete_object(Bucket=self._bucket, Key=object_key, VersionId=version_id)
+        after = self._client.head_object(Bucket=self._bucket, Key=object_key)
+        if (
+            str(after["ETag"]) != expected_version
+            or str(after.get("VersionId", "null")) != current_id
+            or self._object_versions(object_key) != [("version", current_id, True)]
+        ):
+            raise RuntimeError("Fenced object history erasure could not be verified")
+
+    async def erase_prior_versions(self, tenant_id: UUID, key: str, expected_version: str) -> None:
+        """Keep the current fence and physically erase every older version."""
+        _require_provider_tenant(tenant_id)
+        operation = asyncio.create_task(
+            asyncio.to_thread(
+                self._erase_prior_versions, self._key(tenant_id, key), expected_version
+            )
+        )
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(operation)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+                task = asyncio.current_task()
+                if task is not None:
+                    while task.cancelling():
+                        task.uncancel()
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def delete(self, tenant_id: UUID, key: str) -> None:
         """S3 DeleteObject is idempotent, including when the key is absent."""

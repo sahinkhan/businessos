@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 import boto3
 import psycopg
 import pytest
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from businessos_data_governance import (
     DestructiveCleanupRequestedV2,
     ExecuteDestructiveLifecycleV2,
@@ -743,11 +744,13 @@ async def test_worker_stop_retains_real_uow_cleanup_until_backend_closes(
 @pytest.mark.providers
 @pytest.mark.asyncio
 @pytest.mark.parametrize("survivor", (False, True))
+@pytest.mark.parametrize("versioned", (False, True))
 async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_erasure(
     postgres_database: PostgreSQLTestDatabase,
     request: pytest.FixtureRequest,
     tmp_path: Path,
     survivor: bool,
+    versioned: bool,
 ) -> None:
     endpoint = _required_env("BOS_TEST_S3_ENDPOINT")
     access_key = _required_env("BOS_TEST_S3_ACCESS_KEY")
@@ -762,10 +765,16 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
         region_name="us-east-1",
     )
     s3_client.create_bucket(Bucket=bucket)
+    if versioned:
+        s3_client.put_bucket_versioning(
+            Bucket=bucket, VersioningConfiguration={"Status": "Enabled"}
+        )
 
     def remove_bucket() -> None:
-        for item in s3_client.list_objects_v2(Bucket=bucket).get("Contents", []):
-            s3_client.delete_object(Bucket=bucket, Key=item["Key"])
+        listed = s3_client.list_object_versions(Bucket=bucket)
+        for group in ("Versions", "DeleteMarkers"):
+            for item in listed.get(group, []):
+                s3_client.delete_object(Bucket=bucket, Key=item["Key"], VersionId=item["VersionId"])
         s3_client.delete_bucket(Bucket=bucket)
 
     request.addfinalizer(remove_bucket)
@@ -897,6 +906,20 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
                     raise AssertionError("surviving proof projection was not delivered")
                 await asyncio.sleep(0.05)
         await first_worker.stop()
+        old_versions: dict[str, list[str]] = {}
+        if versioned:
+            for key in (record_key, shared_key):
+                # Multiple prior plaintext generations must be physically erased.
+                body = b"keep-me" if key == shared_key and survivor else b"erase-me"
+                s3_client.put_object(Bucket=bucket, Key=key, Body=body)
+                s3_client.put_object(Bucket=bucket, Key=key, Body=body)
+                old_versions[key] = [
+                    item["VersionId"]
+                    for item in s3_client.list_object_versions(Bucket=bucket, Prefix=key)[
+                        "Versions"
+                    ]
+                    if item["Key"] == key
+                ]
         with psycopg.connect(postgres_database.administrator_url) as admin:
             admin.execute(
                 "UPDATE mod_example_phase1_proof.proof_records "
@@ -1011,7 +1034,11 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
                 expected_version: str | None,
                 content: bytes | None,
             ) -> bool:
-                if key == ProofModule.record_object_key(record_id) and content is None:
+                if (
+                    not versioned
+                    and key == ProofModule.record_object_key(record_id)
+                    and content is None
+                ):
                     self.attempts += 1
                     if self.attempts == 1:
                         failed.set()
@@ -1021,6 +1048,26 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
                 return await super().compare_and_reconcile(
                     tenant_id, key, expected_version, content
                 )
+
+            async def erase_prior_versions(
+                self, tenant_id: UUID, key: str, expected_version: str
+            ) -> None:
+                if versioned and key == ProofModule.record_object_key(record_id):
+                    self.attempts += 1
+                    if self.attempts == 1:
+                        # One real version is erased, then a later deletion fails.
+                        versions = self._client.list_object_versions(
+                            Bucket=bucket, Prefix=self._key(tenant_id, key)
+                        )["Versions"]
+                        older = next(item for item in versions if not item["IsLatest"])
+                        self._client.delete_object(
+                            Bucket=bucket, Key=older["Key"], VersionId=older["VersionId"]
+                        )
+                        failed.set()
+                        raise RuntimeError("deterministic historical version deletion failure")
+                    retry_started.set()
+                    await permit_retry.wait()
+                await super().erase_prior_versions(tenant_id, key, expected_version)
 
         flaky_storage = FlakyDeleteStorage(
             bucket=bucket,
@@ -1079,6 +1126,16 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
                     raise AssertionError(f"cleanup completion did not commit: {status}")
                 await asyncio.sleep(0.05)
             assert flaky_storage.attempts == 2
+            if versioned:
+                for key, version_ids in old_versions.items():
+                    remaining = s3_client.list_object_versions(Bucket=bucket, Prefix=key)
+                    assert (
+                        len([item for item in remaining.get("Versions", []) if item["Key"] == key])
+                        == 1
+                    )
+                    for version_id in version_ids:
+                        with pytest.raises(ClientError):
+                            s3_client.get_object(Bucket=bucket, Key=key, VersionId=version_id)
             keys = {
                 item["Key"] for item in s3_client.list_objects_v2(Bucket=bucket).get("Contents", [])
             }

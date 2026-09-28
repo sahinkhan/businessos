@@ -258,13 +258,51 @@ def _verify_global_geography_read_only(database_url: str) -> None:
                 raise RuntimeError(f"unsafe runtime privileges on global Geography {table}")
 
 
-def _expect_safe_governance_downgrade_refusal(run: Callable[[Sequence[str]], str]) -> None:
+_APPROVED_DOWNGRADE_REFUSALS = (
+    "audit_0005 downgrade refused:",
+    "policy_0005 downgrade refused:",
+    "gov_0005 downgrade refused:",
+)
+
+
+def _security_state(database_url: str) -> tuple[object, ...]:
+    """Snapshot the installed security floor around a failed downgrade."""
+    with psycopg.connect(database_url) as connection:
+        return tuple(
+            tuple(connection.execute(query).fetchall())
+            for query in (
+                "SELECT n.nspname, c.relname, c.relrowsecurity, c.relforcerowsecurity, "
+                "c.relacl::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname IN ('platform_audit', 'platform_policy', 'platform_gov', "
+                "'eventing') AND c.relkind = 'r' ORDER BY 1, 2",
+                "SELECT n.nspname, c.relname, t.tgname, pg_get_triggerdef(t.oid) "
+                "FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal "
+                "AND n.nspname IN ('platform_audit', 'platform_policy', 'platform_gov') "
+                "ORDER BY 1, 2, 3",
+                "SELECT schemaname, tablename, policyname, roles::text, qual, with_check "
+                "FROM pg_policies WHERE schemaname IN "
+                "('platform_audit', 'platform_policy', 'platform_gov') ORDER BY 1, 2, 3",
+                "SELECT rolname, rolinherit, rolsuper, rolbypassrls FROM pg_roles "
+                "WHERE rolname IN ('businessos_app', 'businessos_worker', "
+                "'businessos_governance') ORDER BY rolname",
+                "SELECT count(*) FROM platform_audit.audit_logs",
+                "SELECT count(*) FROM platform_policy.roles",
+                "SELECT count(*) FROM platform_policy.sod_rules",
+                "SELECT count(*) FROM platform_gov.destructive_decisions_v2",
+            )
+        )
+
+
+def _expect_approved_destructive_downgrade_refusal(
+    run: Callable[[Sequence[str]], str],
+) -> None:
     try:
         run(("migrate", "downgrade", "base"))
     except subprocess.CalledProcessError as exc:
-        if "gov_0005 downgrade refused" not in (exc.stderr or ""):
+        if not any(reason in (exc.stderr or "") for reason in _APPROVED_DOWNGRADE_REFUSALS):
             raise RuntimeError("migration downgrade failed for an unexpected reason") from exc
-        print("Governance V2 downgrade safely refused")
+        print("certified destructive downgrade safely refused")
     else:
         raise RuntimeError("destructive Governance V2 downgrade unexpectedly succeeded")
 
@@ -363,8 +401,14 @@ def main() -> None:
             _verify_installed_plan(run(("migrate", "plan", "--check-database")), plan)
             _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
             before_currency = _currency_rows(_url(migration_base, database_name, sqlalchemy=False))
-            _expect_safe_governance_downgrade_refusal(run)
+            before_security = _security_state(_url(migration_base, database_name, sqlalchemy=False))
+            _expect_approved_destructive_downgrade_refusal(run)
             _verify(_url(migration_base, database_name, sqlalchemy=False), plan)
+            if (
+                _security_state(_url(migration_base, database_name, sqlalchemy=False))
+                != before_security
+            ):
+                raise RuntimeError("security state changed after downgrade refusal")
             if (
                 _currency_rows(_url(migration_base, database_name, sqlalchemy=False))
                 != before_currency

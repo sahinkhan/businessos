@@ -1,4 +1,5 @@
 import json
+import subprocess
 from dataclasses import replace
 
 import pytest
@@ -66,13 +67,13 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert {source.owner for source in plan.sources} == smoke.REQUIRED_OWNERS
     assert plan.heads == (
         "0006_governance_outbox",
-        "audit_0004",
+        "audit_0005",
         "geography_0003",
         "gov_0005",
         "identity_0005",
         "organization_0003",
         "party_0002",
-        "policy_0004",
+        "policy_0005",
         "proof_0004",
         "tenant_0002",
     )
@@ -105,10 +106,12 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["policy_0002"] == ("policy_0001",)
     assert parents["policy_0003"] == ("policy_0002",)
     assert parents["policy_0004"] == ("policy_0003",)
+    assert parents["policy_0005"] == ("policy_0004",)
     assert parents["audit_0001"] == ("policy_0001",)
     assert parents["audit_0002"] == ("audit_0001",)
     assert parents["audit_0003"] == ("audit_0002",)
     assert parents["audit_0004"] == ("audit_0003",)
+    assert parents["audit_0005"] == ("audit_0004",)
     assert parents["gov_0001"] == ("audit_0001",)
     assert parents["gov_0002"] == ("gov_0001",)
     assert parents["gov_0003"] == ("gov_0002",)
@@ -117,6 +120,23 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["0006_governance_outbox"] == ("0005_durable_event_subscribers",)
     smoke._verify_installed_plan(_plan_json(plan), plan)
     smoke._verify_state(set(plan.heads), _inventory(plan), plan)
+
+
+def test_destructive_smoke_accepts_only_approved_refusal() -> None:
+    def approved(_arguments: object) -> str:
+        raise subprocess.CalledProcessError(
+            1, "businessos migrate downgrade base", stderr="policy_0005 downgrade refused: floor"
+        )
+
+    smoke._expect_approved_destructive_downgrade_refusal(approved)
+
+    def unrelated(_arguments: object) -> str:
+        raise subprocess.CalledProcessError(
+            1, "businessos migrate downgrade base", stderr="database connection lost"
+        )
+
+    with pytest.raises(RuntimeError, match="unexpected reason"):
+        smoke._expect_approved_destructive_downgrade_refusal(unrelated)
 
 
 def test_cross_module_migration_parents_are_declared_dependencies() -> None:
@@ -252,7 +272,7 @@ def test_database_heads_must_equal_all_expected_heads(change: str) -> None:
     plan = smoke._expected_plan()
     heads = set(plan.heads)
     if change == "missing":
-        heads.remove("audit_0004")
+        heads.remove("audit_0005")
     elif change == "rogue":
         heads.add("rogue_0001")
     else:

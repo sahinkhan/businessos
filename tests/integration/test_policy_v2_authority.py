@@ -232,7 +232,7 @@ async def test_policy_v2_typed_assignment_window_and_live_membership(
                 svc_request, handler_transaction_view(uow)
             )
             assert not wrong_type.evidence.allowed
-        with pytest.raises(RuntimeError, match="Typed support access requires"):
+        with pytest.raises(RuntimeError, match="policy_0005 downgrade refused"):
             app.runtime.migrations.downgrade(
                 postgres_database.migration_url, revision="policy_0003"
             )

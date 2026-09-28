@@ -15,7 +15,7 @@ from businessos_organization import (
 )
 from sqlalchemy import select, text
 
-from businessos.sdk import TransactionalPersistence
+from businessos.sdk import BusinessOSError, TransactionalPersistence
 
 from .contracts import PolicyEvaluationService
 from .models import (
@@ -34,6 +34,7 @@ from .models import (
 )
 
 _LOCK_DOMAIN = b"businessos.policy.authority.v1\0"
+MAX_SOURCE_TRAVERSALS = 16384
 _DEFAULT_ACTION_RESOURCES: Mapping[str, str] = {
     "organization.read": "organization",
     "organization.manage": "organization",
@@ -79,8 +80,17 @@ def has_effective_role_source(
     assignments: list[SubjectRoleAssignmentRecord],
     delegations: list[DelegationGrantRecord],
     visited: frozenset[tuple[str, UUID]] = frozenset(),
+    traversal_budget: list[int] | None = None,
 ) -> bool:
     """Prove a same-role, currently live Policy path for the whole grant window."""
+    if traversal_budget is not None:
+        if traversal_budget[0] <= 0:
+            raise BusinessOSError(
+                "authority_unbounded",
+                "Policy delegation source traversal exceeds the reviewed bound",
+                status_code=403,
+            )
+        traversal_budget[0] -= 1
     principal = (subject_type, subject_id)
     if principal in visited or len(visited) > 16:
         return False
@@ -122,6 +132,7 @@ def has_effective_role_source(
             assignments=assignments,
             delegations=delegations,
             visited=path,
+            traversal_budget=traversal_budget,
         ):
             return True
     return False

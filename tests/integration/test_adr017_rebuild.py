@@ -1,14 +1,18 @@
 """Focused PostgreSQL certification for the rebuilt ADR-017 owner path."""
 
 import asyncio
+import io
+import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
 import psycopg
 import pytest
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from businessos_data_governance import (
     DestructiveCleanupRequestedV2,
     ExecuteDestructiveLifecycleV2,
@@ -20,6 +24,7 @@ from businessos_data_governance import (
     RetentionSubjectKey,
     SetRetentionPolicyV2,
 )
+from businessos_data_governance.retention_v2 import lock_governance_scope
 from businessos_identity import PrincipalIdentity
 from businessos_identity.contracts import TenantExecutionBinding, WorkloadIdentityFacts
 from businessos_identity.principal_binding import bind_authenticated_principal
@@ -36,9 +41,11 @@ from businessos.modules import ModuleRegistry, discover_modules
 from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 from businessos.persistence.uow import SQLAlchemyUnitOfWork
+from businessos.providers import S3ObjectStorageProvider
 from businessos.security import Authorizer
 from businessos.version import runtime_version
 from tests.conftest import PostgreSQLTestDatabase
+from tests.fenced_storage import InMemoryFencedStorage
 
 
 @pytest.mark.integration
@@ -47,21 +54,8 @@ from tests.conftest import PostgreSQLTestDatabase
 async def test_adr017_out_of_order_projection_keeps_latest_surviving_shared_value(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
-    class Storage:
-        def __init__(self) -> None:
-            self.objects: dict[tuple[UUID, str], bytes] = {}
-
-        async def readiness(self) -> None:
-            return None
-
-        async def put(self, tenant_id: UUID, key: str, content: bytes) -> None:
-            self.objects[(tenant_id, key)] = content
-
-        async def get(self, tenant_id: UUID, key: str) -> bytes:
-            return self.objects[(tenant_id, key)]
-
-        async def delete(self, tenant_id: UUID, key: str) -> None:
-            self.objects.pop((tenant_id, key), None)
+    class Storage(InMemoryFencedStorage):
+        pass
 
     storage = Storage()
     modules = tuple(discover_modules())
@@ -1123,26 +1117,23 @@ async def test_adr017_real_protected_proof_owner_commit(
 async def test_adr017_concurrent_cleanup_cannot_restore_purged_shared_plaintext(
     postgres_database: PostgreSQLTestDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class PausedStorage:
+    class PausedStorage(InMemoryFencedStorage):
         def __init__(self) -> None:
-            self.objects: dict[tuple[Any, str], bytes] = {}
+            super().__init__()
             self.before_shared_write = asyncio.Event()
             self.resume_shared_write = asyncio.Event()
 
-        async def readiness(self) -> None:
-            return None
-
-        async def put(self, tenant_id: Any, key: str, content: bytes) -> None:
+        async def compare_and_reconcile(
+            self,
+            tenant_id: UUID,
+            key: str,
+            expected_version: str | None,
+            content: bytes | None,
+        ) -> bool:
             if key == "phase1-proof/value.txt" and content == b"B":
                 self.before_shared_write.set()
                 await self.resume_shared_write.wait()
-            self.objects[(tenant_id, key)] = content
-
-        async def get(self, tenant_id: Any, key: str) -> bytes:
-            return self.objects[(tenant_id, key)]
-
-        async def delete(self, tenant_id: Any, key: str) -> None:
-            self.objects.pop((tenant_id, key), None)
+            return await super().compare_and_reconcile(tenant_id, key, expected_version, content)
 
     storage = PausedStorage()
     modules = tuple(discover_modules())
@@ -1301,6 +1292,106 @@ async def test_adr017_concurrent_cleanup_cannot_restore_purged_shared_plaintext(
         storage.resume_shared_write.set()
         await worker_database.close()
         await app.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.postgres
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ("phase1-proof/value.txt", "phase1-proof/records/late-write.txt"))
+async def test_adr017_late_noncancellable_s3_write_is_fenced_after_lock_release(
+    postgres_database: PostgreSQLTestDatabase,
+    key: str,
+) -> None:
+    class PausedS3Client:
+        exceptions = SimpleNamespace(ClientError=ClientError)
+
+        def __init__(self) -> None:
+            self.body: bytes | None = None
+            self.etag: str | None = None
+            self.serial = 0
+            self.lock = threading.Lock()
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.finished = threading.Event()
+            self.stale_done = threading.Event()
+            self.stale_rejected = False
+
+        def head_object(self, **_: Any) -> dict[str, str]:
+            with self.lock:
+                if self.etag is None:
+                    raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
+                return {"ETag": self.etag}
+
+        def put_object(self, **kwargs: Any) -> dict[str, str]:
+            body: bytes = kwargs["Body"]
+            if body.endswith(b"B"):
+                self.started.set()
+                if not self.release.wait(10):
+                    raise TimeoutError("Test did not release the synchronous S3 write")
+            with self.lock:
+                expected = kwargs.get("IfMatch")
+                if (kwargs.get("IfNoneMatch") == "*" and self.etag is not None) or (
+                    expected is not None and expected != self.etag
+                ):
+                    self.stale_rejected = True
+                    self.finished.set()
+                    self.stale_done.set()
+                    raise ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
+                self.serial += 1
+                self.etag = f'"generation-{self.serial}"'
+                self.body = body
+                self.finished.set()
+                return {"ETag": self.etag}
+
+        def get_object(self, **_: Any) -> dict[str, io.BytesIO]:
+            with self.lock:
+                assert self.body is not None
+                return {"Body": io.BytesIO(self.body)}
+
+    client = PausedS3Client()
+    storage = S3ObjectStorageProvider(bucket="fenced-proof-test")
+    storage._client = client
+    database = Database(Settings(database_url=postgres_database.worker_url))
+    factory = SQLAlchemyUnitOfWorkFactory(database.sessions)
+    tenant_id = uuid4()
+    request = _request(tenant_id)
+    assert request.tenant is not None
+    tenant = request.tenant
+
+    async def reconcile(content: bytes | None) -> None:
+        async with factory.for_tenant(tenant) as unit:
+            with bind_request_context(request):
+                await lock_governance_scope(unit, "proof-shared-object", tenant_id)
+                version = await storage.version(tenant_id, key)
+                assert await storage.compare_and_reconcile(tenant_id, key, version, content)
+                await unit.commit()
+
+    first = asyncio.create_task(reconcile(b"B"))
+    try:
+        assert await asyncio.to_thread(client.started.wait, 8)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        # A's transaction has rolled back and released its advisory lock,
+        # while the synchronous S3 request is still blocked in its thread.
+        assert not client.finished.is_set()
+        await asyncio.wait_for(reconcile(None), timeout=8)
+        assert client.body is not None
+        assert client.body.endswith(b"\x00")  # plaintext-free tombstone
+        client.release.set()
+        assert await asyncio.to_thread(client.stale_done.wait, 8)
+        assert client.stale_rejected
+        with bind_request_context(request):
+            with pytest.raises(FileNotFoundError):
+                await storage.get(tenant_id, key)
+            current_version = await storage.version(tenant_id, key)
+            assert not await storage.compare_and_reconcile(
+                tenant_id, key, None, b"B"
+            )  # stale delivery cannot overwrite the tombstone
+            assert await storage.version(tenant_id, key) == current_version
+    finally:
+        client.release.set()
+        await database.close()
 
 
 @pytest.mark.integration

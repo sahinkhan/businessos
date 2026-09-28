@@ -5,6 +5,7 @@ from businessos.dependencies import (
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE,
     OBJECT_STORAGE_DELETE,
+    OBJECT_STORAGE_FENCED,
     RESOURCE_OWNER_RESOLVER,
     UNIT_OF_WORK_FACTORY,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "MESSAGE_DISPATCHER",
     "OBJECT_STORAGE",
     "OBJECT_STORAGE_DELETE",
+    "OBJECT_STORAGE_FENCED",
     "RESOURCE_OWNER_RESOLVER",
     "UNIT_OF_WORK_FACTORY",
     "AdmittedResourceProvider",

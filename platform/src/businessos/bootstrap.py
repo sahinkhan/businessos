@@ -18,6 +18,7 @@ from businessos.dependencies import (
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE,
     OBJECT_STORAGE_DELETE,
+    OBJECT_STORAGE_FENCED,
     RESOURCE_OWNER_RESOLVER,
     UNIT_OF_WORK_FACTORY,
 )
@@ -44,6 +45,7 @@ from businessos.modules.installation_inventory import approved_artifacts_from_op
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 from businessos.providers import (
+    FencedObjectStorageProvider,
     ObjectStorageDeleteProvider,
     ProviderRegistry,
     S3ObjectStorageProvider,
@@ -207,6 +209,17 @@ def create_application(
                 cast(
                     Callable[[DependencyResolver], ObjectStorageDeleteProvider],
                     bound_dependency_provider("object-storage-delete", provider),
+                ),
+                scope=DependencyScope.REQUEST,
+            )
+        if capability == "object-storage" and all(
+            callable(getattr(provider, name, None)) for name in ("version", "compare_and_reconcile")
+        ):
+            container.register(
+                OBJECT_STORAGE_FENCED,
+                cast(
+                    Callable[[DependencyResolver], FencedObjectStorageProvider],
+                    bound_dependency_provider("object-storage-fenced", provider),
                 ),
                 scope=DependencyScope.REQUEST,
             )

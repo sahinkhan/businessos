@@ -13,20 +13,11 @@ from businessos.context import RequestContext, TenantContext
 from businessos.errors import ConfigurationError
 from businessos.modules import ModuleState, discover_modules
 from businessos.security import Authorizer, RequestIdentity
+from tests.fenced_storage import InMemoryFencedStorage
 
 
-class InMemoryObjectStorage:
-    def __init__(self) -> None:
-        self.objects: dict[tuple[UUID, str], bytes] = {}
-
-    async def put(self, tenant_id: UUID, key: str, content: bytes) -> None:
-        self.objects[(tenant_id, key)] = content
-
-    async def get(self, tenant_id: UUID, key: str) -> bytes:
-        return self.objects[(tenant_id, key)]
-
-    async def readiness(self) -> None:
-        return None
+class InMemoryObjectStorage(InMemoryFencedStorage):
+    pass
 
 
 class AllowAllPolicy:

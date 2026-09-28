@@ -29,6 +29,7 @@ from sqlalchemy.dialects.postgresql import insert
 from businessos.sdk import (
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE_FENCED,
+    OBJECT_STORAGE_FENCED_ERASURE,
     BusinessOSError,
     Command,
     DependencyKey,
@@ -391,9 +392,14 @@ class ProofModule:
                 "proof_cleanup_state_invalid", "Owner cleanup state is unavailable", status_code=409
             )
         if event.action in {ExpiryAction.ANONYMIZE, ExpiryAction.PURGE}:
-            await self._reconcile_object(
-                context, event.tenant_id, self.record_object_key(event.record_id), None
-            )
+            storage = await context.dependencies.resolve(OBJECT_STORAGE_FENCED)
+            erasure = await context.dependencies.resolve(OBJECT_STORAGE_FENCED_ERASURE)
+            record_key = self.record_object_key(event.record_id)
+            await self._reconcile_object(context, event.tenant_id, record_key, None)
+            record_version = await storage.version(event.tenant_id, record_key)
+            if record_version is None:
+                raise RuntimeError("Fenced record tombstone is missing")
+            await erasure.erase_prior_versions(event.tenant_id, record_key, record_version)
             surviving = (
                 await context.unit_of_work.persistence.execute(
                     select(PROOF_RECORDS.c.value)
@@ -405,17 +411,17 @@ class ProofModule:
                     .limit(1)
                 )
             ).one_or_none()
-            if surviving is None:
-                await self._reconcile_object(
-                    context, event.tenant_id, "phase1-proof/value.txt", None
-                )
-            else:
-                await self._reconcile_object(
-                    context,
-                    event.tenant_id,
-                    "phase1-proof/value.txt",
-                    surviving.value.encode("utf-8"),
-                )
+            shared_key = "phase1-proof/value.txt"
+            await self._reconcile_object(
+                context,
+                event.tenant_id,
+                shared_key,
+                None if surviving is None else surviving.value.encode("utf-8"),
+            )
+            shared_version = await storage.version(event.tenant_id, shared_key)
+            if shared_version is None:
+                raise RuntimeError("Fenced shared object is missing")
+            await erasure.erase_prior_versions(event.tenant_id, shared_key, shared_version)
         dispatcher = await context.dependencies.resolve(MESSAGE_DISPATCHER)
         bind_authenticated_principal(
             context.request,

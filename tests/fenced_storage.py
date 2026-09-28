@@ -45,6 +45,10 @@ class InMemoryFencedStorage:
         self._advance(object_key)
         return True
 
+    async def erase_prior_versions(self, tenant_id: UUID, key: str, expected_version: str) -> None:
+        if await self.version(tenant_id, key) != expected_version:
+            raise RuntimeError("Fenced object changed before history erasure")
+
     def _advance(self, object_key: tuple[UUID, str]) -> None:
         self._next_version[object_key] += 1
         self._versions[object_key] = str(self._next_version[object_key])

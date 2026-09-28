@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
+import boto3
 import psycopg
 import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
@@ -46,6 +48,191 @@ from businessos.security import Authorizer
 from businessos.version import runtime_version
 from tests.conftest import PostgreSQLTestDatabase
 from tests.fenced_storage import InMemoryFencedStorage
+
+
+@pytest.mark.integration
+@pytest.mark.providers
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ("Disabled", "Enabled", "Suspended"))
+@pytest.mark.parametrize("key,content", (("records/item.txt", None), ("value.txt", b"survivor")))
+async def test_adr017_versioned_s3_erases_all_prior_plaintext(
+    request: pytest.FixtureRequest, state: str, key: str, content: bytes | None
+) -> None:
+    endpoint = os.getenv("BOS_TEST_S3_ENDPOINT")
+    access = os.getenv("BOS_TEST_S3_ACCESS_KEY")
+    secret = os.getenv("BOS_TEST_S3_SECRET_KEY")
+    if not all((endpoint, access, secret)):
+        pytest.skip("Real S3 test endpoint is not configured")
+    bucket = f"businessos-version-erasure-{uuid4().hex}"
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access,
+        aws_secret_access_key=secret,
+        region_name="us-east-1",
+    )
+    client.create_bucket(Bucket=bucket)
+
+    def remove_bucket() -> None:
+        listed = client.list_object_versions(Bucket=bucket)
+        for group in ("Versions", "DeleteMarkers"):
+            for item in listed.get(group, []):
+                client.delete_object(Bucket=bucket, Key=item["Key"], VersionId=item["VersionId"])
+        client.delete_bucket(Bucket=bucket)
+
+    request.addfinalizer(remove_bucket)
+    if state != "Disabled":
+        client.put_bucket_versioning(Bucket=bucket, VersioningConfiguration={"Status": "Enabled"})
+    tenant_id = uuid4()
+    object_key = f"tenant/{tenant_id}/{key}"
+    old_ids = [
+        client.put_object(Bucket=bucket, Key=object_key, Body=f"secret-{i}".encode()).get(
+            "VersionId", "null"
+        )
+        for i in range(3)
+    ]
+    if state != "Disabled":
+        client.delete_object(Bucket=bucket, Key=object_key)  # historical delete marker
+        old_ids.append(
+            client.put_object(Bucket=bucket, Key=object_key, Body=b"post-marker-secret")[
+                "VersionId"
+            ]
+        )
+    if state == "Suspended":
+        client.put_bucket_versioning(Bucket=bucket, VersioningConfiguration={"Status": "Suspended"})
+        old_ids.append(
+            client.put_object(Bucket=bucket, Key=object_key, Body=b"suspended-secret").get(
+                "VersionId", "null"
+            )
+        )
+    storage = S3ObjectStorageProvider(
+        bucket=bucket,
+        endpoint_url=endpoint,
+        access_key=access,
+        secret_key=secret,
+        region_name="us-east-1",
+    )
+    with bind_request_context(_request(tenant_id)):
+        prior = await storage.version(tenant_id, key)
+        assert await storage.compare_and_reconcile(tenant_id, key, prior, content)
+        current = await storage.version(tenant_id, key)
+        assert current is not None
+        await storage.erase_prior_versions(tenant_id, key, current)
+        if content is None:
+            with pytest.raises(FileNotFoundError):
+                await storage.get(tenant_id, key)
+        else:
+            assert await storage.get(tenant_id, key) == content
+    remaining = client.list_object_versions(Bucket=bucket, Prefix=object_key)
+    assert len(remaining.get("Versions", [])) == 1
+    assert not remaining.get("DeleteMarkers")
+    for version_id in old_ids:
+        if version_id == "null":
+            continue  # Null versions are overwritten in disabled/suspended mode.
+        with pytest.raises(ClientError):
+            client.get_object(Bucket=bucket, Key=object_key, VersionId=version_id)
+
+
+@pytest.mark.integration
+@pytest.mark.providers
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ordering", ("late", "before", "absent"))
+async def test_adr017_versioned_s3_cancelled_write_cannot_survive_erasure(
+    request: pytest.FixtureRequest, ordering: str
+) -> None:
+    endpoint = os.getenv("BOS_TEST_S3_ENDPOINT")
+    access = os.getenv("BOS_TEST_S3_ACCESS_KEY")
+    secret = os.getenv("BOS_TEST_S3_SECRET_KEY")
+    if not all((endpoint, access, secret)):
+        pytest.skip("Real S3 test endpoint is not configured")
+    bucket = f"businessos-version-race-{uuid4().hex}"
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access,
+        aws_secret_access_key=secret,
+        region_name="us-east-1",
+    )
+    client.create_bucket(Bucket=bucket)
+    client.put_bucket_versioning(Bucket=bucket, VersioningConfiguration={"Status": "Enabled"})
+
+    def remove_bucket() -> None:
+        listed = client.list_object_versions(Bucket=bucket)
+        for group in ("Versions", "DeleteMarkers"):
+            for item in listed.get(group, []):
+                client.delete_object(Bucket=bucket, Key=item["Key"], VersionId=item["VersionId"])
+        client.delete_bucket(Bucket=bucket)
+
+    request.addfinalizer(remove_bucket)
+    tenant_id = uuid4()
+    key = "records/race.txt"
+    object_key = f"tenant/{tenant_id}/{key}"
+    if ordering != "absent":
+        client.put_object(Bucket=bucket, Key=object_key, Body=b"previous-secret")
+
+    class PausedClient:
+        exceptions = client.exceptions
+
+        def __init__(self) -> None:
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.finished = threading.Event()
+            self.failed = False
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(client, name)
+
+        def put_object(self, **kwargs: Any) -> Any:
+            if kwargs["Body"].endswith(b"stale-secret"):
+                self.started.set()
+                if not self.release.wait(15):
+                    raise TimeoutError("Delayed S3 request was not released")
+                try:
+                    return client.put_object(**kwargs)
+                except ClientError:
+                    self.failed = True
+                    raise
+                finally:
+                    self.finished.set()
+            return client.put_object(**kwargs)
+
+    paused = PausedClient()
+    storage = S3ObjectStorageProvider(
+        bucket=bucket,
+        endpoint_url=endpoint,
+        access_key=access,
+        secret_key=secret,
+        region_name="us-east-1",
+    )
+    storage._client = paused
+    with bind_request_context(_request(tenant_id)):
+        old_version = await storage.version(tenant_id, key)
+        old = asyncio.create_task(
+            storage.compare_and_reconcile(tenant_id, key, old_version, b"stale-secret")
+        )
+        try:
+            assert await asyncio.to_thread(paused.started.wait, 10)
+            old.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await old
+            if ordering == "before":
+                paused.release.set()
+                assert await asyncio.to_thread(paused.finished.wait, 10)
+            current = await storage.version(tenant_id, key)
+            assert await storage.compare_and_reconcile(tenant_id, key, current, None)
+            tombstone = await storage.version(tenant_id, key)
+            assert tombstone is not None
+            await storage.erase_prior_versions(tenant_id, key, tombstone)
+            paused.release.set()
+            assert await asyncio.to_thread(paused.finished.wait, 10)
+            assert paused.failed == (ordering != "before")
+            with pytest.raises(FileNotFoundError):
+                await storage.get(tenant_id, key)
+        finally:
+            paused.release.set()
+    listed = client.list_object_versions(Bucket=bucket, Prefix=object_key)
+    assert len(listed.get("Versions", [])) == 1
+    assert not listed.get("DeleteMarkers")
 
 
 @pytest.mark.integration

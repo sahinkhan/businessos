@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -9,11 +10,13 @@ from businessos.context import RequestContext, TenantContext, bind_request_conte
 from businessos.providers import (
     BrokerEvent,
     CacheProvider,
+    FencedObjectHistoryErasureProvider,
     FencedObjectStorageProvider,
     NatsJetStreamPublisher,
     ObjectStorageDeleteProvider,
     ObjectStorageProvider,
     PermanentDeliveryError,
+    S3ObjectStorageProvider,
     tenant_bound_provider,
 )
 
@@ -109,6 +112,11 @@ async def test_fenced_storage_rejects_foreign_tenant_before_version_or_write() -
             calls.append(tenant_id)
             return True
 
+        async def erase_prior_versions(
+            self, tenant_id: UUID, key: str, expected_version: str
+        ) -> None:
+            calls.append(tenant_id)
+
     own = TenantContext(uuid4(), uuid4(), uuid4())
     foreign = TenantContext(uuid4(), uuid4(), uuid4())
     with bind_request_context(RequestContext(tenant=own)):
@@ -116,16 +124,104 @@ async def test_fenced_storage_rejects_foreign_tenant_before_version_or_write() -
             FencedObjectStorageProvider,
             tenant_bound_provider("object-storage-fenced", Storage()),
         )
+        erasure = cast(
+            FencedObjectHistoryErasureProvider,
+            tenant_bound_provider("object-storage-fenced-erasure", Storage()),
+        )
         assert await provider.version(own.tenant_id, "record") is None
         assert await provider.compare_and_reconcile(own.tenant_id, "record", None, b"value")
+        await erasure.erase_prior_versions(own.tenant_id, "record", '"fence"')
         with pytest.raises(PermissionError):
             await provider.version(foreign.tenant_id, "record")
         with pytest.raises(PermissionError):
             await provider.compare_and_reconcile(foreign.tenant_id, "record", None, None)
+        with pytest.raises(PermissionError):
+            await erasure.erase_prior_versions(foreign.tenant_id, "record", '"fence"')
     with bind_request_context(RequestContext(tenant=foreign)):
         with pytest.raises(PermissionError):
             await provider.version(own.tenant_id, "record")
-    assert calls == [own.tenant_id, own.tenant_id]
+    assert calls == [own.tenant_id, own.tenant_id, own.tenant_id]
+
+
+def test_fenced_s3_version_listing_paginates_exact_key_and_fails_closed() -> None:
+    key = "tenant/owned/record"
+
+    class Client:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_object_versions(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls += 1
+            if self.calls == 1:
+                assert "KeyMarker" not in kwargs
+                return {
+                    "Versions": [
+                        {"Key": key, "VersionId": "new", "IsLatest": True},
+                        {"Key": key + "-sibling", "VersionId": "other", "IsLatest": True},
+                    ],
+                    "IsTruncated": True,
+                    "NextKeyMarker": key,
+                    "NextVersionIdMarker": "new",
+                }
+            assert kwargs["KeyMarker"] == key
+            assert kwargs["VersionIdMarker"] == "new"
+            return {
+                "Versions": [{"Key": key, "VersionId": "old", "IsLatest": False}],
+                "DeleteMarkers": [{"Key": key, "VersionId": "marker", "IsLatest": False}],
+                "IsTruncated": False,
+            }
+
+    storage = object.__new__(S3ObjectStorageProvider)
+    storage._bucket = "unit-bucket"
+    storage._client = Client()
+    assert storage._object_versions(key) == [
+        ("version", "new", True),
+        ("version", "old", False),
+        ("marker", "marker", False),
+    ]
+    assert storage._client.calls == 2
+
+    class IncompleteClient:
+        def list_object_versions(self, **_: Any) -> dict[str, Any]:
+            return {"IsTruncated": True}
+
+    storage._client = IncompleteClient()
+    with pytest.raises(RuntimeError, match="pagination is incomplete"):
+        storage._object_versions(key)
+
+    class MissingVersionCursor:
+        def list_object_versions(self, **_: Any) -> dict[str, Any]:
+            return {"IsTruncated": True, "NextKeyMarker": key}
+
+    storage._client = MissingVersionCursor()
+    with pytest.raises(RuntimeError, match="lacks a version cursor"):
+        storage._object_versions(key)
+
+
+@pytest.mark.asyncio
+async def test_fenced_history_erasure_drains_cancelled_synchronous_sweep() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class PausedStorage(S3ObjectStorageProvider):
+        def _erase_prior_versions(self, object_key: str, expected_version: str) -> None:
+            started.set()
+            if not release.wait(10):
+                raise TimeoutError("Synchronous erasure was not released")
+
+    storage = object.__new__(PausedStorage)
+    tenant = TenantContext(uuid4(), uuid4(), uuid4())
+    with bind_request_context(RequestContext(tenant=tenant)):
+        operation = asyncio.create_task(storage.erase_prior_versions(tenant.tenant_id, "k", "v"))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()  # The caller still owns its external side effect.
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
 
 
 class _Connection:

@@ -9,6 +9,7 @@ from businessos.context import RequestContext, TenantContext, bind_request_conte
 from businessos.providers import (
     BrokerEvent,
     CacheProvider,
+    FencedObjectStorageProvider,
     NatsJetStreamPublisher,
     ObjectStorageDeleteProvider,
     ObjectStorageProvider,
@@ -87,6 +88,44 @@ async def test_additive_object_delete_is_tenant_bound_and_old_storage_stays_comp
         with pytest.raises(PermissionError):
             await erasure.delete(own.tenant_id, "record")
     assert calls == [(own.tenant_id, "record")] * 3
+
+
+@pytest.mark.asyncio
+async def test_fenced_storage_rejects_foreign_tenant_before_version_or_write() -> None:
+    calls: list[UUID] = []
+
+    class Storage:
+        async def version(self, tenant_id: UUID, key: str) -> str | None:
+            calls.append(tenant_id)
+            return None
+
+        async def compare_and_reconcile(
+            self,
+            tenant_id: UUID,
+            key: str,
+            expected_version: str | None,
+            content: bytes | None,
+        ) -> bool:
+            calls.append(tenant_id)
+            return True
+
+    own = TenantContext(uuid4(), uuid4(), uuid4())
+    foreign = TenantContext(uuid4(), uuid4(), uuid4())
+    with bind_request_context(RequestContext(tenant=own)):
+        provider = cast(
+            FencedObjectStorageProvider,
+            tenant_bound_provider("object-storage-fenced", Storage()),
+        )
+        assert await provider.version(own.tenant_id, "record") is None
+        assert await provider.compare_and_reconcile(own.tenant_id, "record", None, b"value")
+        with pytest.raises(PermissionError):
+            await provider.version(foreign.tenant_id, "record")
+        with pytest.raises(PermissionError):
+            await provider.compare_and_reconcile(foreign.tenant_id, "record", None, None)
+    with bind_request_context(RequestContext(tenant=foreign)):
+        with pytest.raises(PermissionError):
+            await provider.version(own.tenant_id, "record")
+    assert calls == [own.tenant_id, own.tenant_id]
 
 
 class _Connection:

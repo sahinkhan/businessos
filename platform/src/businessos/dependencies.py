@@ -6,6 +6,7 @@ from businessos.persistence import Database, UnitOfWorkFactory
 from businessos.providers import (
     CacheProvider,
     EventPublisher,
+    FencedObjectStorageProvider,
     ObjectStorageDeleteProvider,
     ObjectStorageProvider,
 )
@@ -21,5 +22,8 @@ EVENT_PUBLISHER = DependencyKey[EventPublisher]("businessos.event_publisher")
 OBJECT_STORAGE = DependencyKey[ObjectStorageProvider]("businessos.object_storage")
 OBJECT_STORAGE_DELETE = DependencyKey[ObjectStorageDeleteProvider](
     "businessos.object_storage_delete"
+)
+OBJECT_STORAGE_FENCED = DependencyKey[FencedObjectStorageProvider](
+    "businessos.object_storage_fenced"
 )
 RESOURCE_OWNER_RESOLVER = DependencyKey[ResourceOwnerResolver]("businessos.resource_owner_resolver")

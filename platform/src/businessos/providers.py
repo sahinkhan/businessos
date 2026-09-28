@@ -9,7 +9,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from businessos.activation import ContributionGate
 from businessos.context import current_request_context
@@ -67,6 +67,16 @@ class ObjectStorageDeleteProvider(Protocol):
     """Optional tenant-bound erasure capability; existing storage stays unchanged."""
 
     async def delete(self, tenant_id: UUID, key: str) -> None: ...
+
+
+class FencedObjectStorageProvider(Protocol):
+    """Conditional object replacement for owners with cancellable workers."""
+
+    async def version(self, tenant_id: UUID, key: str) -> str | None: ...
+
+    async def compare_and_reconcile(
+        self, tenant_id: UUID, key: str, expected_version: str | None, content: bytes | None
+    ) -> bool: ...
 
 
 def _require_provider_tenant(tenant_id: UUID) -> None:
@@ -131,6 +141,27 @@ class _BoundObjectStorageDeleteProvider:
         await self.provider.delete(tenant_id, key)
 
 
+@dataclass(frozen=True, slots=True)
+class _BoundFencedObjectStorageProvider:
+    provider: FencedObjectStorageProvider
+    tenant_id: UUID
+
+    def _authorize(self, tenant_id: UUID) -> None:
+        _require_provider_tenant(tenant_id)
+        if tenant_id != self.tenant_id:
+            raise PermissionError("Provider is bound to another request tenant")
+
+    async def version(self, tenant_id: UUID, key: str) -> str | None:
+        self._authorize(tenant_id)
+        return await self.provider.version(tenant_id, key)
+
+    async def compare_and_reconcile(
+        self, tenant_id: UUID, key: str, expected_version: str | None, content: bytes | None
+    ) -> bool:
+        self._authorize(tenant_id)
+        return await self.provider.compare_and_reconcile(tenant_id, key, expected_version, content)
+
+
 def tenant_bound_provider(capability: str, provider: object) -> object:
     """Expose tenant data providers only inside a trusted request or delivery."""
     context = current_request_context()
@@ -144,6 +175,10 @@ def tenant_bound_provider(capability: str, provider: object) -> object:
     if capability == "object-storage-delete":
         return _BoundObjectStorageDeleteProvider(
             cast(ObjectStorageDeleteProvider, provider), tenant_id
+        )
+    if capability == "object-storage-fenced":
+        return _BoundFencedObjectStorageProvider(
+            cast(FencedObjectStorageProvider, provider), tenant_id
         )
     raise ValueError(f"Unsupported tenant provider: {capability}")
 
@@ -370,6 +405,8 @@ class _NatsSubscription:
 class S3ObjectStorageProvider:
     """S3-compatible object storage with mandatory tenant key prefixes."""
 
+    _FENCE_PREFIX = b"\x00businessos-fenced-v1\x00"
+
     def __init__(
         self,
         *,
@@ -424,7 +461,66 @@ class S3ObjectStorageProvider:
             Key=self._key(tenant_id, key),
         )
         body = response["Body"]
-        return await asyncio.to_thread(body.read)
+        content: bytes = await asyncio.to_thread(body.read)
+        if not content.startswith(self._FENCE_PREFIX):
+            return content
+        header_end = len(self._FENCE_PREFIX) + 17
+        if len(content) < header_end:
+            raise ValueError("Invalid fenced object envelope")
+        marker = content[header_end - 1]
+        if marker == 0:
+            raise FileNotFoundError("Fenced object is deleted")
+        if marker != 1:
+            raise ValueError("Invalid fenced object state")
+        return content[header_end:]
+
+    async def version(self, tenant_id: UUID, key: str) -> str | None:
+        """Read the current S3 ETag used for one conditional replacement."""
+        _require_provider_tenant(tenant_id)
+        try:
+            response = await asyncio.to_thread(
+                self._client.head_object, Bucket=self._bucket, Key=self._key(tenant_id, key)
+            )
+        except self._client.exceptions.ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code")) in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise
+        return str(response["ETag"])
+
+    async def compare_and_reconcile(
+        self, tenant_id: UUID, key: str, expected_version: str | None, content: bytes | None
+    ) -> bool:
+        """One atomic attempt; a cancelled caller cannot retry a stale generation."""
+        _require_provider_tenant(tenant_id)
+        envelope = (
+            self._FENCE_PREFIX
+            + uuid4().bytes
+            + (b"\x00" if content is None else b"\x01")
+            + (b"" if content is None else content)
+        )
+        condition = (
+            {"IfNoneMatch": "*"} if expected_version is None else {"IfMatch": expected_version}
+        )
+        try:
+            await asyncio.to_thread(
+                self._client.put_object,
+                Bucket=self._bucket,
+                Key=self._key(tenant_id, key),
+                Body=envelope,
+                **condition,
+            )
+        except self._client.exceptions.ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code")) in {
+                "PreconditionFailed",
+                "ConditionalRequestConflict",
+                "412",
+                "409",
+                "404",
+                "NoSuchKey",
+            }:
+                return False
+            raise
+        return True
 
     async def delete(self, tenant_id: UUID, key: str) -> None:
         """S3 DeleteObject is idempotent, including when the key is absent."""

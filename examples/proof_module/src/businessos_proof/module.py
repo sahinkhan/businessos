@@ -28,8 +28,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from businessos.sdk import (
     MESSAGE_DISPATCHER,
-    OBJECT_STORAGE,
-    OBJECT_STORAGE_DELETE,
+    OBJECT_STORAGE_FENCED,
     BusinessOSError,
     Command,
     DependencyKey,
@@ -270,8 +269,8 @@ class ProofModule:
         )
         if changed.scalar_one_or_none() is None:
             return
-        storage = await context.dependencies.resolve(OBJECT_STORAGE)
-        await storage.put(
+        await self._reconcile_object(
+            context,
             event.tenant_id,
             self.record_object_key(event.record_id),
             event.value.encode("utf-8"),
@@ -289,12 +288,25 @@ class ProofModule:
         ).one_or_none()
         if latest is None:
             return
-        await storage.put(
-            event.tenant_id,
-            "phase1-proof/value.txt",
-            latest.value.encode("utf-8"),
+        await self._reconcile_object(
+            context, event.tenant_id, "phase1-proof/value.txt", latest.value.encode("utf-8")
         )
         self.events_consumed += 1
+
+    @staticmethod
+    async def _reconcile_object(
+        context: EventHandlingContext, tenant_id: UUID, key: str, content: bytes | None
+    ) -> None:
+        storage = await context.dependencies.resolve(OBJECT_STORAGE_FENCED)
+        # A cancelled attempt cannot retry after its delayed S3 request conflicts.
+        # The current lock holder may retry after re-reading S3's latest ETag.
+        for _ in range(8):
+            version = await storage.version(tenant_id, key)
+            if await storage.compare_and_reconcile(tenant_id, key, version, content):
+                return
+        raise BusinessOSError(
+            "proof_storage_conflict", "Object reconciliation requires retry", status_code=409
+        )
 
     async def _cleanup_destructive(
         self, event: DestructiveCleanupRequestedV2, context: EventHandlingContext
@@ -379,8 +391,9 @@ class ProofModule:
                 "proof_cleanup_state_invalid", "Owner cleanup state is unavailable", status_code=409
             )
         if event.action in {ExpiryAction.ANONYMIZE, ExpiryAction.PURGE}:
-            storage_delete = await context.dependencies.resolve(OBJECT_STORAGE_DELETE)
-            await storage_delete.delete(event.tenant_id, self.record_object_key(event.record_id))
+            await self._reconcile_object(
+                context, event.tenant_id, self.record_object_key(event.record_id), None
+            )
             surviving = (
                 await context.unit_of_work.persistence.execute(
                     select(PROOF_RECORDS.c.value)
@@ -393,11 +406,15 @@ class ProofModule:
                 )
             ).one_or_none()
             if surviving is None:
-                await storage_delete.delete(event.tenant_id, "phase1-proof/value.txt")
+                await self._reconcile_object(
+                    context, event.tenant_id, "phase1-proof/value.txt", None
+                )
             else:
-                storage = await context.dependencies.resolve(OBJECT_STORAGE)
-                await storage.put(
-                    event.tenant_id, "phase1-proof/value.txt", surviving.value.encode("utf-8")
+                await self._reconcile_object(
+                    context,
+                    event.tenant_id,
+                    "phase1-proof/value.txt",
+                    surviving.value.encode("utf-8"),
                 )
         dispatcher = await context.dependencies.resolve(MESSAGE_DISPATCHER)
         bind_authenticated_principal(

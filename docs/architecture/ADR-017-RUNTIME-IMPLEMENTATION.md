@@ -61,10 +61,33 @@ record identity. It never accepts a caller-selected cleanup key. The older
 worker writers serialize on a shared-key lock and read the latest surviving
 current record before writing, so an out-of-order stored event cannot restore
 an older value. On successful anonymization or purge cleanup, the owner
-idempotently deletes the record-specific object, then rewrites the shared key
-from the latest surviving current record or deletes it when none remains.
-Purged plaintext is not left at the shared key. Archive preserves the
-external object; it still reaches truthful cleanup completion.
+idempotently removes the record-specific plaintext, then reconciles the shared
+key from the latest surviving current record or removes its plaintext when
+none remains. Purged plaintext is not left at either key. Archive preserves
+the external object; it still reaches truthful cleanup completion.
+
+### Late S3 completion fence
+
+The proof owner's two object keys use the additive tenant-bound fenced-storage
+capability. Each replacement reads the current S3 ETag and issues exactly one
+conditional PutObject (`If-Match` or `If-None-Match`). Every published body
+includes a fresh generation nonce, preventing an ETag from repeating merely
+because the plaintext repeats. Erasure publishes a plaintext-free
+tombstone at the same key; the provider's ordinary `get` treats it as absent.
+The marker remains to reject an old write that began while the key was absent.
+Existing unwrapped proof objects are read by their ETag and replaced on the
+first reconciliation. Storage adapters lacking conditional replacement fail
+closed for proof projection and cleanup.
+
+The worker retains the PostgreSQL advisory lock while it reads authoritative
+owner state and attempts reconciliation. Cancellation can release that lock
+while a synchronous S3 request continues, but the request carries its old
+ETag condition. A newer worker can publish a tombstone or surviving value;
+the late request then fails its condition. If the old request reaches S3
+first, the newer worker rereads the ETag and retries while holding the lock.
+The cancelled caller does not retry. Cleanup completion is recorded only
+after all conditional replacements succeed. This uses no new database schema
+or historical migration edit.
 
 ## Durable cleanup after commit
 

@@ -29,7 +29,7 @@ from sqlalchemy import insert, select, text
 
 from businessos.bootstrap import create_application
 from businessos.config import Settings
-from businessos.context import RequestContext, TenantContext
+from businessos.context import RequestContext, TenantContext, bind_request_context
 from businessos.errors import BusinessOSError, DeliveryUnavailableError
 from businessos.event_worker import EventWorkerSettings, create_event_worker
 from businessos.messages import Command, DomainEvent, EventHandlingContext
@@ -938,10 +938,14 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
                 "WHERE id = %s",
                 (decision_id,),
             ).fetchone() == ("pending",)
-        assert s3_client.get_object(Bucket=bucket, Key=record_key)["Body"].read() == b"erase-me"
-        assert s3_client.get_object(Bucket=bucket, Key=shared_key)["Body"].read() == (
-            b"keep-me" if survivor else b"erase-me"
-        )
+        with bind_request_context(context):
+            assert (
+                await storage().get(tenant.tenant_id, ProofModule.record_object_key(record_id))
+                == b"erase-me"
+            )
+            assert await storage().get(tenant.tenant_id, "phase1-proof/value.txt") == (
+                b"keep-me" if survivor else b"erase-me"
+            )
         with psycopg.connect(
             postgres_database.worker_url.replace("postgresql+psycopg://", "postgresql://", 1)
         ) as worker_connection:
@@ -1000,14 +1004,23 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
         class FlakyDeleteStorage(S3ObjectStorageProvider):
             attempts = 0
 
-            async def delete(self, tenant_id: UUID, key: str) -> None:
-                self.attempts += 1
-                if self.attempts == 1:
-                    failed.set()
-                    raise RuntimeError("deterministic S3 deletion failure")
-                retry_started.set()
-                await permit_retry.wait()
-                await super().delete(tenant_id, key)
+            async def compare_and_reconcile(
+                self,
+                tenant_id: UUID,
+                key: str,
+                expected_version: str | None,
+                content: bytes | None,
+            ) -> bool:
+                if key == ProofModule.record_object_key(record_id) and content is None:
+                    self.attempts += 1
+                    if self.attempts == 1:
+                        failed.set()
+                        raise RuntimeError("deterministic S3 deletion failure")
+                    retry_started.set()
+                    await permit_retry.wait()
+                return await super().compare_and_reconcile(
+                    tenant_id, key, expected_version, content
+                )
 
         flaky_storage = FlakyDeleteStorage(
             bucket=bucket,
@@ -1065,18 +1078,35 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
                 if monotonic() >= deadline:
                     raise AssertionError(f"cleanup completion did not commit: {status}")
                 await asyncio.sleep(0.05)
-            assert flaky_storage.attempts == (2 if survivor else 3)
+            assert flaky_storage.attempts == 2
             keys = {
                 item["Key"] for item in s3_client.list_objects_v2(Bucket=bucket).get("Contents", [])
             }
-            assert record_key not in keys
+            assert record_key in keys  # persistent fence, with no retained plaintext
+            record_tombstone = s3_client.get_object(Bucket=bucket, Key=record_key)["Body"].read()
+            assert record_tombstone.startswith(S3ObjectStorageProvider._FENCE_PREFIX)
+            assert b"erase-me" not in record_tombstone
+            with bind_request_context(context):
+                with pytest.raises(FileNotFoundError):
+                    await flaky_storage.get(
+                        tenant.tenant_id, ProofModule.record_object_key(record_id)
+                    )
             if survivor:
                 assert surviving_key in keys
-                assert s3_client.get_object(Bucket=bucket, Key=shared_key)["Body"].read() == (
-                    b"keep-me"
-                )
+                with bind_request_context(context):
+                    assert (
+                        await flaky_storage.get(tenant.tenant_id, "phase1-proof/value.txt")
+                        == b"keep-me"
+                    )
             else:
-                assert shared_key not in keys
+                assert shared_key in keys
+                assert (
+                    b"erase-me"
+                    not in s3_client.get_object(Bucket=bucket, Key=shared_key)["Body"].read()
+                )
+                with bind_request_context(context):
+                    with pytest.raises(FileNotFoundError):
+                        await flaky_storage.get(tenant.tenant_id, "phase1-proof/value.txt")
             bind_authenticated_principal(
                 context,
                 PrincipalIdentity(

@@ -21,7 +21,7 @@ export const AppShell: React.FC = () => {
           top: '-100px',
           left: '16px',
           backgroundColor: 'var(--color-action-primary)',
-          color: 'white',
+          color: 'var(--color-action-primary-text)',
           padding: '8px 16px',
           borderRadius: '4px',
           zIndex: 9999,

@@ -37,7 +37,7 @@ export const UserMenu: React.FC = () => {
           height: '32px',
           borderRadius: '50%',
           backgroundColor: 'var(--color-action-primary)',
-          color: 'white',
+          color: 'var(--color-action-primary-text)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

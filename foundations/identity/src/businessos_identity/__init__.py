@@ -52,11 +52,23 @@ from .oidc import (
     VerifiedOIDCClaims,
 )
 from .principal_binding import AUTHENTICATED_PRINCIPAL, AuthenticatedPrincipalBinding
+from .web_sessions import (
+    SESSION_COOKIE,
+    WEB_SESSION_SERVICE,
+    WebSessionApplicationService,
+    cookie_value,
+    session_cookie,
+)
+from .web_sessions import (
+    ActiveScope as WebActiveScope,
+)
 from .workload_authority import DatabaseWorkloadExecutionAuthority
 
 __all__ = [
     "AUTHENTICATED_PRINCIPAL",
     "MEMBERSHIP_AUTHORITY",
+    "SESSION_COOKIE",
+    "WEB_SESSION_SERVICE",
     "WORKLOAD_EXECUTION_AUTHORITY",
     "ActiveScopeSelection",
     "AuthenticatedPrincipalBinding",
@@ -100,8 +112,12 @@ __all__ = [
     "ValidateAuthenticationSession",
     "VerifiedOIDCClaims",
     "VerifiedWorkloadIdentity",
+    "WebActiveScope",
+    "WebSessionApplicationService",
     "WorkloadCredentialVerifier",
     "WorkloadExecutionAuthority",
     "WorkloadIdentityFacts",
+    "cookie_value",
     "lock_membership_for_authority",
+    "session_cookie",
 ]

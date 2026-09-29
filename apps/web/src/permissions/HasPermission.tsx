@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { usePermission } from './PermissionContext';
 
 export interface HasPermissionProps {
@@ -8,7 +8,10 @@ export interface HasPermissionProps {
 }
 
 export const HasPermission: React.FC<HasPermissionProps> = ({ action, resource, children }) => {
-  const { canPerformAction } = usePermission();
+  const { canPerformAction, loadAction } = usePermission();
+  useEffect(() => {
+    void loadAction(action, resource);
+  }, [loadAction, action, resource]);
   const allowed = canPerformAction(action, resource);
   return <>{children(allowed)}</>;
 };

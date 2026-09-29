@@ -7,14 +7,16 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 from importlib.resources import files
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NoReturn, cast
 from uuid import UUID, uuid4
 
 from businessos_identity import (
     AUTHENTICATED_PRINCIPAL,
     MEMBERSHIP_AUTHORITY,
+    SESSION_COOKIE,
     PrincipalReference,
     PrincipalType,
+    cookie_value,
 )
 from businessos_organization import DELEGATION_ACTION_AUTHORITY
 from pydantic import Field
@@ -22,7 +24,9 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from businessos.sdk import (
+    AUTHORIZER,
     RESOURCE_OWNER_RESOLVER,
+    UNIT_OF_WORK_FACTORY,
     BusinessOSError,
     Command,
     DependencyScope,
@@ -31,7 +35,11 @@ from businessos.sdk import (
     ModuleRegistration,
     PermissionDeclaration,
     Query,
+    Request,
     RequestContext,
+    RequestDependencyScope,
+    ResourceLocator,
+    Response,
     TenantContext,
 )
 
@@ -309,6 +317,15 @@ class PolicyModule:
         registration.contract("foundation.policy.authorization.v2", public_v2)
         registration.contract("foundation.policy.field-policy.v2", public_v2)
         registration.contract("foundation.policy.approval-authority.v2", public_v2)
+        registration.route(
+            "POST", "/api/v1/policy/authorize", self._http_authorize, name="web-authorize"
+        )
+        registration.route(
+            "POST",
+            "/api/v1/policy/field-access",
+            self._http_field_access,
+            name="web-field-access",
+        )
         registration.permission(
             PermissionDeclaration(
                 key="foundation.policy.read",
@@ -400,6 +417,102 @@ class PolicyModule:
             AuthorizeSupportAccessQuery,
             self._authorize_support_access,
             permission="foundation.policy.authorize",
+        )
+
+    @staticmethod
+    def _web_tenant(request: Request) -> TenantContext:
+        tenant = request.context.tenant
+        if cookie_value(request.headers, SESSION_COOKIE) is None or tenant is None:
+            raise BusinessOSError("unauthenticated", "Authentication required", status_code=401)
+        if tenant.active_company_id is None:
+            raise BusinessOSError("scope_required", "Active company is required", status_code=403)
+        return tenant
+
+    @staticmethod
+    async def _web_payload(request: Request) -> dict[str, object]:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise BusinessOSError("invalid_request", "Request must be an object", status_code=400)
+        return cast(dict[str, object], payload)
+
+    @staticmethod
+    def _web_locator(payload: dict[str, object], tenant: TenantContext) -> ResourceLocator | None:
+        namespace = payload.get("namespace")
+        contract = payload.get("contract_version")
+        record = payload.get("record_id")
+        if namespace is None and contract is None and record is None:
+            return None
+        if (
+            not isinstance(namespace, str)
+            or not isinstance(contract, str)
+            or not isinstance(record, str)
+        ):
+            raise BusinessOSError("invalid_locator", "Resource locator is invalid", status_code=400)
+        try:
+            return ResourceLocator(namespace, contract, UUID(record), tenant.tenant_id)
+        except (ValueError, TypeError):
+            raise BusinessOSError(
+                "invalid_locator", "Resource locator is invalid", status_code=400
+            ) from None
+
+    async def _http_authorize(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        tenant = self._web_tenant(request)
+        payload = await self._web_payload(request)
+        action = payload.get("action")
+        resource = payload.get("resource_type")
+        if (
+            not isinstance(action, str)
+            or not action
+            or not isinstance(resource, str)
+            or not resource
+            or len(action) > 100
+            or len(resource) > 100
+        ):
+            raise BusinessOSError("invalid_request", "Action is invalid", status_code=400)
+        locator = self._web_locator(payload, tenant)
+        if locator is None:
+            authorizer = await dependencies.resolve(AUTHORIZER)
+            try:
+                await authorizer.require(request.context, f"{resource}:{action}")
+            except BusinessOSError as error:
+                if error.status_code not in {401, 403}:
+                    raise
+                return Response.json({"allowed": False})
+            return Response.json({"allowed": True})
+        policy = await dependencies.resolve(POLICY_AUTHORIZATION_V2)
+        factory = await dependencies.resolve(UNIT_OF_WORK_FACTORY)
+        async with factory.for_tenant(tenant) as transaction:
+            decision = await policy.authorize_read(request.context, transaction, action, locator)
+        return Response.json({"allowed": decision.evidence.allowed})
+
+    async def _http_field_access(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        tenant = self._web_tenant(request)
+        payload = await self._web_payload(request)
+        field = payload.get("field_name")
+        if not isinstance(field, str) or not field or len(field) > 100:
+            raise BusinessOSError("invalid_request", "Field is invalid", status_code=400)
+        locator = self._web_locator(payload, tenant)
+        if locator is None:
+            return Response.json({"readable": False, "writable": False, "masked": True})
+        policy = await dependencies.resolve(POLICY_AUTHORIZATION_V2)
+        factory = await dependencies.resolve(UNIT_OF_WORK_FACTORY)
+        async with factory.for_tenant(tenant) as transaction:
+            read = await policy.evaluate_field(
+                request.context, transaction, locator, field, FieldAccessType.READ
+            )
+            write = await policy.evaluate_field(
+                request.context, transaction, locator, field, FieldAccessType.WRITE
+            )
+        return Response.json(
+            {
+                "readable": read.evidence.allowed and read.field_access is not FieldAccessType.DENY,
+                "writable": write.evidence.allowed and write.field_access is FieldAccessType.WRITE,
+                "masked": read.field_access is FieldAccessType.MASK,
+            }
         )
 
     async def start(self) -> None:

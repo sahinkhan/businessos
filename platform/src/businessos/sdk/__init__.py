@@ -2,6 +2,8 @@
 
 from businessos.context import RequestContext, TenantContext
 from businessos.dependencies import (
+    AUTHORIZER,
+    INSTALLATION_ID,
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE,
     OBJECT_STORAGE_DELETE,
@@ -58,6 +60,8 @@ from businessos.security import (
 from businessos.workload import WorkloadAdmissionDenied
 
 __all__ = [
+    "AUTHORIZER",
+    "INSTALLATION_ID",
     "MESSAGE_DISPATCHER",
     "OBJECT_STORAGE",
     "OBJECT_STORAGE_DELETE",

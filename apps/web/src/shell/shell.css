@@ -1,0 +1,94 @@
+.businessos-shell-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+.businessos-shell-main {
+  min-width: 0;
+  flex: 1;
+  padding: 24px 32px;
+}
+.businessos-mobile-backdrop {
+  display: none;
+}
+@media (max-width: 767px) {
+  .businessos-shell-main {
+    padding: 16px;
+  }
+  .businessos-sidebar {
+    position: fixed !important;
+    inset-block-start: 56px;
+    inset-inline-start: 0;
+    z-index: 1200;
+    height: calc(100dvh - 56px) !important;
+    width: min(280px, 85vw) !important;
+    min-width: 0 !important;
+    transform: translateX(-110%);
+  }
+  [dir='rtl'] .businessos-sidebar {
+    transform: translateX(110%);
+  }
+  .businessos-sidebar[data-mobile-open='true'] {
+    transform: translateX(0);
+  }
+  .businessos-mobile-backdrop[data-mobile-open='true'] {
+    display: block;
+    position: fixed;
+    inset: 56px 0 0;
+    z-index: 1190;
+    border: 0;
+    background: rgb(0 0 0 / 40%);
+  }
+  .businessos-header-search {
+    display: none !important;
+  }
+  .businessos-header-version {
+    display: none !important;
+  }
+}
+
+@media (max-width: 479px) {
+  .businessos-header {
+    padding-inline: 8px !important;
+  }
+  .businessos-header-left {
+    gap: 6px !important;
+    min-width: 0;
+  }
+  .businessos-header-brand,
+  .businessos-header-divider {
+    display: none !important;
+  }
+  .businessos-header-scope {
+    margin-left: 0 !important;
+    min-width: 0;
+  }
+  .businessos-header-scope > div > button {
+    max-width: 105px;
+    gap: 4px !important;
+    padding-inline: 6px !important;
+  }
+  .businessos-header-scope > div > button > svg:first-child,
+  .businessos-header-scope > div > button > div > div:last-child {
+    display: none;
+  }
+  .businessos-header-scope > div > button > div {
+    min-width: 0;
+  }
+  .businessos-header-scope > div > button > div > div {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .businessos-header-actions {
+    gap: 4px !important;
+    flex-shrink: 0;
+  }
+  .businessos-scope-popover {
+    position: fixed !important;
+    top: 56px !important;
+    left: 8px !important;
+    right: 8px !important;
+    width: auto !important;
+  }
+}

@@ -21,6 +21,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
 
   return (
     <header
+      className="businessos-header"
       role="banner"
       style={{
         height: '56px',
@@ -36,7 +37,10 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
       }}
     >
       {/* Left side: Hamburger, Logo, Scope */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+      <div
+        className="businessos-header-left"
+        style={{ display: 'flex', alignItems: 'center', gap: '12px' }}
+      >
         <IconButton
           icon={<Menu size={18} />}
           aria-label="Toggle navigation menu"
@@ -50,8 +54,12 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
             }
           }}
         />
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div
+          className="businessos-header-brand"
+          style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
           <span
+            className="businessos-header-version"
             style={{
               fontSize: '1.125rem',
               fontWeight: 700,
@@ -74,14 +82,18 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
             v0.4.5
           </span>
         </div>
-        <div style={{ marginLeft: '8px' }}>
+        <div className="businessos-header-scope" style={{ marginLeft: '8px' }}>
           <ScopeSwitcher />
         </div>
       </div>
 
       {/* Right side: Global search trigger, Notifications, Theme toggle, Locale, User menu */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <div
+        className="businessos-header-actions"
+        style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+      >
         <button
+          className="businessos-header-search"
           type="button"
           onClick={() => {
             window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
@@ -173,6 +185,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
 
         {/* Theme toggle */}
         <IconButton
+          className="businessos-header-theme"
           icon={resolvedTheme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
           aria-label="Toggle Theme"
           variant="ghost"
@@ -181,6 +194,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
         />
 
         <div
+          className="businessos-header-divider"
           style={{
             height: '20px',
             width: '1px',

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { usePermission } from './PermissionContext';
 import { Tooltip } from '../components/overlays/Tooltip';
 
@@ -17,7 +17,10 @@ export const PermissionBoundary: React.FC<PermissionBoundaryProps> = ({
   disableInsteadOfHide = false,
   children,
 }) => {
-  const { getActionEvaluation } = usePermission();
+  const { getActionEvaluation, loadAction } = usePermission();
+  useEffect(() => {
+    void loadAction(action, resource);
+  }, [loadAction, action, resource]);
   const evalResult = getActionEvaluation(action, resource);
 
   if (evalResult.allowed) {

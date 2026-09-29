@@ -19,4 +19,6 @@ export interface PermissionContextValue {
   canPerformAction: (action: string, resource: string) => boolean;
   getFieldPolicy: (resource: string, fieldName: string) => FieldPolicyHint;
   getActionEvaluation: (action: string, resource: string) => AuthorizeActionResult;
+  loadAction: (action: string, resource: string) => Promise<void>;
+  loadField: (resource: string, fieldName: string) => Promise<void>;
 }

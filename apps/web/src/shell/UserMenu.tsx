@@ -37,7 +37,7 @@ export const UserMenu: React.FC = () => {
           height: '32px',
           borderRadius: '50%',
           backgroundColor: 'var(--color-action-primary)',
-          color: 'white',
+          color: 'var(--color-action-primary-text)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -61,23 +61,6 @@ export const UserMenu: React.FC = () => {
               <div style={{ fontWeight: 600 }}>{user.name}</div>
               <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
                 {user.email}
-              </div>
-              <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
-                {user.roles.map((r) => (
-                  <span
-                    key={r}
-                    style={{
-                      fontSize: '0.6875rem',
-                      padding: '1px 6px',
-                      backgroundColor: 'var(--color-surface-subtle)',
-                      borderRadius: '4px',
-                      color: 'var(--color-action-primary)',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {r}
-                  </span>
-                ))}
               </div>
             </div>
           ),

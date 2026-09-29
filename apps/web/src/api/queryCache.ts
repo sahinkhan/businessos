@@ -5,6 +5,7 @@ interface CacheEntry<T> {
 
 class QueryCache {
   private cache = new Map<string, CacheEntry<any>>();
+  private readonly maxEntries = 200;
 
   public get<T>(key: string, maxAgeMs: number = 30000): T | null {
     const entry = this.cache.get(key);
@@ -17,6 +18,11 @@ class QueryCache {
   }
 
   public set<T>(key: string, data: T): void {
+    if (this.cache.has(key)) this.cache.delete(key);
+    if (this.cache.size >= this.maxEntries) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) this.cache.delete(oldest);
+    }
     this.cache.set(key, { data, timestamp: Date.now() });
   }
 

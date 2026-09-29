@@ -1,6 +1,7 @@
 """OIDC verification and trusted membership-derived request context."""
 
 import asyncio
+import hmac
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from businessos.sdk import (
     RequestIdentity,
     TenantContext,
     TransactionalPersistence,
+    TrustedContextResolver,
     UnitOfWorkFactory,
 )
 
@@ -171,6 +173,32 @@ class OIDCContextResolver:
         )
         return context
 
+    async def authenticate_token(self, token: str, *, expected_nonce: str) -> PrincipalIdentity:
+        """Validate a browser authorization-code result with the existing OIDC authority path."""
+        hint = _unverified_provider_hint(token)
+        provider = await self._provider(hint)
+        verifier = (
+            self._verifier.for_configuration(provider.configuration)
+            if self._verifier is not None
+            else OIDCTokenVerifier(
+                provider.configuration, RemoteJWKSetResolver(provider.configuration.jwks_uri)
+            )
+        )
+        claims = await verifier.verify(token)
+        nonce = getattr(claims, "nonce", None)
+        if not isinstance(nonce, str) or not hmac.compare_digest(nonce, expected_nonce):
+            raise BusinessOSError("invalid_oidc_nonce", "Authentication failed", status_code=401)
+        principal_id, scopes, policy = await self._authority(claims, hint, provider)
+        strength = _authentication_strength(claims)
+        _enforce_policy(strength, claims.amr, policy)
+        return PrincipalIdentity(
+            tenant_id=claims.businessos_tenant_id,
+            principal_id=principal_id,
+            principal_type="user",
+            authentication_strength=strength,
+            scopes=scopes,
+        )
+
     async def _authority(
         self,
         claims: VerifiedOIDCClaims,
@@ -295,14 +323,25 @@ class OIDCContextResolver:
 
 def create_context_resolver(
     installation_id: UUID, unit_of_work_factory: UnitOfWorkFactory
-) -> OIDCContextResolver:
+) -> TrustedContextResolver:
     """Compose the standard OIDC trust boundary for the shipped ASGI target."""
 
-    return OIDCContextResolver(
+    oidc = OIDCContextResolver(
         installation_id=installation_id,
         unit_of_work_factory=unit_of_work_factory,
         tenant_access=DatabaseTenantAccessValidator(installation_id, unit_of_work_factory),
     )
+    from .web_browser import (
+        BrowserOIDCSettings,
+        BrowserSessionContextResolver,
+        BrowserSessionRuntime,
+    )
+
+    settings = BrowserOIDCSettings.from_environment()
+    if settings is None:
+        return oidc
+    runtime = BrowserSessionRuntime(settings, installation_id, unit_of_work_factory, oidc)
+    return BrowserSessionContextResolver(oidc, runtime)
 
 
 class _ProviderHint(BaseModel):

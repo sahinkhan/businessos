@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, ArrowRight, CornerDownLeft } from 'lucide-react';
-import { navigationRegistry } from '../navigation/registry';
+import { useNavigation } from '../navigation/NavigationContext';
 import { useTheme } from '../design-system/theme/ThemeContext';
 import { useScope } from '../scope/ScopeContext';
 
@@ -20,6 +20,7 @@ export const CommandPalette: React.FC = () => {
   const navigate = useNavigate();
   const { toggleTheme } = useTheme();
   const { tenants, setTenant } = useScope();
+  const { items } = useNavigation();
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Keyboard shortcut: Cmd+K / Ctrl+K
@@ -46,7 +47,7 @@ export const CommandPalette: React.FC = () => {
 
   // Aggregate command items
   const commands: CommandItem[] = [
-    ...navigationRegistry.getAll().map((nav) => ({
+    ...items.map((nav) => ({
       id: nav.id,
       label: `Go to ${nav.label}`,
       category: 'Navigation',

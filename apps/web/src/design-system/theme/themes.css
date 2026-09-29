@@ -1,35 +1,35 @@
 :root,
 :root[data-theme='light'] {
-  --color-surface-canvas: #f8fafc;
+  --color-surface-canvas: #f5f7fb;
   --color-surface-card: #ffffff;
-  --color-surface-subtle: #f1f5f9;
+  --color-surface-subtle: #edf2f8;
   --color-surface-overlay: rgba(15, 23, 42, 0.6);
-  --color-surface-sidebar: #0f172a;
+  --color-surface-sidebar: #2a446f;
   --color-surface-header: #ffffff;
-  --color-surface-muted: #e2e8f0;
+  --color-surface-muted: #e5ebf4;
 
-  --color-text-primary: #0f172a;
-  --color-text-secondary: #475569;
-  --color-text-muted: #64748b;
+  --color-text-primary: #1c2d45;
+  --color-text-secondary: #4d6078;
+  --color-text-muted: #64758a;
   --color-text-inverse: #ffffff;
-  --color-text-brand: #2563eb;
+  --color-text-brand: #2a446f;
 
   --color-border-subtle: #e2e8f0;
-  --color-border-default: #cbd5e1;
-  --color-border-strong: #94a3b8;
-  --color-border-focus: #2563eb;
+  --color-border-default: #c8d3e2;
+  --color-border-strong: #8ea2bd;
+  --color-border-focus: #2a446f;
 
-  --color-action-primary: #2563eb;
-  --color-action-primary-hover: #1d4ed8;
-  --color-action-primary-active: #1e40af;
+  --color-action-primary: #2a446f;
+  --color-action-primary-hover: #22395f;
+  --color-action-primary-active: #1a2d4e;
   --color-action-primary-text: #ffffff;
-  --color-action-secondary: #f1f5f9;
-  --color-action-secondary-hover: #e2e8f0;
+  --color-action-secondary: #edf2f8;
+  --color-action-secondary-hover: #e2eaf5;
   --color-action-secondary-text: #0f172a;
   --color-action-danger: #dc2626;
   --color-action-danger-hover: #b91c1c;
   --color-action-danger-text: #ffffff;
-  --color-action-ghost-hover: #f1f5f9;
+  --color-action-ghost-hover: #edf2f8;
 
   --color-status-success: #16a34a;
   --color-status-success-bg: #f0fdf4;
@@ -44,7 +44,7 @@
   --color-status-info-bg: #f0f9ff;
   --color-status-info-border: #bae6fd;
 
-  --color-focus-ring: #3b82f6;
+  --color-focus-ring: #2a446f;
   --color-focus-offset: #ffffff;
 
   --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
@@ -53,36 +53,36 @@
 }
 
 :root[data-theme='dark'] {
-  --color-surface-canvas: #0b0f19;
-  --color-surface-card: #111827;
-  --color-surface-subtle: #1f2937;
+  --color-surface-canvas: #0e1828;
+  --color-surface-card: #17253a;
+  --color-surface-subtle: #23364f;
   --color-surface-overlay: rgba(0, 0, 0, 0.75);
-  --color-surface-sidebar: #0b0f19;
-  --color-surface-header: #111827;
-  --color-surface-muted: #374151;
+  --color-surface-sidebar: #2a446f;
+  --color-surface-header: #17253a;
+  --color-surface-muted: #30445e;
 
-  --color-text-primary: #f9fafb;
-  --color-text-secondary: #9ca3af;
-  --color-text-muted: #6b7280;
-  --color-text-inverse: #111827;
-  --color-text-brand: #3b82f6;
+  --color-text-primary: #f4f7fb;
+  --color-text-secondary: #bac9dc;
+  --color-text-muted: #9cacc1;
+  --color-text-inverse: #17253a;
+  --color-text-brand: #a9c6e9;
 
-  --color-border-subtle: #1f2937;
-  --color-border-default: #374151;
-  --color-border-strong: #4b5563;
-  --color-border-focus: #3b82f6;
+  --color-border-subtle: #30445e;
+  --color-border-default: #435a76;
+  --color-border-strong: #6d83a0;
+  --color-border-focus: #a9c6e9;
 
-  --color-action-primary: #3b82f6;
-  --color-action-primary-hover: #2563eb;
-  --color-action-primary-active: #1d4ed8;
-  --color-action-primary-text: #ffffff;
-  --color-action-secondary: #1f2937;
-  --color-action-secondary-hover: #374151;
+  --color-action-primary: #a9c6e9;
+  --color-action-primary-hover: #bfd5ef;
+  --color-action-primary-active: #8fafda;
+  --color-action-primary-text: #12243e;
+  --color-action-secondary: #23364f;
+  --color-action-secondary-hover: #30445e;
   --color-action-secondary-text: #f9fafb;
   --color-action-danger: #ef4444;
   --color-action-danger-hover: #dc2626;
   --color-action-danger-text: #ffffff;
-  --color-action-ghost-hover: #1f2937;
+  --color-action-ghost-hover: #23364f;
 
   --color-status-success: #22c55e;
   --color-status-success-bg: #052e16;
@@ -97,8 +97,8 @@
   --color-status-info-bg: #082f49;
   --color-status-info-border: #0c4a6e;
 
-  --color-focus-ring: #60a5fa;
-  --color-focus-offset: #111827;
+  --color-focus-ring: #a9c6e9;
+  --color-focus-offset: #17253a;
 
   --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
   --shadow-dropdown: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
@@ -125,6 +125,18 @@ body {
   color: var(--color-text-primary);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+.bos-button--primary {
+  background-color: var(--color-action-primary);
+}
+
+.bos-button--primary:not(:disabled):hover {
+  background-color: var(--color-action-primary-hover);
+}
+
+.bos-button--primary:not(:disabled):active {
+  background-color: var(--color-action-primary-active);
 }
 
 :focus-visible {

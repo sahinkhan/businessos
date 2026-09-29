@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { usePermission } from './PermissionContext';
 
 export interface FieldPolicyWrapperProps {
@@ -12,7 +12,10 @@ export const FieldPolicyWrapper: React.FC<FieldPolicyWrapperProps> = ({
   field,
   children,
 }) => {
-  const { getFieldPolicy } = usePermission();
+  const { getFieldPolicy, loadField } = usePermission();
+  useEffect(() => {
+    void loadField(resource, field);
+  }, [loadField, resource, field]);
   const policy = getFieldPolicy(resource, field);
 
   if (!policy.readable) {

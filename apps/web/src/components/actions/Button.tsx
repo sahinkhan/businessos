@@ -38,7 +38,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     const s = sizeStyles[size];
 
     const getBgColor = () => {
-      if (variant === 'primary') return 'var(--color-action-primary)';
+      if (variant === 'primary') return undefined;
       if (variant === 'danger') return 'var(--color-action-danger)';
       if (variant === 'secondary') return 'var(--color-action-secondary)';
       return 'transparent';

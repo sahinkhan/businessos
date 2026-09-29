@@ -4,15 +4,24 @@ import { useScope } from './ScopeContext';
 import { useI18n } from '../i18n/I18nContext';
 
 export const ScopeSwitcher: React.FC = () => {
-  const { scope, tenants, setTenant, setCompany, setSite } = useScope();
+  const { scope, tenants, isLoading, setTenant, setCompany, setSite } = useScope();
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const companyRef = useRef<HTMLButtonElement>(null);
+  const siteRef = useRef<HTMLButtonElement>(null);
+  const pendingFocus = useRef<
+    | { kind: 'company'; tenantId: string; companyId: string; transitionObserved: boolean }
+    | { kind: 'site'; tenantId: string; transitionObserved: boolean }
+    | null
+  >(null);
   const tenantSelectId = useId();
 
   useEffect(() => {
     const handleOutside = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        pendingFocus.current = null;
         setIsOpen(false);
       }
     };
@@ -20,14 +29,47 @@ export const ScopeSwitcher: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleOutside);
   }, []);
 
+  useEffect(() => {
+    const pending = pendingFocus.current;
+    if (!pending) return;
+    if (isLoading || tenants.length === 0 || !scope.companyId) {
+      pending.transitionObserved = true;
+      return;
+    }
+    if (!pending.transitionObserved) return;
+
+    const activeTenant = tenants.find((tenant) => tenant.id === scope.tenantId);
+    const activeCompany = activeTenant?.groups
+      .find((group) => group.id === scope.groupId)
+      ?.companies.find((company) => company.id === scope.companyId);
+    if (!activeCompany || scope.tenantId !== pending.tenantId) {
+      pendingFocus.current = null;
+      return;
+    }
+
+    const target =
+      pending.kind === 'company' && scope.companyId === pending.companyId && isOpen
+        ? (siteRef.current ?? companyRef.current ?? triggerRef.current)
+        : triggerRef.current;
+    pendingFocus.current = null;
+    const activeElement = document.activeElement;
+    if (activeElement === document.body || containerRef.current?.contains(activeElement)) {
+      target?.focus();
+    }
+  }, [isLoading, scope, tenants, isOpen]);
+
   const currentTenant = tenants.find((t) => t.id === scope.tenantId) || tenants[0];
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <button
+        ref={triggerRef}
         type="button"
         disabled={tenants.length === 0}
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => {
+          if (isOpen) pendingFocus.current = null;
+          setIsOpen(!isOpen);
+        }}
         aria-expanded={isOpen}
         aria-label={t('scope.switch')}
         style={{
@@ -58,6 +100,13 @@ export const ScopeSwitcher: React.FC = () => {
           className="businessos-scope-popover"
           role="dialog"
           aria-label={t('scope.selector')}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              pendingFocus.current = null;
+              setIsOpen(false);
+              triggerRef.current?.focus();
+            }
+          }}
           style={{
             position: 'absolute',
             top: '100%',
@@ -138,9 +187,19 @@ export const ScopeSwitcher: React.FC = () => {
                   return (
                     <div key={company.id} style={{ marginLeft: '6px', marginBottom: '4px' }}>
                       <button
+                        ref={isCurrentCompany ? companyRef : null}
                         type="button"
                         aria-current={isCurrentCompany ? 'true' : undefined}
-                        onClick={() => {
+                        onClick={(event) => {
+                          pendingFocus.current =
+                            event.detail === 0
+                              ? {
+                                  kind: 'company',
+                                  tenantId: scope.tenantId,
+                                  companyId: company.id,
+                                  transitionObserved: false,
+                                }
+                              : null;
                           setCompany(company.id);
                         }}
                         style={{
@@ -178,10 +237,25 @@ export const ScopeSwitcher: React.FC = () => {
                             return (
                               <button
                                 key={site.id}
+                                ref={
+                                  site.id ===
+                                  (company.sites.find((item) => item.id === scope.siteId)?.id ??
+                                    company.sites[0]?.id)
+                                    ? siteRef
+                                    : null
+                                }
                                 type="button"
                                 aria-current={isCurrentSite ? 'true' : undefined}
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  pendingFocus.current =
+                                    e.detail === 0
+                                      ? {
+                                          kind: 'site',
+                                          tenantId: scope.tenantId,
+                                          transitionObserved: false,
+                                        }
+                                      : null;
                                   setSite(site.id);
                                   setIsOpen(false);
                                 }}

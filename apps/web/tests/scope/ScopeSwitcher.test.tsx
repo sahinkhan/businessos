@@ -45,12 +45,13 @@ const tenants = [
 
 function provideScope(
   override: Partial<ScopeContextValue['scope']> = {},
-  availableTenants = tenants
+  availableTenants = tenants,
+  isLoading = false
 ) {
   vi.mocked(useScope).mockReturnValue({
     scope: { ...scope, ...override },
     tenants: availableTenants,
-    isLoading: false,
+    isLoading,
     setTenant: vi.fn(),
     setCompany,
     setSite,
@@ -98,7 +99,16 @@ describe('scope switcher keyboard operation', () => {
     await user.keyboard('{Enter}');
     expect(setCompany).toHaveBeenCalledExactlyOnceWith('company-y');
 
-    provideScope({ companyId: 'company-y', companyName: 'Company Y' });
+    provideScope({}, [], true);
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    expect(screen.queryByRole('button', { name: '• Site Y' })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(document.body);
+
+    provideScope({ companyId: 'company-y', companyName: 'Company Y', siteId: 'site-y' });
     view.rerender(
       <I18nProvider>
         <ScopeSwitcher />
@@ -108,12 +118,143 @@ describe('scope switcher keyboard operation', () => {
       'aria-current',
       'true'
     );
-    await user.tab();
     const site = screen.getByRole('button', { name: '• Site Y' });
-    expect(site).toHaveFocus();
+    await waitFor(() => expect(site).toHaveFocus());
+    expect(document.activeElement).not.toBe(document.body);
     await user.keyboard(' ');
     expect(setSite).toHaveBeenCalledExactlyOnceWith('site-y');
     expect(screen.queryByRole('dialog', { name: 'Scope Selector' })).not.toBeInTheDocument();
+
+    provideScope({}, [], true);
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    expect(document.activeElement).toBe(document.body);
+    provideScope({ companyId: 'company-y', companyName: 'Company Y', siteId: 'site-y' });
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('does not focus a stale site while company selection is pending or rejected', async () => {
+    const user = userEvent.setup();
+    provideScope({ companyId: 'company-x', companyName: 'Company X' });
+    const view = render(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    await user.tab();
+    await user.keyboard('{Enter}');
+    await user.tab();
+    await user.tab();
+    await user.tab();
+    await user.keyboard('{Enter}');
+    expect(setCompany).toHaveBeenCalledExactlyOnceWith('company-y');
+
+    provideScope({}, [], true);
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    expect(screen.queryByRole('button', { name: '• Site Y' })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(document.body);
+
+    provideScope({ companyId: 'company-x', companyName: 'Company X' });
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Switch organization scope' })).toHaveFocus()
+    );
+    expect(screen.queryByRole('button', { name: '• Site Y' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Company Y (Y)' })).not.toHaveAttribute(
+      'aria-current'
+    );
+  });
+
+  it('accepts Space on a company and Enter on the authoritative site option', async () => {
+    const user = userEvent.setup();
+    const view = render(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    await user.tab();
+    await user.keyboard('{Enter}');
+    await user.tab();
+    await user.tab();
+    await user.tab();
+    await user.keyboard(' ');
+    expect(setCompany).toHaveBeenCalledExactlyOnceWith('company-y');
+
+    provideScope({}, [], true);
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    provideScope({ companyId: 'company-y', companyName: 'Company Y', siteId: 'site-y' });
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    const site = screen.getByRole('button', { name: '• Site Y' });
+    await waitFor(() => expect(site).toHaveFocus());
+    await user.keyboard('{Enter}');
+    expect(setSite).toHaveBeenCalledExactlyOnceWith('site-y');
+  });
+
+  it('keeps mouse company and site choices working without keyboard focus restoration', async () => {
+    const user = userEvent.setup();
+    const view = render(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    await user.click(screen.getByRole('button', { name: 'Switch organization scope' }));
+    await user.click(screen.getByRole('button', { name: 'Company Y (Y)' }));
+    expect(setCompany).toHaveBeenCalledExactlyOnceWith('company-y');
+    provideScope({}, [], true);
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    provideScope({ companyId: 'company-y', companyName: 'Company Y' });
+    view.rerender(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    await user.click(screen.getByRole('button', { name: '• Site Y' }));
+    expect(setSite).toHaveBeenCalledExactlyOnceWith('site-y');
+    expect(screen.queryByRole('dialog', { name: 'Scope Selector' })).not.toBeInTheDocument();
+  });
+
+  it('closes with Escape and returns focus to the trigger', async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider>
+        <ScopeSwitcher />
+      </I18nProvider>
+    );
+    await user.tab();
+    const trigger = screen.getByRole('button', { name: 'Switch organization scope' });
+    await user.keyboard('{Enter}');
+    await user.tab();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Scope Selector' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   it('renders Arabic labels, RTL direction, and usable company/site buttons', async () => {

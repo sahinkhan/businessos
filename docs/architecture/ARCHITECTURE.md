@@ -42,12 +42,14 @@ The following describes the execution-facing subset and does not redefine that m
 - dependency injection and dependency scopes
 - command and query dispatch
 - event registration, dispatch and transactional-outbox integration
-- metadata registration and resolution
+- generic metadata registration/admission primitives and contribution lifecycle plumbing
 - permission registration and authorization integration
 - Unit of Work and transaction boundaries
 - module SDK and upgrade coordination
 
 Uvicorn owns process-level ASGI serving only. Raw ASGI and Uvicorn objects remain inside transport adapters. Application and domain code receive typed BusinessOS contexts and dependencies through framework contracts.
+
+Persistent customer metadata and business UI schema resolution belong to the Platform Foundation Metadata/Studio bounded context, not the protected framework runtime.
 
 ## 4. Layer Model
 

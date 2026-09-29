@@ -2,19 +2,21 @@ import { beforeEach } from 'vitest';
 import '@testing-library/jest-dom';
 
 // Polyfill window.matchMedia
-Object.defineProperty(window, 'matchMedia', {
-  writable: true,
-  value: (query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => false,
-  }),
-});
+if (typeof window !== 'undefined') {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  });
+}
 
 // Polyfill ResizeObserver
 global.ResizeObserver = class ResizeObserver {
@@ -25,5 +27,5 @@ global.ResizeObserver = class ResizeObserver {
 
 // Clean local storage between tests
 beforeEach(() => {
-  localStorage.clear();
+  if (typeof localStorage !== 'undefined') localStorage.clear();
 });

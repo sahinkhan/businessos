@@ -46,3 +46,49 @@
     display: none !important;
   }
 }
+
+@media (max-width: 479px) {
+  .businessos-header {
+    padding-inline: 8px !important;
+  }
+  .businessos-header-left {
+    gap: 6px !important;
+    min-width: 0;
+  }
+  .businessos-header-brand,
+  .businessos-header-divider {
+    display: none !important;
+  }
+  .businessos-header-scope {
+    margin-left: 0 !important;
+    min-width: 0;
+  }
+  .businessos-header-scope > div > button {
+    max-width: 105px;
+    gap: 4px !important;
+    padding-inline: 6px !important;
+  }
+  .businessos-header-scope > div > button > svg:first-child,
+  .businessos-header-scope > div > button > div > div:last-child {
+    display: none;
+  }
+  .businessos-header-scope > div > button > div {
+    min-width: 0;
+  }
+  .businessos-header-scope > div > button > div > div {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .businessos-header-actions {
+    gap: 4px !important;
+    flex-shrink: 0;
+  }
+  .businessos-scope-popover {
+    position: fixed !important;
+    top: 56px !important;
+    left: 8px !important;
+    right: 8px !important;
+    width: auto !important;
+  }
+}

@@ -1,0 +1,21 @@
+.bos-grid {
+  grid-template-columns: repeat(var(--bos-grid-sm), minmax(0, 1fr));
+}
+
+@media (min-width: 768px) {
+  .bos-grid {
+    grid-template-columns: repeat(var(--bos-grid-md), minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .bos-grid {
+    grid-template-columns: repeat(var(--bos-grid-lg), minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .bos-grid {
+    grid-template-columns: repeat(var(--bos-grid-xl), minmax(0, 1fr));
+  }
+}

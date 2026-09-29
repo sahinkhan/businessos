@@ -53,6 +53,7 @@ export const ScopeSwitcher: React.FC = () => {
 
       {isOpen && (
         <div
+          className="businessos-scope-popover"
           role="dialog"
           aria-label="Scope Selector"
           style={{

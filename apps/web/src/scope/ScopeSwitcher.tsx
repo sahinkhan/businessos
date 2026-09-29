@@ -1,11 +1,14 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useId } from 'react';
 import { Building2, ChevronDown, Check } from 'lucide-react';
 import { useScope } from './ScopeContext';
+import { useI18n } from '../i18n/I18nContext';
 
 export const ScopeSwitcher: React.FC = () => {
   const { scope, tenants, setTenant, setCompany, setSite } = useScope();
+  const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const tenantSelectId = useId();
 
   useEffect(() => {
     const handleOutside = (e: MouseEvent) => {
@@ -26,7 +29,7 @@ export const ScopeSwitcher: React.FC = () => {
         disabled={tenants.length === 0}
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}
-        aria-label="Switch organization scope"
+        aria-label={t('scope.switch')}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -38,12 +41,11 @@ export const ScopeSwitcher: React.FC = () => {
           color: 'var(--color-text-primary)',
           fontSize: '0.8125rem',
           cursor: 'pointer',
-          outline: 'none',
         }}
       >
         <Building2 size={16} color="var(--color-action-primary)" />
         <div style={{ textAlign: 'left', lineHeight: 1.2 }}>
-          <div style={{ fontWeight: 600 }}>{scope.companyName || 'Select scope'}</div>
+          <div style={{ fontWeight: 600 }}>{scope.companyName || t('scope.select')}</div>
           <div style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
             {scope.siteName}
           </div>
@@ -55,7 +57,7 @@ export const ScopeSwitcher: React.FC = () => {
         <div
           className="businessos-scope-popover"
           role="dialog"
-          aria-label="Scope Selector"
+          aria-label={t('scope.selector')}
           style={{
             position: 'absolute',
             top: '100%',
@@ -73,6 +75,7 @@ export const ScopeSwitcher: React.FC = () => {
           {/* Tenant selection */}
           <div style={{ marginBottom: '12px' }}>
             <label
+              htmlFor={tenantSelectId}
               style={{
                 fontSize: '0.75rem',
                 fontWeight: 600,
@@ -81,9 +84,10 @@ export const ScopeSwitcher: React.FC = () => {
                 marginBottom: '4px',
               }}
             >
-              TENANT
+              {t('scope.tenant')}
             </label>
             <select
+              id={tenantSelectId}
               value={scope.tenantId}
               onChange={(e) => setTenant(e.target.value)}
               style={{
@@ -106,7 +110,7 @@ export const ScopeSwitcher: React.FC = () => {
 
           {/* Companies & Sites in Tenant */}
           <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
-            <label
+            <div
               style={{
                 fontSize: '0.75rem',
                 fontWeight: 600,
@@ -115,8 +119,8 @@ export const ScopeSwitcher: React.FC = () => {
                 marginBottom: '6px',
               }}
             >
-              LEGAL ENTITIES & SITES
-            </label>
+              {t('scope.entities_sites')}
+            </div>
             {currentTenant?.groups.map((group) => (
               <div key={group.id} style={{ marginBottom: '8px' }}>
                 <div
@@ -133,11 +137,17 @@ export const ScopeSwitcher: React.FC = () => {
                   const isCurrentCompany = company.id === scope.companyId;
                   return (
                     <div key={company.id} style={{ marginLeft: '6px', marginBottom: '4px' }}>
-                      <div
+                      <button
+                        type="button"
+                        aria-current={isCurrentCompany ? 'true' : undefined}
                         onClick={() => {
                           setCompany(company.id);
                         }}
                         style={{
+                          width: '100%',
+                          border: 0,
+                          textAlign: 'start',
+                          fontFamily: 'inherit',
                           fontSize: '0.8125rem',
                           fontWeight: isCurrentCompany ? 600 : 400,
                           padding: '4px 6px',
@@ -158,7 +168,7 @@ export const ScopeSwitcher: React.FC = () => {
                           {company.name} ({company.code})
                         </span>
                         {isCurrentCompany && <Check size={14} />}
-                      </div>
+                      </button>
 
                       {/* Sites */}
                       {isCurrentCompany && (
@@ -166,14 +176,21 @@ export const ScopeSwitcher: React.FC = () => {
                           {company.sites.map((site) => {
                             const isCurrentSite = site.id === scope.siteId;
                             return (
-                              <div
+                              <button
                                 key={site.id}
+                                type="button"
+                                aria-current={isCurrentSite ? 'true' : undefined}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setSite(site.id);
                                   setIsOpen(false);
                                 }}
                                 style={{
+                                  display: 'block',
+                                  width: '100%',
+                                  border: 0,
+                                  textAlign: 'start',
+                                  fontFamily: 'inherit',
                                   fontSize: '0.75rem',
                                   padding: '3px 6px',
                                   borderRadius: '4px',
@@ -188,7 +205,7 @@ export const ScopeSwitcher: React.FC = () => {
                                 }}
                               >
                                 • {site.name}
-                              </div>
+                              </button>
                             );
                           })}
                         </div>

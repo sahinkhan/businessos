@@ -13,6 +13,7 @@ export interface ModalProps {
   footer?: React.ReactNode;
   size?: ModalSize;
   closeOnBackdrop?: boolean;
+  closeLabel?: string;
 }
 
 const sizeWidths: Record<ModalSize, string> = {
@@ -32,6 +33,7 @@ export const Modal: React.FC<ModalProps> = ({
   footer,
   size = 'md',
   closeOnBackdrop = true,
+  closeLabel = 'Close dialog',
 }) => {
   useEffect(() => {
     if (!isOpen) return;
@@ -123,7 +125,7 @@ export const Modal: React.FC<ModalProps> = ({
             </div>
             <IconButton
               icon={<X size={18} />}
-              aria-label="Close dialog"
+              aria-label={closeLabel}
               variant="ghost"
               size="sm"
               onClick={onClose}

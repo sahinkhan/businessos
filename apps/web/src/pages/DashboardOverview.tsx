@@ -7,6 +7,7 @@ import { useScope } from '../scope/ScopeContext';
 import { useAuth } from '../auth/AuthContext';
 import { useToast } from '../components/feedback/Toast';
 import { useNavigate } from 'react-router-dom';
+import { useI18n } from '../i18n/I18nContext';
 import {
   Building,
   Users,
@@ -23,9 +24,10 @@ export const DashboardOverview: React.FC = () => {
   const { user } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
+  const { t } = useI18n();
 
   return (
-    <DashboardPageShell title="Enterprise Operational Overview">
+    <DashboardPageShell title={t('dashboard.title')}>
       {/* Scope banner */}
       <Card
         variant="outlined"
@@ -43,7 +45,7 @@ export const DashboardOverview: React.FC = () => {
         >
           <div>
             <span style={{ fontSize: '0.8125rem', color: 'var(--color-text-secondary)' }}>
-              Connected Context: <strong>{scope.tenantName}</strong> &gt;{' '}
+              {t('dashboard.connected_context')}: <strong>{scope.tenantName}</strong> &gt;{' '}
               <strong>{scope.companyName}</strong> ({scope.siteName})
             </span>
           </div>
@@ -53,20 +55,24 @@ export const DashboardOverview: React.FC = () => {
               size="sm"
               onClick={() =>
                 toast.info(
-                  'Diagnostics',
-                  'Correlation ID: corr_' + Math.random().toString(36).substring(2, 8)
+                  t('dashboard.diagnostics_title'),
+                  t('dashboard.diagnostics_correlation', {
+                    id: 'corr_' + Math.random().toString(36).substring(2, 8),
+                  })
                 )
               }
             >
-              Copy Diagnostics
+              {t('dashboard.copy_diagnostics')}
             </Button>
             <Button
               variant="primary"
               size="sm"
               leftIcon={<Plus size={14} />}
-              onClick={() => toast.success('Action Triggered', 'New operational batch initiated')}
+              onClick={() =>
+                toast.success(t('dashboard.action_triggered'), t('dashboard.batch_initiated'))
+              }
             >
-              Quick Action
+              {t('dashboard.quick_action')}
             </Button>
           </div>
         </div>
@@ -83,7 +89,7 @@ export const DashboardOverview: React.FC = () => {
                 fontWeight: 500,
               }}
             >
-              ACTIVE LEGAL ENTITY
+              {t('dashboard.active_legal_entity')}
             </span>
             <Building size={18} color="var(--color-action-primary)" />
           </div>
@@ -107,7 +113,7 @@ export const DashboardOverview: React.FC = () => {
             }}
           >
             <CheckCircle size={12} />
-            <span>Operational site active</span>
+            <span>{t('dashboard.site_active')}</span>
           </div>
         </Card>
 
@@ -120,7 +126,7 @@ export const DashboardOverview: React.FC = () => {
                 fontWeight: 500,
               }}
             >
-              AUTHENTICATED USER
+              {t('dashboard.authenticated_user')}
             </span>
             <Users size={18} color="var(--color-action-primary)" />
           </div>
@@ -145,7 +151,7 @@ export const DashboardOverview: React.FC = () => {
                 fontWeight: 500,
               }}
             >
-              SYSTEM STATUS
+              {t('dashboard.system_status')}
             </span>
             <ArrowUpRight size={18} color="var(--color-status-success)" />
           </div>
@@ -157,19 +163,16 @@ export const DashboardOverview: React.FC = () => {
               color: 'var(--color-text-primary)',
             }}
           >
-            Phase 4.5 Certified
+            {t('dashboard.foundation_version')}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-            Design System &amp; Core Shell v1
+            {t('dashboard.system_description')}
           </div>
         </Card>
       </Grid>
 
       {/* Quick Access to Foundation Demos */}
-      <Card
-        title="UI Foundation Interactive Demos"
-        subtitle="Explore certified enterprise components and layouts"
-      >
+      <Card title={t('dashboard.demos_title')} subtitle={t('dashboard.demos_subtitle')}>
         <Grid columns={{ sm: 1, md: 3 }} gap={16}>
           <div
             onClick={() => navigate('/showcase')}
@@ -183,7 +186,7 @@ export const DashboardOverview: React.FC = () => {
           >
             <Layers size={24} color="var(--color-action-primary)" style={{ marginBottom: '8px' }} />
             <h4 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
-              Component Showcase
+              {t('dashboard.showcase_title')}
             </h4>
             <p
               style={{
@@ -192,7 +195,7 @@ export const DashboardOverview: React.FC = () => {
                 marginTop: '4px',
               }}
             >
-              Buttons, badges, modals, drawers, tooltips, toasts, alerts, and tokens.
+              {t('dashboard.showcase_description')}
             </p>
           </div>
 
@@ -208,7 +211,7 @@ export const DashboardOverview: React.FC = () => {
           >
             <Table size={24} color="var(--color-action-primary)" style={{ marginBottom: '8px' }} />
             <h4 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
-              DataTable Foundation
+              {t('dashboard.table_title')}
             </h4>
             <p
               style={{
@@ -217,7 +220,7 @@ export const DashboardOverview: React.FC = () => {
                 marginTop: '4px',
               }}
             >
-              Sorting, filtering, bulk selection, column visibility, and pagination.
+              {t('dashboard.table_description')}
             </p>
           </div>
 
@@ -237,7 +240,7 @@ export const DashboardOverview: React.FC = () => {
               style={{ marginBottom: '8px' }}
             />
             <h4 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
-              Form &amp; Input Primitives
+              {t('dashboard.forms_title')}
             </h4>
             <p
               style={{
@@ -246,7 +249,7 @@ export const DashboardOverview: React.FC = () => {
                 marginTop: '4px',
               }}
             >
-              Multi-input form with money, dates, validation errors, and dirty detection.
+              {t('dashboard.forms_description')}
             </p>
           </div>
         </Grid>

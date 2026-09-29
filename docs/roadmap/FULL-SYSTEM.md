@@ -189,7 +189,9 @@ Deliver:
 - safe customization upgrade model
 - UI schema resolution/rendering that consumes the certified Phase 4.5 shell, design system, forms, tables and layout primitives
 
-Gate: a customer can customize ordinary records/forms/workflows without modifying source code, and the metadata runtime extends the certified UI Foundation rather than replacing it with a parallel private component framework.
+Gate: a customer can customize ordinary records, fields, forms, views, menus/actions, bounded validation and supported UI layouts without modifying source code, and the metadata runtime extends the certified UI Foundation rather than replacing it with a parallel private component framework.
+
+Later Studio integration may author or configure supported Phase 6 workflow/rule definitions through published contracts. Phase 5 does not certify the Phase 6 workflow/rules engine or Phase 8 search, reporting and analytics.
 
 ## Phase 6 - Workflow, Rules, Resource and Scheduling
 

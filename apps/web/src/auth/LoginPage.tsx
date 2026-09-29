@@ -69,7 +69,16 @@ export const LoginPage: React.FC = () => {
             variant="primary"
             size="lg"
             isLoading={isLoading}
-            style={{ width: '100%', marginTop: '8px' }}
+            style={{
+              width: '100%',
+              minWidth: 0,
+              height: 'auto',
+              minHeight: '42px',
+              marginTop: '8px',
+              whiteSpace: 'normal',
+              overflowWrap: 'anywhere',
+              textAlign: 'center',
+            }}
           >
             {t('auth.continue_with_provider')}
           </Button>

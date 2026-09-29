@@ -430,6 +430,8 @@ class S3ObjectStorageProvider:
     """S3-compatible object storage with mandatory tenant key prefixes."""
 
     _FENCE_PREFIX = b"\x00businessos-fenced-v1\x00"
+    _FENCE_METADATA_KEY = "businessos-format"
+    _FENCE_METADATA_VALUE = "fenced-v1"
 
     def __init__(
         self,
@@ -484,11 +486,35 @@ class S3ObjectStorageProvider:
             Bucket=self._bucket,
             Key=self._key(tenant_id, key),
         )
-        body = response["Body"]
-        content: bytes = await asyncio.to_thread(body.read)
-        if not content.startswith(self._FENCE_PREFIX):
+        content: bytes = await asyncio.to_thread(response["Body"].read)
+        metadata = response.get("Metadata", {})
+        format_marker = metadata.get(self._FENCE_METADATA_KEY)
+        if format_marker is None:
+            # A generic put owns the entire byte namespace, including legacy fence-looking bytes.
             return content
-        header_end = len(self._FENCE_PREFIX) + 17
+        if format_marker != self._FENCE_METADATA_VALUE:
+            raise ValueError("Unsupported fenced object format")
+        return self._decode_fenced(content)
+
+    async def read_fenced(self, tenant_id: UUID, key: str) -> bytes:
+        """Explicit internal read; unmarked legacy fenced objects remain decodable here only."""
+        _require_provider_tenant(tenant_id)
+        response = await asyncio.to_thread(
+            self._client.get_object,
+            Bucket=self._bucket,
+            Key=self._key(tenant_id, key),
+        )
+        format_marker = response.get("Metadata", {}).get(self._FENCE_METADATA_KEY)
+        if format_marker not in (None, self._FENCE_METADATA_VALUE):
+            raise ValueError("Unsupported fenced object format")
+        content: bytes = await asyncio.to_thread(response["Body"].read)
+        return self._decode_fenced(content)
+
+    @classmethod
+    def _decode_fenced(cls, content: bytes) -> bytes:
+        if not content.startswith(cls._FENCE_PREFIX):
+            return content  # Pre-fence owner objects were stored without an envelope.
+        header_end = len(cls._FENCE_PREFIX) + 17
         if len(content) < header_end:
             raise ValueError("Invalid fenced object envelope")
         marker = content[header_end - 1]
@@ -531,6 +557,7 @@ class S3ObjectStorageProvider:
                 Bucket=self._bucket,
                 Key=self._key(tenant_id, key),
                 Body=envelope,
+                Metadata={self._FENCE_METADATA_KEY: self._FENCE_METADATA_VALUE},
                 **condition,
             )
         except self._client.exceptions.ClientError as exc:

@@ -1494,6 +1494,7 @@ async def test_adr017_late_noncancellable_s3_write_is_fenced_after_lock_release(
 
         def __init__(self) -> None:
             self.body: bytes | None = None
+            self.metadata: dict[str, str] = {}
             self.etag: str | None = None
             self.serial = 0
             self.lock = threading.Lock()
@@ -1527,13 +1528,14 @@ async def test_adr017_late_noncancellable_s3_write_is_fenced_after_lock_release(
                 self.serial += 1
                 self.etag = f'"generation-{self.serial}"'
                 self.body = body
+                self.metadata = kwargs.get("Metadata", {}).copy()
                 self.finished.set()
                 return {"ETag": self.etag}
 
-        def get_object(self, **_: Any) -> dict[str, io.BytesIO]:
+        def get_object(self, **_: Any) -> dict[str, Any]:
             with self.lock:
                 assert self.body is not None
-                return {"Body": io.BytesIO(self.body)}
+                return {"Body": io.BytesIO(self.body), "Metadata": self.metadata.copy()}
 
     client = PausedS3Client()
     storage = S3ObjectStorageProvider(bucket="fenced-proof-test")

@@ -1,6 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { queryCache } from './queryCache';
+import { securityContext } from './securityContext';
 import { useScope } from '../scope/ScopeContext';
+import { useAuth } from '../auth/AuthContext';
 
 export interface UseQueryOptions<T> {
   enabled?: boolean;
@@ -20,49 +22,59 @@ export const useQuery = <T>(
   fetcher: () => Promise<T>,
   options: UseQueryOptions<T> = {}
 ): UseQueryResult<T> => {
-  const { enabled = true, staleTime = 30000, initialData } = options;
+  const { enabled = true, staleTime = 30000 } = options;
   const { scope } = useScope();
-
-  // Scope cache key by tenant and site to guarantee zero cross-tenant state leakage
-  const scopedKey = `${scope.tenantId}:${scope.siteId}:${key}`;
-
-  const [data, setData] = useState<T | undefined>(() => {
-    const cached = queryCache.get<T>(scopedKey, staleTime);
-    return cached !== null ? cached : initialData;
-  });
-
-  const [isLoading, setIsLoading] = useState<boolean>(!data && enabled);
-  const [error, setError] = useState<Error | null>(null);
+  const { session } = useAuth();
+  const authorized = Boolean(
+    session && scope.tenantId && scope.companyId && session.companyId === scope.companyId
+  );
+  const scopedKey = `${securityContext.key()}:${key}`;
+  const [state, setState] = useState<{
+    key: string;
+    data: T | undefined;
+    loading: boolean;
+    error: Error | null;
+  }>({ key: scopedKey, data: undefined, loading: true, error: null });
+  const latest = useRef(scopedKey);
+  const fetcherRef = useRef(fetcher);
+  latest.current = scopedKey;
+  fetcherRef.current = fetcher;
 
   const execute = useCallback(async () => {
-    if (!enabled) return;
-    setIsLoading(true);
-    setError(null);
+    if (!enabled || !authorized) return;
+    const generation = securityContext.generation();
+    setState({ key: scopedKey, data: undefined, loading: true, error: null });
     try {
-      const result = await fetcher();
+      const result = await fetcherRef.current();
+      if (latest.current !== scopedKey || generation !== securityContext.generation()) return;
       queryCache.set(scopedKey, result);
-      setData(result);
-    } catch (err: any) {
-      setError(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      setIsLoading(false);
+      setState({ key: scopedKey, data: result, loading: false, error: null });
+    } catch (caught) {
+      if (latest.current !== scopedKey || generation !== securityContext.generation()) return;
+      setState({
+        key: scopedKey,
+        data: undefined,
+        loading: false,
+        error: caught instanceof Error ? caught : new Error(String(caught)),
+      });
     }
-  }, [enabled, scopedKey, fetcher]);
+  }, [enabled, authorized, scopedKey]);
 
   useEffect(() => {
-    const cached = queryCache.get<T>(scopedKey, staleTime);
-    if (cached !== null) {
-      setData(cached);
-      setIsLoading(false);
-    } else {
-      execute();
+    if (!enabled || !authorized) {
+      setState({ key: scopedKey, data: undefined, loading: false, error: null });
+      return;
     }
-  }, [scopedKey, staleTime, execute]);
+    const cached = queryCache.get<T>(scopedKey, staleTime);
+    if (cached !== null) setState({ key: scopedKey, data: cached, loading: false, error: null });
+    else void execute();
+  }, [scopedKey, staleTime, enabled, authorized, execute]);
 
   return {
-    data,
-    isLoading,
-    error,
+    data: authorized && state.key === scopedKey ? state.data : undefined,
+    isLoading:
+      authorized && state.key === scopedKey ? state.loading : Boolean(enabled && authorized),
+    error: authorized && state.key === scopedKey ? state.error : null,
     refetch: execute,
   };
 };

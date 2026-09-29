@@ -1,28 +1,31 @@
 export interface UserProfile {
   id: string;
-  email: string;
+  email?: string;
   name: string;
-  roles: string[];
-  permissions: string[];
   tenantId: string;
   avatarUrl?: string;
 }
 
 export interface SessionInfo {
-  token: string;
-  expiresAt: number; // Unix timestamp in seconds
-  issuedAt: number;
+  id: string;
+  user: UserProfile;
+  tenantId: string;
+  companyId: string | null;
+  siteId: string | null;
+  csrfToken: string;
+  expiresAt: number;
 }
 
-export interface AuthState {
+export type AuthStatus =
+  'initializing' | 'authenticated' | 'unauthenticated' | 'service_unavailable';
+
+export interface AuthContextValue {
   user: UserProfile | null;
   session: SessionInfo | null;
+  status: AuthStatus;
   isAuthenticated: boolean;
   isLoading: boolean;
-}
-
-export interface AuthContextValue extends AuthState {
-  login: (email: string, password?: string) => Promise<void>;
+  login: (returnTo?: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshToken: () => Promise<void>;
 }

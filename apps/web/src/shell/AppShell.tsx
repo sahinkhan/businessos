@@ -6,6 +6,7 @@ import { Breadcrumbs } from './Breadcrumbs';
 import { CommandPalette } from '../command-palette/CommandPalette';
 import { NotificationDrawer } from '../notifications/NotificationDrawer';
 import { SessionExpiryModal } from '../auth/SessionExpiryModal';
+import './shell.css';
 
 export const AppShell: React.FC = () => {
   const [isNotificationsOpen, setNotificationsOpen] = useState(false);
@@ -40,14 +41,14 @@ export const AppShell: React.FC = () => {
       <Header onOpenNotifications={() => setNotificationsOpen(true)} />
 
       {/* Body: Sidebar + Main Content */}
-      <div style={{ display: 'flex', flex: 1 }}>
+      <div className="businessos-shell-body">
         <Sidebar />
         <main
+          className="businessos-shell-main"
           id="main-content"
           tabIndex={-1}
           style={{
             flex: 1,
-            padding: '24px 32px',
             backgroundColor: 'var(--color-surface-canvas)',
             outline: 'none',
             overflowX: 'hidden',

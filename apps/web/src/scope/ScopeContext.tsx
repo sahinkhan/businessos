@@ -1,203 +1,180 @@
-import React, { createContext, useContext, useState, useMemo, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+} from 'react';
+import { apiClient } from '../api/client';
+import { securityContext } from '../api/securityContext';
+import { useAuth } from '../auth/AuthContext';
 import { TenantScope, ActiveScope, ScopeContextValue } from './types';
 
-const SCOPE_STORAGE_KEY = 'businessos.active_scope';
-
-const DEFAULT_TENANTS: TenantScope[] = [
-  {
-    id: 'tenant_global_corp',
-    name: 'Global Enterprise Holdings',
-    groups: [
-      {
-        id: 'grp_north_america',
-        name: 'North America Group',
-        companies: [
-          {
-            id: 'cmp_us_tech',
-            name: 'US Technology Inc',
-            code: 'US-TECH',
-            currency: 'USD',
-            sites: [
-              { id: 'site_austin', name: 'Austin Technology Campus', code: 'AUS-01' },
-              { id: 'site_seattle', name: 'Seattle HQ Operations', code: 'SEA-01' },
-            ],
-          },
-          {
-            id: 'cmp_canada_ops',
-            name: 'Canada Logistics Corp',
-            code: 'CA-LOG',
-            currency: 'CAD',
-            sites: [{ id: 'site_toronto', name: 'Toronto Distribution Center', code: 'TOR-01' }],
-          },
-        ],
-      },
-      {
-        id: 'grp_emea',
-        name: 'EMEA Division',
-        companies: [
-          {
-            id: 'cmp_uk_dist',
-            name: 'UK Distribution Ltd',
-            code: 'UK-DIST',
-            currency: 'GBP',
-            sites: [{ id: 'site_london', name: 'London Central Hub', code: 'LON-01' }],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'tenant_apac_retail',
-    name: 'APAC Retail Ventures',
-    groups: [
-      {
-        id: 'grp_apac_main',
-        name: 'APAC Operations Group',
-        companies: [
-          {
-            id: 'cmp_singapore',
-            name: 'Singapore Trading Pte Ltd',
-            code: 'SG-TRD',
-            currency: 'SGD',
-            sites: [{ id: 'site_sg_port', name: 'Jurong Logistics Depot', code: 'SG-01' }],
-          },
-        ],
-      },
-    ],
-  },
-];
-
+const EMPTY: ActiveScope = {
+  tenantId: '',
+  tenantName: '',
+  groupId: '',
+  groupName: '',
+  companyId: '',
+  companyName: '',
+  siteId: '',
+  siteName: '',
+};
 const ScopeContext = createContext<ScopeContextValue | undefined>(undefined);
 
+function inHierarchy(tenants: TenantScope[], scope: ActiveScope): boolean {
+  const tenant = tenants.find((item) => item.id === scope.tenantId);
+  const group = tenant?.groups.find((item) => item.id === scope.groupId);
+  const company = group?.companies.find((item) => item.id === scope.companyId);
+  return Boolean(
+    company && (scope.siteId === '' || company.sites.some((item) => item.id === scope.siteId))
+  );
+}
+
 export const ScopeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const tenants = DEFAULT_TENANTS;
+  const { session, refreshToken } = useAuth();
+  const [scope, setScopeState] = useState<ActiveScope>(EMPTY);
+  const [tenants, setTenants] = useState<TenantScope[]>([]);
+  const [isLoading, setLoading] = useState(false);
+  const sequence = useRef(0);
 
-  const [scope, setScopeState] = useState<ActiveScope>(() => {
-    try {
-      const stored = localStorage.getItem(SCOPE_STORAGE_KEY);
-      if (stored) return JSON.parse(stored);
-    } catch {
-      // ignore
-    }
-    const t = DEFAULT_TENANTS[0];
-    const g = t.groups[0];
-    const c = g.companies[0];
-    const s = c.sites[0];
-    return {
-      tenantId: t.id,
-      tenantName: t.name,
-      groupId: g.id,
-      groupName: g.name,
-      companyId: c.id,
-      companyName: c.name,
-      siteId: s.id,
-      siteName: s.name,
-    };
-  });
-
-  const saveScope = useCallback((newScope: ActiveScope) => {
-    setScopeState(newScope);
-    try {
-      localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify(newScope));
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  const setTenant = useCallback(
-    (tenantId: string) => {
-      const t = tenants.find((item) => item.id === tenantId);
-      if (!t) return;
-      const g = t.groups[0];
-      const c = g.companies[0];
-      const s = c.sites[0];
-      saveScope({
-        tenantId: t.id,
-        tenantName: t.name,
-        groupId: g.id,
-        groupName: g.name,
-        companyId: c.id,
-        companyName: c.name,
-        siteId: s.id,
-        siteName: s.name,
+  useEffect(() => {
+    const version = ++sequence.current;
+    setScopeState(EMPTY);
+    setTenants([]);
+    if (!session) return;
+    setLoading(true);
+    apiClient
+      .get<{ tenants: TenantScope[]; active_scope: ActiveScope }>('/v1/organization/scopes')
+      .then((response) => {
+        if (version !== sequence.current) return;
+        const active = response.active_scope;
+        const unselected =
+          active?.companyId === '' && session.companyId === null && session.siteId === null;
+        if (
+          !Array.isArray(response.tenants) ||
+          !active ||
+          (!unselected && !inHierarchy(response.tenants, active)) ||
+          active.tenantId !== session.tenantId ||
+          (!unselected &&
+            (active.companyId !== session.companyId || active.siteId !== (session.siteId ?? '')))
+        ) {
+          throw new Error('Invalid authoritative scope');
+        }
+        setTenants(response.tenants);
+        setScopeState(active);
+      })
+      .catch(() => {
+        if (version === sequence.current) {
+          setTenants([]);
+          setScopeState(EMPTY);
+        }
+      })
+      .finally(() => {
+        if (version === sequence.current) setLoading(false);
       });
+    return () => {
+      sequence.current += 1;
+    };
+  }, [session]);
+
+  const select = useCallback(
+    async (next: ActiveScope) => {
+      if (!session || !inHierarchy(tenants, next) || next.tenantId !== session.tenantId) return;
+      ++sequence.current;
+      setScopeState(EMPTY);
+      setTenants([]);
+      setLoading(true);
+      const current = securityContext.current();
+      securityContext.transition(current && { ...current, companyId: null, siteId: null });
+      try {
+        await apiClient.post('/v1/organization/active-scope', {
+          tenant_id: next.tenantId,
+          enterprise_group_id: next.groupId,
+          company_id: next.companyId,
+          operating_site_id: next.siteId,
+        });
+      } catch {
+        // The server remains authoritative; recovery below reloads only a validated session.
+      } finally {
+        await refreshToken();
+        setLoading(false);
+      }
     },
-    [tenants, saveScope]
+    [session, tenants, refreshToken]
   );
 
+  const setTenant = useCallback(
+    (id: string) => {
+      const tenant = tenants.find((item) => item.id === id);
+      const group = tenant?.groups[0];
+      const company = group?.companies[0];
+      const site = company?.sites[0];
+      if (tenant && group && company)
+        void select({
+          tenantId: tenant.id,
+          tenantName: tenant.name,
+          groupId: group.id,
+          groupName: group.name,
+          companyId: company.id,
+          companyName: company.name,
+          siteId: site?.id ?? '',
+          siteName: site?.name ?? '',
+        });
+    },
+    [tenants, select]
+  );
   const setCompany = useCallback(
-    (companyId: string) => {
-      const t = tenants.find((item) => item.id === scope.tenantId);
-      if (!t) return;
-      for (const g of t.groups) {
-        const c = g.companies.find((comp) => comp.id === companyId);
-        if (c) {
-          const s = c.sites[0];
-          saveScope({
+    (id: string) => {
+      const tenant = tenants.find((item) => item.id === scope.tenantId);
+      for (const group of tenant?.groups ?? []) {
+        const company = group.companies.find((item) => item.id === id);
+        const site = company?.sites[0];
+        if (company) {
+          void select({
             ...scope,
-            groupId: g.id,
-            groupName: g.name,
-            companyId: c.id,
-            companyName: c.name,
-            siteId: s.id,
-            siteName: s.name,
+            groupId: group.id,
+            groupName: group.name,
+            companyId: company.id,
+            companyName: company.name,
+            siteId: site?.id ?? '',
+            siteName: site?.name ?? '',
           });
           return;
         }
       }
     },
-    [tenants, scope, saveScope]
+    [tenants, scope, select]
   );
-
   const setSite = useCallback(
-    (siteId: string) => {
-      const t = tenants.find((item) => item.id === scope.tenantId);
-      if (!t) return;
-      for (const g of t.groups) {
-        for (const c of g.companies) {
-          const s = c.sites.find((st) => st.id === siteId);
-          if (s) {
-            saveScope({
-              ...scope,
-              groupId: g.id,
-              groupName: g.name,
-              companyId: c.id,
-              companyName: c.name,
-              siteId: s.id,
-              siteName: s.name,
-            });
-            return;
-          }
-        }
-      }
+    (id: string) => {
+      const tenant = tenants.find((item) => item.id === scope.tenantId);
+      const group = tenant?.groups.find((item) => item.id === scope.groupId);
+      const company = group?.companies.find((item) => item.id === scope.companyId);
+      const site = company?.sites.find((item) => item.id === id);
+      if (site) void select({ ...scope, siteId: site.id, siteName: site.name });
     },
-    [tenants, scope, saveScope]
+    [tenants, scope, select]
   );
-
   const setScope = useCallback(
     (partial: Partial<ActiveScope>) => {
-      saveScope({ ...scope, ...partial });
+      const next = { ...scope, ...partial };
+      if (inHierarchy(tenants, next)) void select(next);
     },
-    [scope, saveScope]
+    [scope, tenants, select]
   );
 
-  const value = useMemo(
-    () => ({
-      scope,
-      tenants,
-      setTenant,
-      setCompany,
-      setSite,
-      setScope,
-    }),
-    [scope, tenants, setTenant, setCompany, setSite, setScope]
+  const value = useMemo<ScopeContextValue>(
+    () => ({ scope, tenants, isLoading, setTenant, setCompany, setSite, setScope }),
+    [scope, tenants, isLoading, setTenant, setCompany, setSite, setScope]
   );
-
   return <ScopeContext.Provider value={value}>{children}</ScopeContext.Provider>;
 };
 
 export const useScope = (): ScopeContextValue => {
-  const ctx = useContext(ScopeContext);
-  if (!ctx) throw new Error('useScope must be used within ScopeProvider');
-  return ctx;
+  const context = useContext(ScopeContext);
+  if (!context) throw new Error('useScope must be used within ScopeProvider');
+  return context;
 };

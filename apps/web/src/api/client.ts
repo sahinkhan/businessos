@@ -1,120 +1,72 @@
+import { securityContext } from './securityContext';
 import { ApiError, RequestOptions } from './types';
 
+/** Same-origin JSON transport. Cookies are HttpOnly; scope is server session state. */
 export class ApiClient {
-  private baseUrl: string;
+  constructor(private readonly baseUrl = '/api') {}
 
-  constructor(baseUrl: string = '/api') {
-    this.baseUrl = baseUrl;
-  }
-
-  private getAuthToken(): string | null {
-    try {
-      const sessionStr = localStorage.getItem('businessos.auth.session');
-      if (sessionStr) {
-        const session = JSON.parse(sessionStr);
-        return session.token || null;
-      }
-    } catch {
-      // ignore
+  async request<T = unknown>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    if (!endpoint.startsWith('/') || endpoint.startsWith('//'))
+      throw new Error('API endpoint must be same-origin');
+    const { params, body, headers: suppliedHeaders, ...requestOptions } = options;
+    const url = new URL(`${this.baseUrl}${endpoint}`, window.location.origin);
+    if (url.origin !== window.location.origin) throw new Error('API URL must be same-origin');
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value !== null && value !== undefined) url.searchParams.set(key, String(value));
     }
-    return null;
-  }
-
-  private getActiveScope() {
-    try {
-      const scopeStr = localStorage.getItem('businessos.active_scope');
-      if (scopeStr) return JSON.parse(scopeStr);
-    } catch {
-      // ignore
+    const method = (requestOptions.method ?? 'GET').toUpperCase();
+    const controller = new AbortController();
+    const release = securityContext.track(controller);
+    const suppliedSignal = requestOptions.signal;
+    if (suppliedSignal?.aborted) controller.abort();
+    suppliedSignal?.addEventListener('abort', () => controller.abort(), { once: true });
+    const generation = securityContext.generation();
+    const headers = new Headers(suppliedHeaders);
+    headers.set('Accept', 'application/json');
+    headers.set('X-Correlation-Id', crypto.randomUUID());
+    if (body !== undefined) headers.set('Content-Type', 'application/json');
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      const csrf = securityContext.current()?.csrfToken;
+      if (csrf) headers.set('X-CSRF-Token', csrf);
     }
-    return null;
-  }
-
-  public async request<T = any>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-    const { params, body, headers: customHeaders, scope, ...customOptions } = options;
-
-    let url = endpoint.startsWith('http')
-      ? endpoint
-      : `${this.baseUrl}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-
-    if (params) {
-      const searchParams = new URLSearchParams();
-      Object.entries(params).forEach(([key, val]) => {
-        if (val !== undefined && val !== null) {
-          searchParams.append(key, String(val));
-        }
+    try {
+      const response = await fetch(url, {
+        ...requestOptions,
+        method,
+        headers,
+        body:
+          body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
+        credentials: 'same-origin',
+        signal: controller.signal,
       });
-      const qs = searchParams.toString();
-      if (qs) {
-        url += (url.includes('?') ? '&' : '?') + qs;
+      if (generation !== securityContext.generation())
+        throw new DOMException('Security context changed', 'AbortError');
+      if (response.status === 401 && endpoint !== '/v1/auth/session') {
+        window.dispatchEvent(new Event('businessos:unauthorized'));
       }
-    }
-
-    const token = this.getAuthToken();
-    const activeScope = scope || this.getActiveScope();
-
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'X-Correlation-Id': 'corr_' + Math.random().toString(36).substring(2, 9),
-      ...(customHeaders as Record<string, string>),
-    };
-
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
-
-    if (activeScope?.tenantId) {
-      headers['X-Tenant-Id'] = activeScope.tenantId;
-    }
-    if (activeScope?.companyId) {
-      headers['X-Company-Id'] = activeScope.companyId;
-    }
-    if (activeScope?.siteId) {
-      headers['X-Operating-Site-Id'] = activeScope.siteId;
-    }
-
-    const config: RequestInit = {
-      ...customOptions,
-      headers,
-    };
-
-    if (body !== undefined) {
-      config.body = typeof body === 'string' ? body : JSON.stringify(body);
-    }
-
-    const response = await fetch(url, config);
-
-    if (!response.ok) {
-      let errorPayload = { code: 'HTTP_ERROR', message: response.statusText };
-      try {
-        errorPayload = await response.json();
-      } catch {
-        // ignore
+      if (!response.ok) {
+        const payload = await response
+          .json()
+          .catch(() => ({ code: 'http_error', message: response.statusText }));
+        throw new ApiError(response.status, payload);
       }
-      throw new ApiError(response.status, errorPayload);
+      if (response.status === 204) return undefined as T;
+      return (await response.json()) as T;
+    } finally {
+      release();
     }
-
-    if (response.status === 204) {
-      return {} as T;
-    }
-
-    return (await response.json()) as T;
   }
 
-  public get<T = any>(endpoint: string, options?: RequestOptions): Promise<T> {
+  get<T = unknown>(endpoint: string, options?: RequestOptions) {
     return this.request<T>(endpoint, { ...options, method: 'GET' });
   }
-
-  public post<T = any>(endpoint: string, body?: any, options?: RequestOptions): Promise<T> {
+  post<T = unknown>(endpoint: string, body?: unknown, options?: RequestOptions) {
     return this.request<T>(endpoint, { ...options, method: 'POST', body });
   }
-
-  public put<T = any>(endpoint: string, body?: any, options?: RequestOptions): Promise<T> {
+  put<T = unknown>(endpoint: string, body?: unknown, options?: RequestOptions) {
     return this.request<T>(endpoint, { ...options, method: 'PUT', body });
   }
-
-  public delete<T = any>(endpoint: string, options?: RequestOptions): Promise<T> {
+  delete<T = unknown>(endpoint: string, options?: RequestOptions) {
     return this.request<T>(endpoint, { ...options, method: 'DELETE' });
   }
 }

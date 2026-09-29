@@ -38,6 +38,7 @@ export interface ActiveScope {
 export interface ScopeContextValue {
   scope: ActiveScope;
   tenants: TenantScope[];
+  isLoading: boolean;
   setTenant: (tenantId: string) => void;
   setCompany: (companyId: string) => void;
   setSite: (siteId: string) => void;

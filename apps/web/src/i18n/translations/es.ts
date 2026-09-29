@@ -1,4 +1,11 @@
 export const es: Record<string, string> = {
+  'nav.overview': 'Resumen',
+  'nav.foundation': 'Componentes base',
+  'nav.administration': 'Administración',
+  'nav.showcase': 'Componentes de interfaz',
+  'nav.datatable': 'Tabla de datos',
+  'nav.forms': 'Formularios y entradas',
+  'nav.layouts': 'Diseños de página',
   'common.search': 'Buscar...',
   'common.save': 'Guardar',
   'common.cancel': 'Cancelar',
@@ -9,6 +16,11 @@ export const es: Record<string, string> = {
   'common.loading': 'Cargando...',
   'common.retry': 'Reintentar',
   'common.back': 'Atrás',
+  'auth.platform_name': 'Plataforma de gestión empresarial',
+  'auth.continue_with_provider': 'Continuar con el proveedor de identidad de su organización',
+  'auth.login_failed': 'El inicio de sesión no está disponible. Inténtelo de nuevo.',
+  'auth.service_unavailable':
+    'El servicio de autenticación no está disponible. Inténtelo más tarde.',
   'nav.dashboard': 'Panel de control',
   'nav.settings': 'Configuración',
   'nav.notifications': 'Notificaciones',

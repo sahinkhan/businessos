@@ -30,6 +30,10 @@ class Response:
     status_code: int = 200
     body: bytes = b""
     headers: dict[str, str] = field(default_factory=dict[str, str])
+    additional_headers: list[tuple[str, str]] = field(default_factory=lambda: [])
+
+    def append_header(self, key: str, value: str) -> None:
+        self.additional_headers.append((key, value))
 
     @classmethod
     def text(
@@ -66,6 +70,10 @@ class Response:
             "headers": [
                 (key.lower().encode("latin-1"), value.encode("latin-1"))
                 for key, value in self.headers.items()
+            ]
+            + [
+                (key.lower().encode("latin-1"), value.encode("latin-1"))
+                for key, value in self.additional_headers
             ],
             "trailers": False,
         }

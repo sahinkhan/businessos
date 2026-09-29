@@ -1,5 +1,7 @@
 """Stable dependency keys published by the protected framework SDK."""
 
+from uuid import UUID
+
 from businessos.di import DependencyKey
 from businessos.messages import MessageDispatcher
 from businessos.persistence import Database, UnitOfWorkFactory
@@ -15,6 +17,7 @@ from businessos.resources import ResourceOwnerResolver
 from businessos.security import Authorizer
 
 DATABASE = DependencyKey[Database]("businessos.database")
+INSTALLATION_ID = DependencyKey[UUID]("businessos.installation_id")
 UNIT_OF_WORK_FACTORY = DependencyKey[UnitOfWorkFactory]("businessos.unit_of_work_factory")
 AUTHORIZER = DependencyKey[Authorizer]("businessos.authorizer")
 MESSAGE_DISPATCHER = DependencyKey[MessageDispatcher]("businessos.message_dispatcher")

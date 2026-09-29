@@ -52,6 +52,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
         />
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span
+            className="businessos-header-version"
             style={{
               fontSize: '1.125rem',
               fontWeight: 700,
@@ -82,6 +83,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNotifications }) => {
       {/* Right side: Global search trigger, Notifications, Theme toggle, Locale, User menu */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <button
+          className="businessos-header-search"
           type="button"
           onClick={() => {
             window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));

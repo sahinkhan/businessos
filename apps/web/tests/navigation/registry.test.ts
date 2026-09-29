@@ -1,26 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { navigationRegistry } from '../../src/navigation/registry';
+import { RouteRegistry } from '../../src/navigation/routeRegistry';
 
-describe('Navigation Registry', () => {
-  it('registers navigation items dynamically and groups them', () => {
-    navigationRegistry.register({
-      id: 'custom_reports',
-      label: 'Financial Statements',
-      path: '/reports/financial',
-      group: 'Reporting',
-      order: 5,
-    });
-
-    const items = navigationRegistry.getAll();
-    const registered = items.find((i) => i.id === 'custom_reports');
-    expect(registered).toBeDefined();
-    expect(registered?.label).toBe('Financial Statements');
-
-    const groups = navigationRegistry.getGroups();
-    const reportGroup = groups.find((g) => g.label === 'Reporting');
-    expect(reportGroup).toBeDefined();
-    expect(reportGroup?.items.some((i) => i.id === 'custom_reports')).toBe(true);
-
-    navigationRegistry.unregister('custom_reports');
+describe('Module route contributions', () => {
+  it('requires lazy loaders, stable ownership, and unique paths', () => {
+    const registry = new RouteRegistry();
+    const route = {
+      id: 'reports.summary',
+      path: '/reports/summary',
+      owner: 'reports',
+      enabled: false,
+      loader: async () => ({ default: () => null }),
+      navigation: { labelKey: 'reports.summary', groupKey: 'reports', icon: 'Table', order: 5 },
+    };
+    registry.register(route);
+    expect(registry.getAll()[0].enabled).toBe(false);
+    registry.setEnabled(route.id, true);
+    expect(registry.getAll()[0].enabled).toBe(true);
+    expect(() => registry.register({ ...route, id: 'reports.duplicate' })).toThrow(/collision/);
+    registry.unregister(route.id);
+    expect(registry.getAll()).toHaveLength(0);
   });
 });

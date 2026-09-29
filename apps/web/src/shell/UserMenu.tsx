@@ -62,23 +62,6 @@ export const UserMenu: React.FC = () => {
               <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
                 {user.email}
               </div>
-              <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
-                {user.roles.map((r) => (
-                  <span
-                    key={r}
-                    style={{
-                      fontSize: '0.6875rem',
-                      padding: '1px 6px',
-                      backgroundColor: 'var(--color-surface-subtle)',
-                      borderRadius: '4px',
-                      color: 'var(--color-action-primary)',
-                      fontWeight: 600,
-                    }}
-                  >
-                    {r}
-                  </span>
-                ))}
-              </div>
             </div>
           ),
           onClick: () => {},

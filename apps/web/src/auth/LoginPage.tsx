@@ -1,32 +1,24 @@
 import React, { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { useAuth } from './AuthContext';
-import { TextInput } from '../components/inputs/TextInput';
 import { Button } from '../components/actions/Button';
-import { FormField } from '../components/form/FormField';
 import { Alert } from '../components/feedback/Alert';
+import { useI18n } from '../i18n/I18nContext';
 
 export const LoginPage: React.FC = () => {
   const { login, isLoading } = useAuth();
-  const navigate = useNavigate();
+  const { t } = useI18n();
   const location = useLocation();
   const from = (location.state as any)?.from?.pathname || '/';
 
-  const [email, setEmail] = useState('admin@businessos.internal');
-  const [password, setPassword] = useState('password');
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) {
-      setError('Please enter your work email.');
-      return;
-    }
     try {
-      await login(email, password);
-      navigate(from, { replace: true });
-    } catch (err: any) {
-      setError(err.message || 'Login failed. Please verify credentials.');
+      await login(from);
+    } catch {
+      setError(t('auth.login_failed'));
     }
   };
 
@@ -59,7 +51,7 @@ export const LoginPage: React.FC = () => {
           <p
             style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', marginTop: '4px' }}
           >
-            Enterprise Management Platform
+            {t('auth.platform_name')}
           </p>
         </div>
 
@@ -72,28 +64,6 @@ export const LoginPage: React.FC = () => {
         )}
 
         <form onSubmit={handleSubmit}>
-          <FormField label="Work email" required>
-            <TextInput
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="user@enterprise.com"
-              autoComplete="username"
-              required
-            />
-          </FormField>
-
-          <FormField label="Password" required>
-            <TextInput
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              autoComplete="current-password"
-              required
-            />
-          </FormField>
-
           <Button
             type="submit"
             variant="primary"
@@ -101,7 +71,7 @@ export const LoginPage: React.FC = () => {
             isLoading={isLoading}
             style={{ width: '100%', marginTop: '8px' }}
           >
-            Sign in
+            {t('auth.continue_with_provider')}
           </Button>
         </form>
       </div>

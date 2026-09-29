@@ -1,19 +1,23 @@
 """Identity and membership module registration and handlers."""
 
 import json
+import secrets
 from datetime import UTC, datetime, timedelta
 from importlib.resources import files
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 from uuid import UUID, uuid4
 
-from businessos_tenant import validate_effective_period
+from businessos_tenant import DatabaseTenantAccessValidator, validate_effective_period
 from pydantic import ConfigDict, Field
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from businessos.sdk import (
+    INSTALLATION_ID,
+    UNIT_OF_WORK_FACTORY,
     BusinessOSError,
     Command,
+    DependencyResolver,
     DependencyScope,
     DomainEvent,
     HandlingContext,
@@ -21,7 +25,10 @@ from businessos.sdk import (
     ModuleRegistration,
     PermissionDeclaration,
     Query,
+    Request,
     RequestContext,
+    RequestDependencyScope,
+    Response,
     TenantContext,
 )
 
@@ -45,7 +52,20 @@ from .models import (
     SERVICE_ACCOUNTS,
     USERS,
 )
+from .oidc import OIDCContextResolver
 from .principal_binding import AUTHENTICATED_PRINCIPAL, current_authenticated_principal
+from .web_browser import BrowserOIDCSettings, BrowserSessionRuntime
+from .web_sessions import (
+    AUTH_TRANSACTION_COOKIE,
+    SESSION_COOKIE,
+    WEB_SESSION_SERVICE,
+    WebSessionApplicationService,
+    WebSessionContract,
+    cookie_value,
+    expire_cookie,
+    session_cookie,
+    transaction_cookie,
+)
 from .workload_authority import DatabaseWorkloadExecutionAuthority
 
 
@@ -179,6 +199,7 @@ class IdentityModule:
             files("businessos_identity").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
+        self._browser_runtime: BrowserSessionRuntime | None = None
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.dependency(MEMBERSHIP_AUTHORITY, lambda _: DatabaseMembershipAuthority())
@@ -197,6 +218,18 @@ class IdentityModule:
         ):
             registration.permission(PermissionDeclaration(key=key, description=description))
         registration.contract("foundation.identity.v1", IdentityContract())
+        registration.contract("foundation.identity.web-session.v1", WebSessionContract())
+        registration.dependency(
+            WEB_SESSION_SERVICE,
+            self._provide_web_session_service,
+            scope=DependencyScope.SINGLETON,
+        )
+        registration.route("GET", "/api/v1/auth/session", self._http_session, name="web-session")
+        registration.route(
+            "POST", "/api/v1/auth/login/start", self._http_login_start, name="web-login-start"
+        )
+        registration.route("GET", "/api/v1/auth/callback", self._http_callback, name="web-callback")
+        registration.route("POST", "/api/v1/auth/logout", self._http_logout, name="web-logout")
         registration.command(CreateUser, self._create_user, permission="foundation.identity.manage")
         registration.command(
             MapExternalIdentity, self._map_external, permission="foundation.identity.manage"
@@ -247,10 +280,128 @@ class IdentityModule:
             permission="foundation.identity.read",
         )
 
+    async def _provide_web_session_service(
+        self, dependencies: DependencyResolver
+    ) -> WebSessionApplicationService:
+        settings = BrowserOIDCSettings.from_environment()
+        if settings is None:
+            raise BusinessOSError(
+                "authentication_unavailable",
+                "Browser authentication is not configured",
+                status_code=503,
+            )
+        installation_id = await dependencies.resolve(INSTALLATION_ID)
+        unit_of_work_factory = await dependencies.resolve(UNIT_OF_WORK_FACTORY)
+        oidc = OIDCContextResolver(
+            installation_id=installation_id,
+            unit_of_work_factory=unit_of_work_factory,
+            tenant_access=DatabaseTenantAccessValidator(installation_id, unit_of_work_factory),
+        )
+        runtime = BrowserSessionRuntime(settings, installation_id, unit_of_work_factory, oidc)
+        self._browser_runtime = runtime
+        return runtime.service
+
+    @staticmethod
+    async def _service(dependencies: RequestDependencyScope) -> WebSessionApplicationService:
+        return await dependencies.resolve(WEB_SESSION_SERVICE)
+
+    async def _http_session(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        service = await self._service(dependencies)
+        handle = cookie_value(request.headers, SESSION_COOKIE)
+        session = await service.get_session(handle) if handle else None
+        if session is None or handle is None:
+            response = Response.json(
+                {"code": "unauthenticated", "message": "Authentication required"}, status_code=401
+            )
+            response.append_header("set-cookie", expire_cookie(SESSION_COOKIE))
+            return response
+        return Response.json(service.project(session, handle))
+
+    async def _http_login_start(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        fetch_site = request.headers.get("sec-fetch-site")
+        origin = request.headers.get("origin")
+        host = request.headers.get("host")
+        if fetch_site not in {None, "same-origin", "none"} or (
+            origin is not None and (host is None or origin != f"{request.scheme}://{host}")
+        ):
+            raise BusinessOSError("invalid_origin", "Login request is not valid", status_code=403)
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise BusinessOSError("invalid_request", "Request must be an object", status_code=400)
+        payload = cast(dict[str, object], payload)
+        provider = payload.get("provider", "default")
+        return_to = payload.get("return_to")
+        if not isinstance(provider, str) or not isinstance(return_to, str | None):
+            raise BusinessOSError("invalid_request", "Request is not valid", status_code=400)
+        service = await self._service(dependencies)
+        started = await service.start_login(
+            provider, return_to, rate_limit_key=f"login:{request.client_host}"
+        )
+        response = Response.json(
+            {"authorization_url": started.authorization_url, "expires_at": started.expires_at}
+        )
+        response.append_header(
+            "set-cookie", transaction_cookie(started.browser_binding, started.expires_at)
+        )
+        return response
+
+    async def _http_callback(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        service = await self._service(dependencies)
+        state = request.query_params.get("state", ("",))[0]
+        code = request.query_params.get("code", ("",))[0]
+        binding = cookie_value(request.headers, AUTH_TRANSACTION_COOKIE) or ""
+        if not state or not code or not binding:
+            response = Response.json(
+                {"code": "invalid_authentication_callback", "message": "Authentication failed"},
+                status_code=401,
+            )
+            response.append_header("set-cookie", expire_cookie(AUTH_TRANSACTION_COOKIE))
+            return response
+        try:
+            handle, session, return_to = await service.complete_oidc_login(
+                state=state, code=code, browser_binding=binding
+            )
+        except BusinessOSError as error:
+            response = Response.json(error.payload(), status_code=error.status_code)
+            response.append_header("set-cookie", expire_cookie(AUTH_TRANSACTION_COOKIE))
+            return response
+        previous = cookie_value(request.headers, SESSION_COOKIE)
+        if previous:
+            await service.logout(previous)
+        response = Response(status_code=303, headers={"location": return_to})
+        response.append_header("set-cookie", expire_cookie(AUTH_TRANSACTION_COOKIE))
+        response.append_header("set-cookie", session_cookie(handle, session.absolute_expires_at))
+        return response
+
+    async def _http_logout(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        service = await self._service(dependencies)
+        handle = cookie_value(request.headers, SESSION_COOKIE)
+        if handle:
+            session = await service.get_session(handle, touch=False)
+            if session is not None and not secrets.compare_digest(
+                request.headers.get("x-csrf-token", ""), session.csrf_token
+            ):
+                raise BusinessOSError("invalid_csrf", "CSRF validation failed", status_code=403)
+            await service.logout(handle)
+        response = Response(status_code=204)
+        response.append_header("set-cookie", expire_cookie(SESSION_COOKIE))
+        return response
+
     async def start(self) -> None:
         return None
 
     async def stop(self) -> None:
+        if self._browser_runtime is not None:
+            await self._browser_runtime.close()
+            self._browser_runtime = None
         return None
 
     async def _create_user(self, command: CreateUser, context: HandlingContext) -> object:

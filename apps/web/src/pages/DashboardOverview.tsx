@@ -134,9 +134,6 @@ export const DashboardOverview: React.FC = () => {
           >
             {user?.name}
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>
-            Roles: {user?.roles.join(', ')}
-          </div>
         </Card>
 
         <Card>

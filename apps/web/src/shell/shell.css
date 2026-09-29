@@ -1,0 +1,48 @@
+.businessos-shell-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+.businessos-shell-main {
+  min-width: 0;
+  flex: 1;
+  padding: 24px 32px;
+}
+.businessos-mobile-backdrop {
+  display: none;
+}
+@media (max-width: 767px) {
+  .businessos-shell-main {
+    padding: 16px;
+  }
+  .businessos-sidebar {
+    position: fixed !important;
+    inset-block-start: 56px;
+    inset-inline-start: 0;
+    z-index: 1200;
+    height: calc(100dvh - 56px) !important;
+    width: min(280px, 85vw) !important;
+    min-width: 0 !important;
+    transform: translateX(-110%);
+  }
+  [dir='rtl'] .businessos-sidebar {
+    transform: translateX(110%);
+  }
+  .businessos-sidebar[data-mobile-open='true'] {
+    transform: translateX(0);
+  }
+  .businessos-mobile-backdrop[data-mobile-open='true'] {
+    display: block;
+    position: fixed;
+    inset: 56px 0 0;
+    z-index: 1190;
+    border: 0;
+    background: rgb(0 0 0 / 40%);
+  }
+  .businessos-header-search {
+    display: none !important;
+  }
+  .businessos-header-version {
+    display: none !important;
+  }
+}

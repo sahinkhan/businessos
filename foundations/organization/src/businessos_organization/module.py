@@ -10,11 +10,18 @@ from uuid import UUID, uuid4
 from businessos_identity import (
     AUTHENTICATED_PRINCIPAL,
     MEMBERSHIP_AUTHORITY,
+    SESSION_COOKIE,
+    WEB_SESSION_SERVICE,
     GetMembership,
     MembershipRecord,
     PrincipalReference,
     PrincipalType,
+    WebActiveScope,
+    WebSessionApplicationService,
+    cookie_value,
+    session_cookie,
 )
+from businessos_identity.web_sessions import WebSession
 from businessos_tenant import (
     DatabaseTenantAccessValidator,
     effective_at,
@@ -36,7 +43,10 @@ from businessos.sdk import (
     ModuleRegistration,
     PermissionDeclaration,
     Query,
+    Request,
     RequestContext,
+    RequestDependencyScope,
+    Response,
     TenantContext,
 )
 
@@ -311,6 +321,15 @@ class OrganizationModule:
             )
         )
         registration.contract("foundation.organization.v1", OrganizationContract())
+        registration.route(
+            "GET", "/api/v1/organization/scopes", self._http_scopes, name="web-scopes"
+        )
+        registration.route(
+            "POST",
+            "/api/v1/organization/active-scope",
+            self._http_select_scope,
+            name="web-active-scope",
+        )
         registration.command(
             CreateEnterpriseGroup,
             self._enterprise_group,
@@ -374,6 +393,188 @@ class OrganizationModule:
         registration.command(
             SelectActiveScope, self._select_scope, permission="foundation.organization.read"
         )
+
+    @staticmethod
+    async def _browser_session(
+        request: Request, dependencies: RequestDependencyScope
+    ) -> tuple[str, WebSession, WebSessionApplicationService]:
+        handle = cookie_value(request.headers, SESSION_COOKIE)
+        if handle is None or request.context.tenant is None:
+            raise BusinessOSError("unauthenticated", "Authentication required", status_code=401)
+        service = await dependencies.resolve(WEB_SESSION_SERVICE)
+        session = await service.get_session(handle, touch=False)
+        tenant = request.context.tenant
+        if (
+            session is None
+            or session.principal.tenant_id != tenant.tenant_id
+            or session.principal.principal_id != tenant.principal_id
+            or session.principal.principal_type != "user"
+        ):
+            raise BusinessOSError("unauthenticated", "Authentication required", status_code=401)
+        return handle, session, service
+
+    async def _http_scopes(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        _, session, _ = await self._browser_session(request, dependencies)
+        tenant = request.context.tenant
+        assert tenant is not None
+        dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
+        result = await dispatcher.query(
+            ReadOrganization(tenant_id=tenant.tenant_id), request.context, dependencies
+        )
+        if not isinstance(result, OrganizationSnapshot):
+            raise RuntimeError("Organization contract returned an invalid result")
+        now = datetime.now(UTC)
+        today = now.date()
+        grants = {
+            (assignment.scope_type, assignment.scope_id)
+            for assignment in result.assignments
+            if assignment.principal_id == tenant.principal_id
+            and assignment.principal_type == "user"
+            and (assignment.valid_from is None or assignment.valid_from <= now)
+            and (assignment.valid_until is None or assignment.valid_until > now)
+        }
+
+        def effective(
+            node: EnterpriseGroupRecord | LegalEntityRecord | CompanyRecord | OperatingSiteRecord,
+        ) -> bool:
+            return (
+                node.active
+                and (node.effective_from is None or node.effective_from <= today)
+                and (node.effective_until is None or node.effective_until > today)
+            )
+
+        groups: list[dict[str, object]] = []
+        selected = session.active_scope
+        active: dict[str, str] = {
+            "tenantId": str(tenant.tenant_id),
+            "tenantName": str(tenant.tenant_id),
+            "groupId": "",
+            "groupName": "",
+            "companyId": "",
+            "companyName": "",
+            "siteId": "",
+            "siteName": "",
+        }
+        for group in result.enterprise_groups:
+            if not isinstance(group, EnterpriseGroupRecord) or not effective(group):
+                continue
+            companies: list[dict[str, object]] = []
+            for entity in result.legal_entities:
+                if (
+                    not isinstance(entity, LegalEntityRecord)
+                    or entity.enterprise_group_id != group.id
+                    or not effective(entity)
+                ):
+                    continue
+                for company in result.companies:
+                    if (
+                        not isinstance(company, CompanyRecord)
+                        or company.legal_entity_id != entity.id
+                        or not effective(company)
+                    ):
+                        continue
+                    ancestor_grant = any(
+                        grant in grants
+                        for grant in (
+                            (OrganizationScopeType.ENTERPRISE_GROUP, group.id),
+                            (OrganizationScopeType.LEGAL_ENTITY, entity.id),
+                            (OrganizationScopeType.COMPANY, company.id),
+                        )
+                    )
+                    sites = [
+                        {"id": str(site.id), "name": site.name, "code": site.code}
+                        for site in result.operating_sites
+                        if isinstance(site, OperatingSiteRecord)
+                        and site.company_id == company.id
+                        and effective(site)
+                        and (
+                            ancestor_grant
+                            or (OrganizationScopeType.OPERATING_SITE, site.id) in grants
+                        )
+                    ]
+                    if not sites and not ancestor_grant:
+                        continue
+                    companies.append(
+                        {
+                            "id": str(company.id),
+                            "name": company.name,
+                            "code": company.code,
+                            "currency": company.base_currency,
+                            "sites": sites,
+                        }
+                    )
+                    if (
+                        selected.company_id == company.id
+                        and selected.enterprise_group_id == group.id
+                    ):
+                        matched_site = next(
+                            (
+                                site
+                                for site in sites
+                                if site["id"] == str(selected.operating_site_id)
+                            ),
+                            None,
+                        )
+                        if matched_site is not None or selected.operating_site_id is None:
+                            active.update(
+                                {
+                                    "groupId": str(group.id),
+                                    "groupName": group.name,
+                                    "companyId": str(company.id),
+                                    "companyName": company.name,
+                                    "siteId": str(matched_site["id"]) if matched_site else "",
+                                    "siteName": str(matched_site["name"]) if matched_site else "",
+                                }
+                            )
+            if companies:
+                groups.append({"id": str(group.id), "name": group.name, "companies": companies})
+        return Response.json(
+            {
+                "tenants": [
+                    {"id": str(tenant.tenant_id), "name": str(tenant.tenant_id), "groups": groups}
+                ],
+                "active_scope": active,
+            }
+        )
+
+    async def _http_select_scope(
+        self, request: Request, dependencies: RequestDependencyScope
+    ) -> Response:
+        handle, _, service = await self._browser_session(request, dependencies)
+        tenant = request.context.tenant
+        assert tenant is not None
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise BusinessOSError("invalid_request", "Request must be an object", status_code=400)
+        payload = cast(dict[str, object], payload)
+        query = SelectActiveScope.model_validate(
+            {
+                "tenant_id": tenant.tenant_id,
+                "principal_type": "user",
+                "enterprise_group_id": payload.get("enterprise_group_id"),
+                "company_id": payload.get("company_id"),
+                "operating_site_id": payload.get("operating_site_id"),
+            }
+        )
+        dispatcher = await dependencies.resolve(MESSAGE_DISPATCHER)
+        selected = await dispatcher.command(query, request.context, dependencies)
+        if not isinstance(selected, TenantContext):
+            raise RuntimeError("Organization scope contract returned an invalid result")
+        rotated, session = await service.rotate_scope(
+            handle,
+            WebActiveScope(
+                tenant_id=tenant.tenant_id,
+                enterprise_group_id=selected.enterprise_group_id,
+                legal_entity_id=selected.legal_entity_id,
+                company_id=selected.active_company_id,
+                operating_site_id=selected.operating_site_id,
+            ),
+        )
+        response = Response.json({"active_scope": session.active_scope})
+        response.append_header("set-cookie", session_cookie(rotated, session.absolute_expires_at))
+        return response
 
     async def start(self) -> None:
         return None

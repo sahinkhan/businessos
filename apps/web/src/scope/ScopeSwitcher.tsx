@@ -23,6 +23,7 @@ export const ScopeSwitcher: React.FC = () => {
     <div ref={containerRef} style={{ position: 'relative' }}>
       <button
         type="button"
+        disabled={tenants.length === 0}
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}
         aria-label="Switch organization scope"
@@ -42,7 +43,7 @@ export const ScopeSwitcher: React.FC = () => {
       >
         <Building2 size={16} color="var(--color-action-primary)" />
         <div style={{ textAlign: 'left', lineHeight: 1.2 }}>
-          <div style={{ fontWeight: 600 }}>{scope.companyName}</div>
+          <div style={{ fontWeight: 600 }}>{scope.companyName || 'Select scope'}</div>
           <div style={{ fontSize: '0.6875rem', color: 'var(--color-text-muted)' }}>
             {scope.siteName}
           </div>
@@ -115,7 +116,7 @@ export const ScopeSwitcher: React.FC = () => {
             >
               LEGAL ENTITIES & SITES
             </label>
-            {currentTenant.groups.map((group) => (
+            {currentTenant?.groups.map((group) => (
               <div key={group.id} style={{ marginBottom: '8px' }}>
                 <div
                   style={{

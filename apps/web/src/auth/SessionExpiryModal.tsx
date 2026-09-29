@@ -24,7 +24,6 @@ export const SessionExpiryModal: React.FC = () => {
         setShowWarning(true);
       } else if (remaining <= 0) {
         setShowWarning(false);
-        logout();
       } else {
         setShowWarning(false);
       }

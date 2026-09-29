@@ -1,6 +1,6 @@
 """BusinessOS composition root."""
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import cast
 
 from sqlalchemy.engine import make_url
@@ -15,6 +15,7 @@ from businessos.dependencies import (
     CACHE,
     DATABASE,
     EVENT_PUBLISHER,
+    INSTALLATION_ID,
     MESSAGE_DISPATCHER,
     OBJECT_STORAGE,
     OBJECT_STORAGE_DELETE,
@@ -151,6 +152,11 @@ def create_application(
         unit_of_work_factory, event_bus, durable_subscriber_authorizer
     )
     container.register(DATABASE, lambda _: database, scope=DependencyScope.SINGLETON)
+    container.register(
+        INSTALLATION_ID,
+        lambda _: resolved_settings.installation_id,
+        scope=DependencyScope.SINGLETON,
+    )
     container.register(
         UNIT_OF_WORK_FACTORY,
         lambda _: unit_of_work_factory,
@@ -330,5 +336,9 @@ def create_application(
         application.on_startup(database.check_connection_budget)
     application.on_shutdown(database.close)
     application.on_shutdown(protected_database.close)
+    if context_resolver is not None:
+        close_resolver = getattr(context_resolver, "close", None)
+        if callable(close_resolver):
+            application.on_shutdown(cast(Callable[[], Awaitable[None]], close_resolver))
     diagnostics.add_readiness_check("application", application.readiness)
     return application

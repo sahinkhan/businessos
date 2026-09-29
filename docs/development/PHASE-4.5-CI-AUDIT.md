@@ -2,6 +2,8 @@
 
 Audited baseline: `2b75254 Merge pull request #7 from sahinkhan/fix/phase4-certification`.
 
+> **Historical Audit Record**: This document records the historical Phase 4.5 certification audit performed at baseline `2b75254` (associated with historical release checkpoint `3e551b8` / tag `v0.4.5-ui-foundation`) and is retained as historical evidence. Subsequent certification remediation (PR #54) and maintenance (PR #55) superseded its final-current checkpoint claim; see [Certified Checkpoints and Provenance](#certified-checkpoints-and-provenance) below for the canonical lineage and current authoritative tag.
+
 ## Overview
 Phase 4.5 establishes the dedicated enterprise UI foundation (`apps/web`) as specified in `docs/roadmap/PHASE-4.5-UI-FOUNDATION.md` and `docs/architecture/FRONTEND.md`. It acts as an authoritative inter-phase quality gate downstream of certified Phase 4 (Policy, Audit, and Data Governance) and strictly upstream of Phase 5 (Metadata, Studio, and Dynamic UI).
 
@@ -87,5 +89,30 @@ Verification performed on Node.js v22 and Linux runtime environment:
 - [x] 11. No Phase 5 metadata runtime, Studio, or Dynamic UI implementation has been started inside this phase.
 - [x] 12. No hardcoded business-module workflow architecture creates a dependency that Phase 5 must later undo.
 
-## Certified Tag
-The authoritative certification checkpoint for Phase 4.5 is `v0.4.5-ui-foundation`.
+## Certified Checkpoints and Provenance
+
+### Historical Checkpoint
+
+- **Tag**: `v0.4.5-ui-foundation`
+- **Target Commit**: `3e551b8922397e03636db8d7ed7cf85d2477db83`
+- **Status**: Preserved as historical checkpoint evidence. This tag is not deleted, retargeted, or rewritten.
+
+### Current Corrected Certified Checkpoint
+
+- **Tag**: `v0.4.6-ui-foundation`
+- **Target Commit**: `daa6186b2c651a5c48ef9a58694fe715e8844c76`
+- **Status**: Canonical, current certified Phase 4.5 checkpoint on `main`.
+
+`v0.4.6-ui-foundation` represents the current certified Phase 4.5 state after certification remediation (PR #54) and scope focus-continuity maintenance (PR #55). The addition of this corrective tag does not erase or rewrite historical audit records; rather, it identifies the final certified state of `main`.
+
+### Canonical Certification Lineage
+
+The authoritative ancestry leading to the certified Phase 4.5 checkpoint comprises:
+
+1. `510a0a4fe9f6056ae65fec8be36c189144e715e8` — earlier clean implementation commit
+2. `599d15f2b0ceaf20c4c941700e15472acd14c722` — PR #54 certified/remediated candidate
+3. `084c396ab62748ae0f2a25f811b22fd28b420136` — PR #54 merge into `main`
+4. `65d19f3659a20b62ff72de94df6774540b1247f3` — focus-continuity maintenance candidate
+5. `daa6186b2c651a5c48ef9a58694fe715e8844c76` — PR #55 merge / current certified `main` (`v0.4.6-ui-foundation`)
+
+*(Note: PR #9 at head `96f174620397067bb05931aace8d1258daedcaee` remains historical/superseded, unmerged, reference only, and is not part of current certified `main` ancestry.)*

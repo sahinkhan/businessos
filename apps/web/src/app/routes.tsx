@@ -12,13 +12,6 @@ import { routeRegistry, RouteContribution } from '../navigation/routeRegistry';
 import { usePermission } from '../permissions/PermissionContext';
 import { useScope } from '../scope/ScopeContext';
 
-const DemoLoginPage =
-  import.meta.env.DEV && import.meta.env.VITE_BOS_DEMO_LOGIN === '1'
-    ? React.lazy(() =>
-        import('../auth/DemoLoginPage').then((module) => ({ default: module.DemoLoginPage }))
-      )
-    : null;
-
 const lazyPages = new WeakMap<RouteContribution, React.LazyExoticComponent<React.ComponentType>>();
 function page(route: RouteContribution) {
   let component = lazyPages.get(route);
@@ -64,18 +57,7 @@ export const AppRoutes: React.FC = () => {
   const routes = useSyncExternalStore(routeRegistry.subscribe, routeRegistry.getAll);
   return (
     <Routes>
-      <Route
-        path="/login"
-        element={
-          DemoLoginPage ? (
-            <Suspense fallback={<Spinner size="lg" />}>
-              <DemoLoginPage />
-            </Suspense>
-          ) : (
-            <LoginPage />
-          )
-        }
-      />
+      <Route path="/login" element={<LoginPage />} />
       <Route
         path="/"
         element={

@@ -19,11 +19,6 @@ export const es: Record<string, string> = {
   'auth.platform_name': 'Plataforma de gestión empresarial',
   'auth.continue_with_provider': 'Continuar con el proveedor de identidad de su organización',
   'auth.login_failed': 'El inicio de sesión no está disponible. Inténtelo de nuevo.',
-  'auth.demo_preview_help': 'Solo demo local. Use la contraseña mostrada por npm run demo.',
-  'auth.demo_email': 'Correo de demostración',
-  'auth.demo_password': 'Contraseña de demostración',
-  'auth.demo_sign_in': 'Entrar a la vista previa',
-  'auth.demo_login_failed': 'No se pudo iniciar la demo. Compruebe el correo y la contraseña.',
   'auth.service_unavailable':
     'El servicio de autenticación no está disponible. Inténtelo más tarde.',
   'nav.dashboard': 'Panel de control',

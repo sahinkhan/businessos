@@ -48,6 +48,12 @@ class UnitOfWorkFactory(Protocol):
     def system(self) -> UnitOfWork: ...
 
 
+class InstallationUnitOfWorkFactory(UnitOfWorkFactory, Protocol):
+    """Additive installation transaction port for admitted module lifecycle work."""
+
+    def installation(self) -> UnitOfWork: ...
+
+
 class SQLAlchemyUnitOfWork:
     """One SQLAlchemy session and transaction for one command/query operation."""
 
@@ -226,6 +232,14 @@ class SQLAlchemyUnitOfWorkFactory:
 
     def for_tenant(self, context: TenantContext) -> SQLAlchemyUnitOfWork:
         return SQLAlchemyUnitOfWork(self._sessions, context)
+
+    def installation(self) -> SQLAlchemyUnitOfWork:
+        """Installation-scoped transaction for generic module lifecycle admission.
+
+        This uses the ordinary application role and has no tenant context. Forced
+        RLS therefore still denies access to every tenant-owned relation.
+        """
+        return SQLAlchemyUnitOfWork(self._sessions, None)
 
     def system(self) -> SQLAlchemyUnitOfWork:
         if self._system_sessions is None:

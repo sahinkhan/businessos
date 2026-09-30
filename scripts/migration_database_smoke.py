@@ -45,6 +45,7 @@ REQUIRED_OWNERS = {
     "foundation.policy",
     "foundation.audit",
     "foundation.data_governance",
+    "foundation.metadata",
 }
 
 
@@ -125,8 +126,22 @@ def _graph_snapshot(plan: MigrationPlan) -> str:
 
 
 def _verify_graph_snapshot(snapshot: str, plan: MigrationPlan) -> None:
-    if json.loads(snapshot) != json.loads(_graph_snapshot(plan)):
-        raise RuntimeError("installed migration graph differs from the build graph")
+    expected = json.loads(snapshot)
+    actual = json.loads(_graph_snapshot(plan))
+    if expected != actual:
+        expected_revisions = {item["revision"]: item for item in expected["revisions"]}
+        actual_revisions = {item["revision"]: item for item in actual["revisions"]}
+        changed = sorted(
+            key
+            for key in expected_revisions.keys() | actual_revisions.keys()
+            if expected_revisions.get(key) != actual_revisions.get(key)
+        )
+        raise RuntimeError(
+            "installed migration graph differs from the build graph: "
+            f"heads_changed={expected['heads'] != actual['heads']}, "
+            f"source_catalog_changed={expected['sources'] != actual['sources']}, "
+            f"revisions_changed={changed}"
+        )
 
 
 def _verify_state(
@@ -259,6 +274,7 @@ def _verify_global_geography_read_only(database_url: str) -> None:
 
 
 _APPROVED_DOWNGRADE_REFUSALS = (
+    "metadata_0001 downgrade refused:",
     "audit_0005 downgrade refused:",
     "policy_0005 downgrade refused:",
     "gov_0005 downgrade refused:",

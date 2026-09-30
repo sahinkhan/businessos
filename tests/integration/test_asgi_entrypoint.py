@@ -9,6 +9,7 @@ from businessos_identity import OIDCContextResolver
 
 from businessos.config import get_settings
 from businessos.modules import ModuleState
+from tests.conftest import PostgreSQLTestDatabase
 
 
 @pytest.mark.integration
@@ -17,10 +18,10 @@ from businessos.modules import ModuleState
 @pytest.mark.asyncio
 async def test_shipped_asgi_entrypoint_completes_real_lifespan(
     monkeypatch: pytest.MonkeyPatch,
-    postgres_database_url: str,
+    postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     monkeypatch.setenv("BOS_ENVIRONMENT", "test")
-    monkeypatch.setenv("BOS_DATABASE_URL", postgres_database_url)
+    monkeypatch.setenv("BOS_DATABASE_URL", postgres_database.runtime_url)
     monkeypatch.setenv("BOS_S3_BUCKET", "businessos-development")
     monkeypatch.setenv("BOS_S3_ENDPOINT_URL", os.environ["BOS_TEST_S3_ENDPOINT"])
     monkeypatch.setenv("BOS_S3_REGION_NAME", "us-east-1")
@@ -32,6 +33,8 @@ async def test_shipped_asgi_entrypoint_completes_real_lifespan(
     asgi = importlib.import_module("businessos.asgi")
     application = asgi.application
     assert isinstance(application._context_resolver, OIDCContextResolver)
+    assert application.runtime is not None
+    application.runtime.migrations.upgrade(postgres_database.migration_url)
     messages: deque[dict[str, Any]] = deque(
         ({"type": "lifespan.startup"}, {"type": "lifespan.shutdown"})
     )

@@ -166,7 +166,7 @@ def test_audit_policy_targeted_and_base_refuse_atomically(
         )
         connection.commit()
     before = _snapshot(postgres_database.migration_url)
-    assert {str(row[0]) for row in before[0]} >= {"audit_0005", "policy_0005", "gov_0005"}
+    assert {str(row[0]) for row in before[0]} >= {"audit_0005", "policy_0005", "metadata_0001"}
     for target, reason in (
         ("audit_0004", "audit_0005 downgrade refused"),
         ("audit_0002", "audit_0005 downgrade refused"),

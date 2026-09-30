@@ -29,7 +29,9 @@ def test_complete_artifact_graph_upgrade_and_replay(postgres_migration_database_
     coordinator.upgrade(postgres_migration_database_url)
     smoke._verify(raw_url, plan)
     coordinator.plan(postgres_migration_database_url)
-    with pytest.raises(Exception, match=r"(?:audit_0005|policy_0005|gov_0005) downgrade refused"):
+    with pytest.raises(
+        Exception, match=r"(?:audit_0005|policy_0005|gov_0005|metadata_0001) downgrade refused"
+    ):
         coordinator.downgrade(postgres_migration_database_url)
     smoke._verify(raw_url, plan)
     coordinator.upgrade(postgres_migration_database_url)

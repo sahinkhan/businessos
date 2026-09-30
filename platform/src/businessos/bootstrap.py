@@ -44,6 +44,7 @@ from businessos.modules import (
 )
 from businessos.modules.artifact import ApprovedModuleArtifact
 from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
+from businessos.modules.registry import ModuleActivationFence
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 from businessos.providers import (
@@ -253,6 +254,17 @@ def create_application(
     for module in loaded_modules:
         module_registry.add(module)
 
+    activation_fence: ModuleActivationFence | None = None
+    metadata_module = next(
+        (item for item in loaded_modules if item.manifest.module_id == "foundation.metadata"),
+        None,
+    )
+    if metadata_module is not None:
+        factory_method = getattr(metadata_module, "activation_fence", None)
+        if not callable(factory_method):
+            raise ValueError("Metadata module lacks required publication/activation fence")
+        activation_fence = cast(ModuleActivationFence, factory_method(unit_of_work_factory))
+
     runtime_placeholder: dict[str, FrameworkRuntime] = {}
 
     def registration(owner: str) -> ModuleRegistration:
@@ -262,6 +274,7 @@ def create_application(
         module_registry,
         registration,
         providers=providers,
+        activation_fence=activation_fence,
         drain_timeout_seconds=resolved_settings.shutdown_timeout_seconds,
     )
     upgrades = UpgradeCoordinator(module_registry)

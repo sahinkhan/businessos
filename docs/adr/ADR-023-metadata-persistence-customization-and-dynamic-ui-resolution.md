@@ -4,11 +4,11 @@ Status: ACCEPTED
 
 Decision date: 2026-09-30
 
-Acceptance stage: FORMAL ACCEPTANCE CANDIDATE / MERGE PENDING
+Acceptance stage: ACCEPTED / AUTHORITATIVE ON MAIN
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; Metadata/Studio Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Security Maintainer; Policy Maintainer; Data Governance Owning Domain Maintainer; Frontend Foundation Maintainer; Release Maintainer; each participating Resource Owning Domain Maintainer for its adapter
 
-Approval pull request or commit: [PR #56](https://github.com/sahinkhan/businessos/pull/56) — open formal acceptance candidate; merge pending.
+Approval pull request or commit: [PR #56](https://github.com/sahinkhan/businessos/pull/56) — merged at `287945713f938395c508abae3ac9115213a6602f`.
 
 Reviewed semantic proposal SHA: `f769d7ce8a13e5f13ab9d96d427c30526d8659be`.
 
@@ -22,27 +22,29 @@ Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`.
 
 Independent human review: NOT PERFORMED.
 
-Formal acceptance candidate SHA: The exact [PR #56 head](https://github.com/sahinkhan/businessos/pull/56) recorded in its acceptance evidence; a commit cannot embed its own SHA.
+Formal acceptance candidate SHA: `bfa680d33495f7e5d17d99cd33e14ea792cb0cb7`.
 
-Formal acceptance exact-head CI: PENDING fresh run on the acceptance candidate; exact run and result are recorded in [PR #56 acceptance evidence](https://github.com/sahinkhan/businessos/pull/56) before final owner attestation.
+Formal acceptance exact-head CI: [BusinessOS run 36670542007](https://github.com/sahinkhan/businessos/actions/runs/36670542007) — PASS (`web-quality`, `python-quality`, `windows-typing`).
 
-Formal acceptance independent technical/read-only audit: PENDING fresh exact-head audit; result and finding counts are recorded in [PR #56 acceptance evidence](https://github.com/sahinkhan/businessos/pull/56) before final owner attestation.
+Formal acceptance independent technical/read-only audit: `ADR-023 FINAL ACCEPTANCE EVIDENCE RE-AUDIT — PASS`; Critical 0; High 0; Medium 0; Low 0.
 
-Formal acceptance owner attestation: PENDING personal exact-SHA attestation by `@sahinkhan` after acceptance CI and independent audit pass.
+Formal acceptance owner attestation: [@sahinkhan's final exact-SHA acceptance attestation](https://github.com/sahinkhan/businessos/pull/56#issuecomment-5905117250) for `bfa680d33495f7e5d17d99cd33e14ea792cb0cb7`.
 
-Accepted main merge SHA: PENDING.
+Accepted main merge SHA: `287945713f938395c508abae3ac9115213a6602f`.
 
-Architecture state: FORMAL ACCEPTANCE CANDIDATE / NOT YET AUTHORITATIVE ON MAIN.
+Post-merge CI / certification: [BusinessOS run 36676757074](https://github.com/sahinkhan/businessos/actions/runs/36676757074) — PASS on `287945713f938395c508abae3ac9115213a6602f` (`web-quality`, `python-quality`, `windows-typing`).
 
-Runtime state: Phase 5 runtime NOT IMPLEMENTED; Phase 5A NOT AUTHORIZED. Architecture acceptance does not itself certify runtime implementation. Phase 4.5 remains COMPLETE / CERTIFIED / FROZEN.
+Architecture state: ACCEPTED / AUTHORITATIVE / MERGED.
 
-Formal authority: PENDING final exact-SHA owner acceptance attestation and guarded merge to `main`.
+Runtime state: Phase 5 runtime NOT IMPLEMENTED / NOT CERTIFIED. Phase 4.5 remains COMPLETE / CERTIFIED / FROZEN. Phase 5A coding may begin only after this accepted-main evidence reconciliation is itself merged and post-merge certified.
+
+Formal authority: COMPLETE — the exact accepted candidate was merged to protected `main` and post-merge certification passed.
 
 Supersedes: None
 
 Superseded by: None
 
-Implementation authority: NONE until formal acceptance. This proposal does not change the accepted Phase 4 or frozen Phase 4.5 contracts.
+Implementation authority: PHASE 5A ARCHITECTURALLY AUTHORIZED under ADR-023 and the Phase 5 roadmap. Runtime implementation remains subject to Phase 5A's own implementation, CI, independent audit, owner acceptance, merge, and certification gates. This reconciliation PR does not start Phase 5A; coding waits for its merge and post-merge certification. Accepted Phase 4 and frozen Phase 4.5 contracts remain unchanged.
 
 ## Context
 

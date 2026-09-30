@@ -1,14 +1,42 @@
 # ADR-023: Metadata Persistence, Customization, and Dynamic UI Resolution
 
-Status: PROPOSED
+Status: ACCEPTED
 
-Decision date: Pending formal acceptance
+Decision date: 2026-09-30
+
+Acceptance stage: FORMAL ACCEPTANCE CANDIDATE / MERGE PENDING
 
 Approving roles required: Architecture Maintainer; Metadata/Studio Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Security Maintainer; Policy Maintainer; Data Governance Owning Domain Maintainer; Frontend Foundation Maintainer; Release Maintainer; each participating Resource Owning Domain Maintainer for its adapter
 
-Approval pull request or commit: Pending
+Approval pull request or commit: [PR #56](https://github.com/sahinkhan/businessos/pull/56) — open formal acceptance candidate; merge pending.
 
-Independent human review: Pending
+Reviewed semantic proposal SHA: `f769d7ce8a13e5f13ab9d96d427c30526d8659be`.
+
+Semantic proposal owner attestation: COMPLETE / proposal-only — [@sahinkhan's exact-proposal attestation](https://github.com/sahinkhan/businessos/pull/56#issuecomment-5903647428) for `f769d7ce8a13e5f13ab9d96d427c30526d8659be`.
+
+Semantic proposal exact-head CI: [BusinessOS run 36634728686](https://github.com/sahinkhan/businessos/actions/runs/36634728686) — PASS (`python-quality`, `windows-typing`, `web-quality`).
+
+Semantic proposal independent technical/read-only architecture audit: PERFORMED — PASS; Critical 0; High 0; Medium 0; Low 0.
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION by `@sahinkhan`.
+
+Independent human review: NOT PERFORMED.
+
+Formal acceptance candidate SHA: The exact [PR #56 head](https://github.com/sahinkhan/businessos/pull/56) recorded in its acceptance evidence; a commit cannot embed its own SHA.
+
+Formal acceptance exact-head CI: PENDING fresh run on the acceptance candidate; exact run and result are recorded in [PR #56 acceptance evidence](https://github.com/sahinkhan/businessos/pull/56) before final owner attestation.
+
+Formal acceptance independent technical/read-only audit: PENDING fresh exact-head audit; result and finding counts are recorded in [PR #56 acceptance evidence](https://github.com/sahinkhan/businessos/pull/56) before final owner attestation.
+
+Formal acceptance owner attestation: PENDING personal exact-SHA attestation by `@sahinkhan` after acceptance CI and independent audit pass.
+
+Accepted main merge SHA: PENDING.
+
+Architecture state: FORMAL ACCEPTANCE CANDIDATE / NOT YET AUTHORITATIVE ON MAIN.
+
+Runtime state: Phase 5 runtime NOT IMPLEMENTED; Phase 5A NOT AUTHORIZED. Architecture acceptance does not itself certify runtime implementation. Phase 4.5 remains COMPLETE / CERTIFIED / FROZEN.
+
+Formal authority: PENDING final exact-SHA owner acceptance attestation and guarded merge to `main`.
 
 Supersedes: None
 

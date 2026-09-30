@@ -1,6 +1,6 @@
 # Metadata, Studio and Dynamic UI Architecture
 
-Status: Phase 5 architecture proposal; implementation blocked pending formal acceptance of [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md).
+Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) ACCEPTED / authoritative Phase 5 architecture; Phase 5 runtime NOT IMPLEMENTED OR CERTIFIED. Phase 5A enters its bounded implementation workflow after the roadmap authorization reconciliation is merged and post-merge certified.
 
 ## Boundary map
 

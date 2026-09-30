@@ -45,6 +45,7 @@ REQUIRED_OWNERS = {
     "foundation.policy",
     "foundation.audit",
     "foundation.data_governance",
+    "foundation.metadata",
 }
 
 

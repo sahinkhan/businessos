@@ -1,0 +1,35 @@
+{
+  "module_id": "foundation.metadata",
+  "name": "Metadata and Studio Foundation",
+  "publisher": "BusinessOS",
+  "version": "0.1.0",
+  "platform": ">=0.1,<1",
+  "sdk": ">=0.1,<1",
+  "python": ">=3.13",
+  "execution_type": "in_process",
+  "entry_point": "businessos_metadata.module:MetadataModule",
+  "dependencies": [
+    {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
+    {"module_id": "foundation.policy", "version": ">=0.4,<1"},
+    {"module_id": "foundation.audit", "version": ">=0.4,<1"}
+  ],
+  "capabilities": [],
+  "resource_ownership": [
+    {
+      "resource_namespace": "foundation.metadata.definition",
+      "owner_module_id": "foundation.metadata",
+      "contract_version": "1",
+      "aliases": []
+    }
+  ],
+  "permissions": [
+    "foundation.metadata.read",
+    "foundation.metadata.draft.write",
+    "foundation.metadata.publish",
+    "foundation.metadata.rollback",
+    "foundation.metadata.retire"
+  ],
+  "migrations": ["python://businessos_metadata/migrations/versions"],
+  "migration_namespace": "foundation_metadata",
+  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+}

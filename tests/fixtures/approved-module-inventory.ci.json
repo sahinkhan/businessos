@@ -32,6 +32,15 @@
       "install_identity": "ci-test-only-adr017-proof-resource-owner",
       "first_party": false,
       "approved_aliases": []
+    },
+    {
+      "module_id": "foundation.metadata",
+      "publisher": "BusinessOS",
+      "package_identity": "businessos-foundation-metadata",
+      "loaded_type": "businessos_metadata.module:MetadataModule",
+      "install_identity": "ci-test-only-adr023-metadata-owner",
+      "first_party": true,
+      "approved_aliases": []
     }
   ]
 }

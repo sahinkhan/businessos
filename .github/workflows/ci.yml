@@ -28,6 +28,7 @@ jobs:
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/policy
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/audit
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/data_governance
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/metadata
           python -m pip install --constraint requirements/constraints-py313.txt -e examples/proof_module
       - name: Native Windows mypy
         run: mypy platform/src foundations tests examples/proof_module/src
@@ -90,6 +91,7 @@ jobs:
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/policy
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/audit
           python -m pip install --constraint requirements/constraints-py313.txt -e foundations/data_governance
+          python -m pip install --constraint requirements/constraints-py313.txt -e foundations/metadata
           python -m pip install --constraint requirements/constraints-py313.txt -e examples/proof_module
 
       - name: Ruff formatting

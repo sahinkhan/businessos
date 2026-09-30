@@ -343,11 +343,13 @@ Enable customer customization without source-code forks.
 - calendar
 - dashboard
 - menu/action registry
-- wizard definitions
+- presentation-only wizard definitions (no workflow execution)
 - extension slots
 - metadata versioning
 - tenant/company/site scoped configuration where allowed
 - safe migration of custom definitions across platform upgrades
+
+Phase 5 view and dashboard definitions use bounded admitted data contracts. Workflow/rule execution is Phase 6; general search, reporting and analytics are Phase 8.
 
 ## Data Model
 
@@ -366,12 +368,12 @@ Enable customer customization without source-code forks.
 - metadata resolver
 - UI schema API
 - custom-field persistence contract
-- index-request contract for searchable custom fields
+- owner-reviewed query/index-capability contract for bounded custom-field filtering and sorting
 
 ## Security
 
 - custom metadata cannot create arbitrary SQL/code execution
-- custom fields inherit entity authorization
+- custom fields inherit and cannot weaken entity authorization; field-level Policy still applies
 - unsafe field types/providers require capability approval
 
 ## Tests
@@ -385,7 +387,7 @@ Enable customer customization without source-code forks.
 
 ## Exit Criteria
 
-A tenant can add fields/forms/views/workflows/reports using supported mechanisms without patching vendor code.
+A tenant can add custom fields and entities, forms, lists/views, menus/actions and dynamic UI using supported metadata mechanisms without patching vendor code. Workflow/rules execution belongs to Phase 6; general reporting, search and analytics belong to Phase 8.
 
 ---
 

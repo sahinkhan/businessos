@@ -1,16 +1,18 @@
 # Phase 5 — Metadata, Studio and Dynamic UI
 
-Status: architecture candidate only. Phase 5 implementation is **not authorized** by this document. [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) remains PROPOSED until accepted under [ADR governance](../governance/ADR-GOVERNANCE.md).
+Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) ACCEPTED / Phase 5A AUTHORIZED TO BEGIN / Phase 5 runtime NOT YET IMPLEMENTED OR CERTIFIED.
 
 ## Entry condition and destination
 
-Phase 4.5 UI Foundation is FINAL PASS / FROZEN; its accessibility maintenance is closed. This specification starts from protected main `daa6186b2c651a5c48ef9a58694fe715e8844c76` and the complete [Full-System roadmap](FULL-SYSTEM.md). It does not reopen Phase 4.5 or implement Phase 5 in the architecture PR. Implementation requires formal ADR acceptance and separate bounded authorization.
+Phase 4.5 UI Foundation remains FINAL PASS / FROZEN; its accessibility maintenance is closed. This specification was originally drafted against historical protected main `daa6186b2c651a5c48ef9a58694fe715e8844c76`, which is not the current implementation baseline. ADR-023 was accepted through [PR #56](https://github.com/sahinkhan/businessos/pull/56); its accepted-main provenance was reconciled through [PR #58](https://github.com/sahinkhan/businessos/pull/58), and [post-merge CI run 36699110316](https://github.com/sahinkhan/businessos/actions/runs/36699110316) passed. The current Phase 5A implementation baseline is protected main `22a16bd6eab87ba1c731ebbba084c34556d15643` and the complete [Full-System roadmap](FULL-SYSTEM.md). This status correction does not reopen Phase 4.5 or implement Phase 5. Phase 5A coding begins only after this roadmap reconciliation PR is itself merged and post-merge certified.
+
+Entry sequence: ADR-023 accepted and accepted-main provenance certified → bounded Phase 5A implementation → exact-head CI → independent 5A audit → owner acceptance → guarded merge → post-merge certification → 5B eligibility. Batches 5B–5H retain their stated prerequisites and separate certification gates.
 
 The destination is source-free customer customization of ordinary records, governed custom entities, versioned list/form/detail/kanban/calendar/dashboard definitions, menus/actions, validation, extension slots and deterministic UI resolution over the certified Phase 4.5 shell and design system. Customers can upgrade vendor/module definitions without losing customizations or taking over protected ownership. PostgreSQL remains authoritative; browser presentation never becomes authorization.
 
 ## Goals, non-goals and ownership
 
-Goals: explicit owner-scoped storage, published-only runtime, safe query tiers, typed metadata contracts, deterministic overlays, compatibility preflight, tenant/Policy isolation, auditable publishing and accessible localized rendering. The [focused architecture](../architecture/METADATA-STUDIO.md) defines the paths; proposed [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) records the persistence decision.
+Goals: explicit owner-scoped storage, published-only runtime, safe query tiers, typed metadata contracts, deterministic overlays, compatibility preflight, tenant/Policy isolation, auditable publishing and accessible localized rendering. The [focused architecture](../architecture/METADATA-STUDIO.md) defines the paths; accepted [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) records the persistence decision.
 
 Non-goals: changing frozen Phase 4/4.5 authority, new Policy behavior, kernel-owned Studio persistence, global EAV, customer-triggered DDL, arbitrary executable metadata, Phase 6 workflow/rules, Phase 8 general search/analytics or Phase 10+ business modules. Existing `MetadataRegistry` remains generic registration infrastructure. The Metadata/Studio Foundation owns persistent definitions/custom entities; each first-party resource owner owns its custom values and migrations. No owner is automatically enrolled.
 
@@ -76,4 +78,4 @@ For each batch, inspect the actual migration graph before naming revisions; no h
 - Audit, export, retention, hold and deletion behavior has owner-certified evidence.
 - Forward migrations, compatibility, installed artifact and deployment validation pass where applicable; independent exact-commit audit has no blocking findings.
 
-This architecture package alone satisfies none of these runtime gates. Phase 5 runtime work starts only after the ADR is formally accepted and a bounded implementation task is explicitly authorized.
+This architecture package alone satisfies none of these runtime gates. ADR-023 acceptance and certified accepted-main provenance authorize the bounded Phase 5A workflow after this roadmap reconciliation is merged and post-merge certified. Phase 5A must pass its own exact-head CI, independent audit, owner acceptance, guarded merge and post-merge certification before 5B becomes eligible. Phase 5 as a whole remains incomplete until the applicable batch gates close.

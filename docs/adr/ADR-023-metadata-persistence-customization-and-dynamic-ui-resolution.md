@@ -6,7 +6,7 @@ Decision date: 2026-09-30
 
 Acceptance stage: FORMAL ACCEPTANCE CANDIDATE / MERGE PENDING
 
-Approving roles required: Architecture Maintainer; Metadata/Studio Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Security Maintainer; Policy Maintainer; Data Governance Owning Domain Maintainer; Frontend Foundation Maintainer; Release Maintainer; each participating Resource Owning Domain Maintainer for its adapter
+Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer; Metadata/Studio Owning Domain Maintainer; SDK/Contract Maintainer; Migration Safety Reviewer; Security Maintainer; Policy Maintainer; Data Governance Owning Domain Maintainer; Frontend Foundation Maintainer; Release Maintainer; each participating Resource Owning Domain Maintainer for its adapter
 
 Approval pull request or commit: [PR #56](https://github.com/sahinkhan/businessos/pull/56) — open formal acceptance candidate; merge pending.
 

@@ -1,6 +1,16 @@
 # Phase 5A Metadata definition foundation
 
-Status: implementation candidate. Independent audit, owner acceptance, merge, and post-merge certification remain pending. This document describes the bounded runtime introduced under [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md).
+Status: CERTIFIED / CLOSED / FROZEN. Phase 5A is authoritative on protected `main` at `3f96d668eb24f0d505b45b13428fff1c05f1d7af`; post-merge CI `36854266178` completed SUCCESS. Phase 5B is authorized to begin as the next bounded batch; Phase 5 overall remains incomplete. This document describes the certified bounded runtime introduced under [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md).
+
+## Certification provenance
+
+- Final implementation candidate: `03234293aa21d6fa56254937b4b5ee74c7d2eb0a`.
+- Candidate exact-head CI: `36844589190` — SUCCESS (`web-quality`, `python-quality`, `windows-typing`).
+- Independent remediation re-audit: PASS — Critical 0 / High 0 / Medium 0 / Low 0; all previous 2 High and 3 Medium findings resolved.
+- Owner exact-SHA acceptance: PR #61 comment `5930138099`.
+- Supplemental Solo Maintainer governance attestation: PR #61 comment `5931450033`.
+- Guarded merge: `3f96d668eb24f0d505b45b13428fff1c05f1d7af`; merge tree equals candidate tree `75898ec02d765362299e60d10b0b76308b8225e8`.
+- Post-merge CI: `36854266178` — SUCCESS (`web-quality`, `python-quality`, `windows-typing`).
 
 ## Ownership and storage
 
@@ -26,8 +36,8 @@ Preflight captures draft and active generations, exact module artifact identitie
 
 The active-binding counter changes in the same PostgreSQL transaction as the active pointer. Failed publication preserves the previous pointer. Immutable revision and module-binding triggers reject history modification. Lifecycle success emits safe facts through AuditAppenderV2 and the existing transactional outbox in the same unit of work. Typed publication failures record their status in AuditAppenderV2 without emitting an outbox event. Definition payloads are not copied into evidence.
 
-Activation identity is a SHA-256 digest of complete, unambiguous admitted artifact evidence, including the full install identity; prefix truncation is not used. Contributions remain staged until the activation-fence transaction has committed. Commit failure and cancellation leave them unavailable and clean up the staged registration. Schema/UI generations are seeded foundation values only. Their future evolution protocol is deferred and is not certified by this implementation. Phase 5B remains blocked.
+Activation identity is a SHA-256 digest of complete, unambiguous admitted artifact evidence, including the full install identity; prefix truncation is not used. Contributions remain staged until the activation-fence transaction has committed. Commit failure and cancellation leave them unavailable and clean up the staged registration. Schema/UI generations are seeded foundation values only. Their future evolution protocol is deferred and is not certified by this implementation. Phase 5B is authorized to begin as the next bounded batch; its owner-adapter and ordinary-record custom-value scope remains separate from this certified Phase 5A foundation.
 
 ## Verification boundary
 
-The candidate's PostgreSQL tests exercise fresh migration and replay, RLS and grants, draft/published separation, stale preflight outcomes, competing publishers, module activation races, reactivation, immutable history, classification denial, and audit/outbox equality. Installed-wheel and image validation are required before the candidate is frozen. Passing these checks does not certify Phase 5A or authorize Phase 5B.
+The candidate's PostgreSQL tests exercise fresh migration and replay, RLS and grants, draft/published separation, stale preflight outcomes, competing publishers, module activation races, reactivation, immutable history, classification denial, and audit/outbox equality. Installed-wheel and image validation are required before the candidate is frozen. These checks formed the candidate evidence. Final certification completed after independent re-audit, exact-SHA owner acceptance plus supplemental Solo Maintainer governance evidence, guarded merge, and successful post-merge CI. Phase 5A is certified and Phase 5B is authorized to begin.

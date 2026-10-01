@@ -1,6 +1,6 @@
 # Metadata, Studio and Dynamic UI Architecture
 
-Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) ACCEPTED / authoritative Phase 5 architecture; Phase 5 runtime NOT IMPLEMENTED OR CERTIFIED. Phase 5A enters its bounded implementation workflow after the roadmap authorization reconciliation is merged and post-merge certified.
+Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) ACCEPTED / authoritative Phase 5 architecture; Phase 5A CERTIFIED / CLOSED / FROZEN; Phase 5B AUTHORIZED TO BEGIN; Phase 5 overall INCOMPLETE.
 
 ## Boundary map
 
@@ -12,7 +12,7 @@ Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-
 | Policy / Identity / Organization / Data Governance / Audit | Their accepted authority and evidence contracts | Authority delegated to metadata or browser presentation |
 | Phase 4.5 frontend | Shell, routes/navigation contributions, design system, form/table primitives, scope and permission presentation | Metadata persistence or backend authorization |
 
-This is a design for later implementation, not evidence that any Phase 5 service or table exists. It preserves [kernel responsibilities](KERNEL-RESPONSIBILITIES.md), [module ownership](MODULES.md), [database rules](DATABASE.md), [upgrades](UPGRADES.md), [frontend contracts](FRONTEND.md) and the [Phase 4.5 browser adapter](PHASE-4.5-BROWSER-ADAPTER.md). The current `platform/src/businessos/metadata.py` contains `MetadataDeclaration` and a generation-aware `MetadataRegistry`; Phase 5 must not silently turn that registry into a database-backed customer store.
+Phase 5A now provides the certified Metadata definition foundation, including persistent definitions/revisions, publication lifecycle, protected execution, compatibility fencing, tenant isolation, Audit/outbox integration and bounded public contracts. Phase 5B–5H remain separate future batches; ordinary-record custom values, custom entities, dynamic rendering and Studio are not certified by Phase 5A. This architecture preserves [kernel responsibilities](KERNEL-RESPONSIBILITIES.md), [module ownership](MODULES.md), [database rules](DATABASE.md), [upgrades](UPGRADES.md), [frontend contracts](FRONTEND.md) and the [Phase 4.5 browser adapter](PHASE-4.5-BROWSER-ADAPTER.md). The kernel `MetadataRegistry` remains generic registration infrastructure and is not the database-backed customer store.
 
 ## Write and read paths
 

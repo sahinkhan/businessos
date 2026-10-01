@@ -36,7 +36,9 @@ Post-merge CI / certification: [BusinessOS run 36676757074](https://github.com/s
 
 Architecture state: ACCEPTED / AUTHORITATIVE / MERGED.
 
-Runtime state: Phase 5 runtime NOT IMPLEMENTED / NOT CERTIFIED. Phase 4.5 remains COMPLETE / CERTIFIED / FROZEN. Phase 5A coding may begin only after this accepted-main evidence reconciliation is itself merged and post-merge certified.
+Runtime state: Phase 5A CERTIFIED / CLOSED / FROZEN on protected `main` at `3f96d668eb24f0d505b45b13428fff1c05f1d7af`; Phase 5B AUTHORIZED TO BEGIN; Phase 5 overall remains INCOMPLETE. Phase 4.5 remains COMPLETE / CERTIFIED / FROZEN.
+
+Phase 5A implementation provenance: [PR #61](https://github.com/sahinkhan/businessos/pull/61), final candidate `03234293aa21d6fa56254937b4b5ee74c7d2eb0a`, candidate CI `36844589190` SUCCESS, independent remediation re-audit PASS at Critical 0 / High 0 / Medium 0 / Low 0, owner acceptance comment `5930138099`, supplemental Solo Maintainer governance attestation comment `5931450033`, guarded merge `3f96d668eb24f0d505b45b13428fff1c05f1d7af`, and post-merge CI `36854266178` SUCCESS. This certification authorizes only the bounded Phase 5B entry gate; Phase 5C–5H retain their separate prerequisites and certification gates.
 
 Formal authority: COMPLETE — the exact accepted candidate was merged to protected `main` and post-merge certification passed.
 

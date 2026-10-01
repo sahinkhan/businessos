@@ -36,7 +36,11 @@ def _app(database: PostgreSQLTestDatabase) -> Any:
         if module.manifest.module_id.startswith("foundation.")
     )
     app = create_application(
-        Settings(environment="test", database_url=database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=database.runtime_url,
+            metadata_database_url=database.metadata_url,
+        ),
         modules=modules,
         authorizer=Authorizer(_AllowAll()),
     )

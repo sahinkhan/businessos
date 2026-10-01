@@ -48,7 +48,11 @@ async def test_precision_29_creation_persistence_and_public_conversion(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=(
             module
             for module in discover_modules()
@@ -129,7 +133,11 @@ def test_uom_precision_preflight_rejects_dirty_legacy_rows_atomically(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=(
             module
             for module in discover_modules()

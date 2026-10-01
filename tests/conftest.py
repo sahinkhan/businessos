@@ -18,6 +18,7 @@ class PostgreSQLTestDatabase:
     operations_url: str
     worker_url: str
     governance_url: str
+    metadata_url: str
 
 
 def _database_url(base_url: str, database_name: str, *, sqlalchemy: bool = False) -> str:
@@ -45,6 +46,7 @@ def postgres_database() -> Iterator[PostgreSQLTestDatabase]:
     if governance_url is None:
         pytest.skip("BOS_TEST_DATABASE_GOVERNANCE_URL is not configured")
     migration_url = os.getenv("BOS_TEST_DATABASE_MIGRATION_URL")
+    metadata_url = os.environ["BOS_TEST_DATABASE_METADATA_URL"]
     if migration_url is None:
         pytest.skip("BOS_TEST_DATABASE_MIGRATION_URL is not configured")
 
@@ -64,7 +66,7 @@ def postgres_database() -> Iterator[PostgreSQLTestDatabase]:
         connection.execute(
             sql.SQL(
                 "GRANT CONNECT ON DATABASE {} TO businessos_app, businessos_ops, "
-                "businessos_worker, businessos_governance"
+                "businessos_worker, businessos_governance, businessos_metadata"
             ).format(sql.Identifier(database_name))
         )
 
@@ -76,6 +78,7 @@ def postgres_database() -> Iterator[PostgreSQLTestDatabase]:
             operations_url=_database_url(operations_url, database_name, sqlalchemy=True),
             worker_url=_database_url(worker_url, database_name, sqlalchemy=True),
             governance_url=_database_url(governance_url, database_name, sqlalchemy=True),
+            metadata_url=_database_url(metadata_url, database_name, sqlalchemy=True),
         )
     finally:
         with psycopg.connect(admin_url, autocommit=True) as connection:

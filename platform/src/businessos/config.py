@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     governance_database_url: str | None = Field(default=None, repr=False, exclude=True)
     governance_database_pool_size: int = Field(default=2, ge=1, le=20)
     governance_database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
+    metadata_database_url: str | None = Field(default=None, repr=False, exclude=True)
+    metadata_database_pool_size: int = Field(default=2, ge=1, le=20)
+    metadata_database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
     database_connection_budget: int = Field(default=100, ge=1)
     database_app_processes: int = Field(default=1, ge=1)
     database_worker_pool_reservation: int = Field(default=5, ge=0)
@@ -63,6 +66,11 @@ class Settings(BaseSettings):
                 else 0
             )
             + self.database_worker_pool_reservation
+            + (
+                self.metadata_database_pool_size * self.database_app_processes
+                if self.metadata_database_url is not None
+                else 0
+            )
             + self.database_ops_pool_reservation
             + self.database_other_connection_reservation
         )
@@ -99,12 +107,33 @@ class Settings(BaseSettings):
             raise ValueError("Production object-storage buckets must be provisioned externally")
         return self
 
+    @model_validator(mode="after")
+    def validate_metadata_profile(self) -> Self:
+        if self.metadata_database_url is not None:
+            ordinary = make_url(self.database_url)
+            protected = make_url(self.metadata_database_url)
+            if (
+                protected.drivername != "postgresql+psycopg"
+                or protected.username != "businessos_metadata"
+                or ordinary.database != protected.database
+                or ordinary.host != protected.host
+                or ordinary.port != protected.port
+            ):
+                raise ValueError(
+                    "Metadata profile must target the same database with its dedicated role"
+                )
+        return self
+
     @field_serializer("database_url")
     def serialize_database_url(self, _: str) -> str:
         return "**********"
 
     @field_serializer("governance_database_url")
     def serialize_governance_database_url(self, _: str | None) -> str:
+        return "**********"
+
+    @field_serializer("metadata_database_url")
+    def serialize_metadata_database_url(self, _: str | None) -> str:
         return "**********"
 
 

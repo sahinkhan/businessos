@@ -141,6 +141,7 @@ class MetadataStore:
         return tuple(sorted(modules))
 
     def _validate_snapshot(self, snapshot: DefinitionSnapshot, *, publishing: bool = False) -> None:
+        DefinitionSnapshot.model_validate(snapshot.model_dump(mode="json"))
         snapshot.validate_limits(self._limits)
         # ADR-015's authoritative classification resolver is a separate
         # certification prerequisite. A classified field cannot publish by
@@ -419,8 +420,8 @@ class MetadataStore:
         if error is not None:
             return error
         assert row is not None
-        snapshot = DefinitionSnapshot.model_validate(row["draft_snapshot"])
         try:
+            snapshot = DefinitionSnapshot.model_validate(row["draft_snapshot"])
             self._validate_snapshot(snapshot, publishing=True)
         except BusinessOSError:
             return _failure(
@@ -512,8 +513,8 @@ class MetadataStore:
             return _failure(
                 preflight, PublicationStatus.INCOMPATIBLE_DEPENDENCY, "revision unavailable"
             )
-        snapshot = DefinitionSnapshot.model_validate(revision["snapshot"])
         try:
+            snapshot = DefinitionSnapshot.model_validate(revision["snapshot"])
             self._validate_snapshot(snapshot, publishing=True)
         except (ValueError, BusinessOSError):
             return _failure(

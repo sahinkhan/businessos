@@ -158,7 +158,11 @@ async def test_audit_v2_manual_actor_chain_and_same_uow(
 ) -> None:
     permission_policy = _DenyAuditWrite()
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=(
             *(
                 module
@@ -345,7 +349,11 @@ async def test_audit_v2_manual_actor_chain_and_same_uow(
         await app.shutdown()
 
     no_dependency = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=(
             *(
                 module
@@ -373,7 +381,11 @@ async def test_policy_projection_uses_workload_actor_and_unique_committed_event(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=(
             module
             for module in discover_modules()

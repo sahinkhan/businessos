@@ -42,7 +42,6 @@ from businessos.modules import (
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.uow import (
-    InstallationUnitOfWorkFactory,
     UnitOfWork,
     UnitOfWorkFactory,
 )
@@ -88,7 +87,6 @@ __all__ = [
     "HandlerInvocationKind",
     "HandlerTransaction",
     "HandlingContext",
-    "InstallationUnitOfWorkFactory",
     "Job",
     "MetadataDeclaration",
     "Middleware",

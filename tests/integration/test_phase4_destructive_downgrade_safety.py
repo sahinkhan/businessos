@@ -14,8 +14,12 @@ from businessos.version import runtime_version
 from tests.conftest import PostgreSQLTestDatabase
 
 
-def _coordinator() -> MigrationCoordinator:
-    modules = tuple(discover_modules())
+def _coordinator(*, include_metadata: bool) -> MigrationCoordinator:
+    modules = tuple(
+        module
+        for module in discover_modules()
+        if include_metadata or module.manifest.module_id != "foundation.metadata"
+    )
     registry = ModuleRegistry(
         platform_version=runtime_version(),
         sdk_version="0.1.0",
@@ -76,10 +80,12 @@ def _snapshot(url: str) -> tuple[tuple[tuple[object, ...], ...], ...]:
 
 @pytest.mark.integration
 @pytest.mark.postgres
+@pytest.mark.parametrize("include_metadata", [False, True])
 def test_audit_policy_targeted_and_base_refuse_atomically(
     postgres_database: PostgreSQLTestDatabase,
+    include_metadata: bool,
 ) -> None:
-    migrations = _coordinator()
+    migrations = _coordinator(include_metadata=include_metadata)
     migrations.upgrade(postgres_database.migration_url)
     tenant = uuid4()
     role = uuid4()
@@ -166,10 +172,12 @@ def test_audit_policy_targeted_and_base_refuse_atomically(
         )
         connection.commit()
     before = _snapshot(postgres_database.migration_url)
-    assert {str(row[0]) for row in before[0]} >= {"audit_0005", "policy_0005", "metadata_0001"}
+    audit_head = "metadata_0001" if include_metadata else "audit_0006"
+    assert {str(row[0]) for row in before[0]} >= {"proof_0004", "policy_0005", audit_head}
+    audit_refusal = "metadata_0001" if include_metadata else "audit_0005"
     for target, reason in (
-        ("audit_0004", "audit_0005 downgrade refused"),
-        ("audit_0002", "audit_0005 downgrade refused"),
+        ("audit_0004", f"{audit_refusal} downgrade refused"),
+        ("audit_0002", f"{audit_refusal} downgrade refused"),
         ("policy_0004", "policy_0005 downgrade refused"),
         ("policy_0002", "policy_0005 downgrade refused"),
         ("base", "downgrade refused"),
@@ -195,10 +203,12 @@ def test_audit_policy_targeted_and_base_refuse_atomically(
 
 @pytest.mark.integration
 @pytest.mark.postgres
+@pytest.mark.parametrize("include_metadata", [False, True])
 def test_existing_prebarrier_data_survives_forward_upgrade(
     postgres_database: PostgreSQLTestDatabase,
+    include_metadata: bool,
 ) -> None:
-    migrations = _coordinator()
+    migrations = _coordinator(include_metadata=include_metadata)
     migrations.upgrade(postgres_database.migration_url, "audit_0004")
     migrations.upgrade(postgres_database.migration_url, "policy_0004")
     tenant = uuid4()
@@ -214,6 +224,7 @@ def test_existing_prebarrier_data_survives_forward_upgrade(
     migrations.upgrade(postgres_database.migration_url)
     before = _snapshot(postgres_database.migration_url)
     assert any(str(evidence) in str(row[0]) for row in before[2])
-    with pytest.raises(Exception, match="audit_0005 downgrade refused"):
+    audit_refusal = "metadata_0001" if include_metadata else "audit_0005"
+    with pytest.raises(Exception, match=f"{audit_refusal} downgrade refused"):
         migrations.downgrade(postgres_database.migration_url, "audit_0004")
     assert _snapshot(postgres_database.migration_url) == before

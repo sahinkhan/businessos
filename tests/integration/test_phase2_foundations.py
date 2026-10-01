@@ -1669,7 +1669,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
     assert app.runtime is not None
     plan = app.runtime.migrations.plan()
     assert set(plan.heads) == {
-        "0006_governance_outbox",
+        "0007_metadata_outbox",
         "organization_0003",
         "identity_0005",
         "tenant_0002",
@@ -1707,7 +1707,7 @@ def test_phase2_migration_upgrade_downgrade_replay_and_constraints(
                 "SELECT module_id FROM platform_module.installed_module_migrations"
             )
         }
-    assert heads == {"0006_governance_outbox", "organization_0003", "identity_0005", "tenant_0002"}
+    assert heads == {"0007_metadata_outbox", "organization_0003", "identity_0005", "tenant_0002"}
     assert inventory == {
         "foundation.tenant",
         "foundation.identity",
@@ -1819,7 +1819,7 @@ def test_identity_migration_rejects_existing_cross_tenant_device_principal(
             "FROM platform_identity.devices WHERE id = %s",
             (device_id,),
         ).fetchone()
-    assert heads == {"0006_governance_outbox", "organization_0003", "identity_0005", "tenant_0002"}
+    assert heads == {"0007_metadata_outbox", "organization_0003", "identity_0005", "tenant_0002"}
     assert migrated_device == (principal_tenant_id, principal_id, "user")
     migrations.downgrade(postgres_database.migration_url)
 

@@ -1,7 +1,7 @@
 """Metadata definitions, immutable revisions and shared module publication fence.
 
 Revision ID: metadata_0001
-Revises: gov_0005
+Revises: gov_0005, 0007_metadata_outbox, audit_0006
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,10 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from businessos.migration_assets.metadata_role import assert_metadata_role_safe
+
 revision: str = "metadata_0001"
-down_revision: str | Sequence[str] | None = "gov_0005"
+down_revision: str | Sequence[str] | None = ("gov_0005", "0007_metadata_outbox", "audit_0006")
 branch_labels: str | Sequence[str] | None = ("foundation_metadata",)
 depends_on: str | Sequence[str] | None = None
 
@@ -25,21 +27,28 @@ def _isolate(table: str) -> None:
     op.execute(f"ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY")
     op.execute(f"ALTER TABLE {qualified} FORCE ROW LEVEL SECURITY")
     op.execute(
-        f"CREATE POLICY {table}_tenant ON {qualified} TO businessos_app "
+        f"CREATE POLICY {table}_tenant ON {qualified} TO businessos_metadata "
         f"USING ({TENANT_MATCH}) WITH CHECK ({TENANT_MATCH})"
     )
     op.execute(
         f"CREATE POLICY {table}_migration ON {qualified} TO businessos_migrator "
         "USING (true) WITH CHECK (true)"
     )
-    op.execute(f"REVOKE ALL ON {qualified} FROM PUBLIC, businessos_worker, businessos_ops")
-    op.execute(f"GRANT SELECT, INSERT, UPDATE ON {qualified} TO businessos_app")
+    op.execute(
+        f"REVOKE ALL ON {qualified} FROM PUBLIC, businessos_app, businessos_worker, businessos_ops"
+    )
+    privileges = "SELECT, INSERT, UPDATE" if table == "definitions" else "SELECT, INSERT"
+    op.execute(f"GRANT {privileges} ON {qualified} TO businessos_metadata")
 
 
 def upgrade() -> None:
+    assert_metadata_role_safe(op.get_bind())
     op.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
-    op.execute(f"REVOKE ALL ON SCHEMA {SCHEMA} FROM PUBLIC")
-    op.execute(f"GRANT USAGE ON SCHEMA {SCHEMA} TO businessos_app")
+    op.execute(
+        f"REVOKE ALL ON SCHEMA {SCHEMA} FROM PUBLIC, "
+        f"businessos_app, businessos_worker, businessos_ops"
+    )
+    op.execute(f"GRANT USAGE ON SCHEMA {SCHEMA} TO businessos_metadata")
     op.create_table(
         "module_fence",
         sa.Column("module_id", sa.String(150), primary_key=True),
@@ -51,9 +60,10 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
     op.execute(
-        f"REVOKE ALL ON {SCHEMA}.module_fence FROM PUBLIC, businessos_worker, businessos_ops"
+        f"REVOKE ALL ON {SCHEMA}.module_fence FROM PUBLIC, "
+        f"businessos_app, businessos_worker, businessos_ops"
     )
-    op.execute(f"GRANT SELECT, INSERT, UPDATE ON {SCHEMA}.module_fence TO businessos_app")
+    op.execute(f"GRANT SELECT, INSERT, UPDATE ON {SCHEMA}.module_fence TO businessos_metadata")
     op.create_table(
         "contract_fence",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -70,11 +80,12 @@ def upgrade() -> None:
         "VALUES (1, 1, 1)"
     )
     op.execute(
-        f"REVOKE ALL ON {SCHEMA}.contract_fence FROM PUBLIC, businessos_worker, businessos_ops"
+        f"REVOKE ALL ON {SCHEMA}.contract_fence FROM PUBLIC, "
+        f"businessos_app, businessos_worker, businessos_ops"
     )
     # PostgreSQL row locks require UPDATE privilege on at least one column.
-    # The singleton key is constrained to 1; ordinary app code cannot alter generations.
-    op.execute(f"GRANT SELECT, UPDATE (id) ON {SCHEMA}.contract_fence TO businessos_app")
+    # The singleton key is constrained to 1; the protected profile cannot alter generations.
+    op.execute(f"GRANT SELECT, UPDATE (id) ON {SCHEMA}.contract_fence TO businessos_metadata")
     op.create_table(
         "definitions",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),

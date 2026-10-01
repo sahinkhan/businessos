@@ -22,6 +22,8 @@ async def test_shipped_asgi_entrypoint_completes_real_lifespan(
 ) -> None:
     monkeypatch.setenv("BOS_ENVIRONMENT", "test")
     monkeypatch.setenv("BOS_DATABASE_URL", postgres_database.runtime_url)
+    monkeypatch.setenv("BOS_METADATA_DATABASE_URL", postgres_database.metadata_url)
+    monkeypatch.setenv("BOS_GOVERNANCE_DATABASE_URL", postgres_database.governance_url)
     monkeypatch.setenv("BOS_S3_BUCKET", "businessos-development")
     monkeypatch.setenv("BOS_S3_ENDPOINT_URL", os.environ["BOS_TEST_S3_ENDPOINT"])
     monkeypatch.setenv("BOS_S3_REGION_NAME", "us-east-1")

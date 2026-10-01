@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -25,7 +25,7 @@ from businessos.errors import ConfigurationError, NotFoundError
 from businessos.persistence.uow import SQLAlchemyUnitOfWork, UnitOfWork
 
 if TYPE_CHECKING:
-    from businessos.messages import Command
+    from businessos.messages import Command, Query
 
 
 GOVERNANCE_PROFILE = "foundation.data_governance"
@@ -99,8 +99,72 @@ class _ProtectedCommandRegistration(Protocol):
 @dataclass(frozen=True, slots=True)
 class _Registration:
     registered: _ProtectedCommandRegistration
-    command_type: type[Command]
+    command_type: type[Command | Query]
     generation: ContributionGeneration
+
+
+class DatabaseExecutionSelector(Protocol):
+    def requires_protected(
+        self, registered: _ProtectedCommandRegistration, command_type: type[Command | Query]
+    ) -> bool: ...
+
+    def record_registration(
+        self,
+        registered: _ProtectedCommandRegistration,
+        command_type: type[Command | Query],
+        entitlement: object,
+    ) -> None: ...
+
+    def remove_generation(self, generation: ContributionGeneration) -> None: ...
+
+    def for_command(
+        self,
+        registered: _ProtectedCommandRegistration,
+        command_type: type[Command | Query],
+        tenant: TenantContext | None,
+    ) -> AbstractAsyncContextManager[UnitOfWork]: ...
+
+
+class ProtectedDatabaseProfiles:
+    """Composition-owned enumerated profiles; never registered in module DI."""
+
+    def __init__(self, *profiles: DatabaseExecutionSelector) -> None:
+        self._profiles = profiles
+
+    def requires_protected(
+        self, registered: _ProtectedCommandRegistration, command_type: type[Command | Query]
+    ) -> bool:
+        return any(
+            profile.requires_protected(registered, command_type) for profile in self._profiles
+        )
+
+    def record_registration(
+        self,
+        registered: _ProtectedCommandRegistration,
+        command_type: type[Command | Query],
+        entitlement: object,
+    ) -> None:
+        for profile in self._profiles:
+            profile.record_registration(registered, command_type, entitlement)
+
+    def remove_generation(self, generation: ContributionGeneration) -> None:
+        for profile in self._profiles:
+            profile.remove_generation(generation)
+
+    @asynccontextmanager
+    async def for_command(
+        self,
+        registered: _ProtectedCommandRegistration,
+        command_type: type[Command | Query],
+        tenant: TenantContext | None,
+    ) -> AsyncGenerator[UnitOfWork]:
+        matches = [p for p in self._profiles if p.requires_protected(registered, command_type)]
+        if not matches:
+            raise PermissionError("Handler has no protected database execution profile")
+        if len(matches) != 1:
+            raise ConfigurationError("Protected execution profile is missing or ambiguous")
+        async with matches[0].for_command(registered, command_type, tenant) as unit:
+            yield unit
 
 
 class _GovernancePool:
@@ -602,6 +666,9 @@ class ProtectedDatabaseExecutionAuthority:
     The mapping is a protected deployment rule, never a manifest capability.
     """
 
+    _pool_type = _GovernancePool
+    _profile = GOVERNANCE_PROFILE
+
     def __init__(
         self,
         *,
@@ -623,8 +690,8 @@ class ProtectedDatabaseExecutionAuthority:
             ):
                 raise ConfigurationError("Protected database endpoint is ambiguous")
             self._endpoint = (parsed.host, parsed.port, parsed.database)
-        self._active = (
-            _GovernancePool(
+        self._active: _GovernancePool | None = (
+            self._pool_type(
                 governance_url,
                 size=pool_size,
                 timeout=pool_timeout,
@@ -639,7 +706,7 @@ class ProtectedDatabaseExecutionAuthority:
         self._closed = False
 
     @staticmethod
-    def _protected_command(owner: str, command_type: type[Command]) -> bool:
+    def _protected_command(owner: str, command_type: type[Command | Query]) -> bool:
         return (
             owner == GOVERNANCE_PROFILE
             and command_type.__module__ in _GOVERNANCE_COMMAND_MODULES
@@ -648,14 +715,14 @@ class ProtectedDatabaseExecutionAuthority:
 
     @classmethod
     def requires_protected(
-        cls, registered: _ProtectedCommandRegistration, command_type: type[Command]
+        cls, registered: _ProtectedCommandRegistration, command_type: type[Command | Query]
     ) -> bool:
         return cls._protected_command(registered.owner, command_type)
 
     def record_registration(
         self,
         registered: _ProtectedCommandRegistration,
-        command_type: type[Command],
+        command_type: type[Command | Query],
         entitlement: object,
     ) -> None:
         if not self._protected_command(registered.owner, command_type):
@@ -682,7 +749,7 @@ class ProtectedDatabaseExecutionAuthority:
     async def for_command(
         self,
         registered: _ProtectedCommandRegistration,
-        command_type: type[Command],
+        command_type: type[Command | Query],
         tenant: TenantContext | None,
     ) -> AsyncGenerator[UnitOfWork]:
         if not self.requires_protected(registered, command_type):
@@ -718,7 +785,7 @@ class ProtectedDatabaseExecutionAuthority:
             _logger.info(
                 "Protected database execution selected",
                 extra={
-                    "protected_database_profile": GOVERNANCE_PROFILE,
+                    "protected_database_profile": self._profile,
                     "handler_generation_owner": registration.generation.owner,
                     "handler_generation_number": registration.generation.number,
                 },
@@ -763,7 +830,7 @@ class ProtectedDatabaseExecutionAuthority:
                 )
             ):
                 raise ConfigurationError("Protected database endpoint mismatch")
-            replacement = _GovernancePool(
+            replacement = self._pool_type(
                 url,
                 size=self._pool_size,
                 timeout=self._pool_timeout,

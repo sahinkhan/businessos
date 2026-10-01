@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from enum import StrEnum
+from ipaddress import ip_address
 from typing import Literal, Self
+from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 
 CONTRACT_VERSION: Literal["1.0"] = "1.0"
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,79}\Z", re.ASCII)
@@ -75,12 +78,22 @@ class Comparison(StrEnum):
     GE = "ge"
 
 
+class MoneyLiteral(_Contract):
+    """Exact decimal amount plus explicit ISO-style currency code; never binary float."""
+
+    amount: StrictStr = Field(pattern=r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$", max_length=60)
+    currency: StrictStr = Field(pattern=r"^[A-Z]{3}$")
+
+
+LiteralValue = StrictStr | StrictInt | StrictBool | MoneyLiteral
+
+
 class ValidationRule(_Contract):
     """One total, non-recursive comparison or conditional-required expression."""
 
     left_field: str = Field(max_length=80)
     comparison: Comparison
-    right_literal: str | int | bool
+    right_literal: LiteralValue
     require_field: str | None = Field(default=None, max_length=80)
 
     @model_validator(mode="after")
@@ -98,15 +111,15 @@ class FieldDefinition(_Contract):
     field_id: UUID
     name: str = Field(max_length=80)
     value_type: FieldType
-    nullable: bool = True
-    max_length: int | None = Field(default=None, ge=1, le=16384)
-    precision: int | None = Field(default=None, ge=1, le=38)
-    scale: int | None = Field(default=None, ge=0, le=18)
+    nullable: StrictBool = True
+    max_length: int | None = Field(default=None, ge=1, le=16384, strict=True)
+    precision: int | None = Field(default=None, ge=1, le=38, strict=True)
+    scale: int | None = Field(default=None, ge=0, le=18, strict=True)
     enum_choices: tuple[str, ...] = Field(default=(), max_length=100)
     reference_namespace: str | None = Field(default=None, max_length=200)
     reference_contract_version: str | None = Field(default=None, max_length=30)
     classification_ref: str | None = Field(default=None, max_length=200)
-    literal_default: str | int | bool | None = None
+    literal_default: LiteralValue | None = None
 
     @model_validator(mode="after")
     def bounded_type(self) -> Self:
@@ -149,32 +162,103 @@ class FieldDefinition(_Contract):
             self.classification_ref
         ):
             raise ValueError("classification reference must be qualified")
-        if self.literal_default is not None and (
-            self.value_type in {FieldType.REFERENCE, FieldType.MONEY, FieldType.DECIMAL}
-            or (self.value_type is FieldType.BOOLEAN and type(self.literal_default) is not bool)
-            or (self.value_type is FieldType.INTEGER and type(self.literal_default) is not int)
-            or (self.value_type is FieldType.ENUM and self.literal_default not in self.enum_choices)
-            or (
-                self.value_type
-                in {
-                    FieldType.TEXT,
-                    FieldType.LONG_TEXT,
-                    FieldType.EMAIL,
-                    FieldType.PHONE,
-                    FieldType.URL,
-                    FieldType.UUID,
-                    FieldType.DATE,
-                    FieldType.INSTANT,
-                }
-                and type(self.literal_default) is not str
-            )
-            or (
-                type(self.literal_default) is str
-                and len(self.literal_default) > (self.max_length or 16384)
-            )
-        ):
-            raise ValueError("literal default is invalid for field type")
+        if self.value_type in {FieldType.DECIMAL, FieldType.MONEY} and self.precision is None:
+            raise ValueError("decimal and money require precision and scale")
+        if self.literal_default is not None:
+            self.validate_literal(self.literal_default)
         return self
+
+    def validate_literal(self, value: LiteralValue) -> None:
+        """Validate the complete bounded literal grammar without coercion or execution."""
+        kind = self.value_type
+        if kind is FieldType.BOOLEAN:
+            if type(value) is not bool:
+                raise ValueError("boolean literal required")
+            return
+        if kind is FieldType.INTEGER:
+            if type(value) is not int or not -(2**63) <= value < 2**63:
+                raise ValueError("signed 64-bit integer literal required")
+            return
+        if kind is FieldType.REFERENCE:
+            raise ValueError(
+                "reference literals require authoritative resolution and are unsupported"
+            )
+        if kind in {FieldType.DECIMAL, FieldType.MONEY}:
+            amount = value.amount if isinstance(value, MoneyLiteral) else value
+            if (kind is FieldType.MONEY) != isinstance(value, MoneyLiteral):
+                raise ValueError("money literal requires an amount and currency")
+            if (
+                not isinstance(amount, str)
+                or len(amount) > 60
+                or not re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?", amount, re.ASCII)
+            ):
+                raise ValueError("exact bounded decimal literal required")
+            number = Decimal(amount)
+            _, digits, exponent = number.as_tuple()
+            assert isinstance(exponent, int)
+            assert self.precision is not None and self.scale is not None
+            fraction = max(-exponent, 0)
+            integral = 0 if number.is_zero() else max(len(digits) + exponent, 0)
+            if fraction > self.scale or integral > self.precision - self.scale:
+                raise ValueError("decimal literal exceeds precision or scale")
+            return
+        if not isinstance(value, str) or len(value) > (self.max_length or 16384):
+            raise ValueError("bounded string literal required")
+        if kind is FieldType.ENUM and value not in self.enum_choices:
+            raise ValueError("literal is not an enum choice")
+        if kind is FieldType.UUID:
+            if str(UUID(value)) != value:
+                raise ValueError("canonical UUID literal required")
+        if kind is FieldType.DATE:
+            if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+                raise ValueError("ISO date literal required")
+            date.fromisoformat(value)
+        if kind is FieldType.INSTANT:
+            if not re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+                r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])",
+                value,
+            ):
+                raise ValueError("timezone-qualified ISO instant literal required")
+            datetime.fromisoformat(value)
+        if kind is FieldType.EMAIL:
+            if (
+                len(value) > 254
+                or not re.fullmatch(
+                    r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+                    r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+",
+                    value,
+                )
+                or len(value.split("@", 1)[0]) > 64
+            ):
+                raise ValueError("bounded email literal required")
+        if kind is FieldType.URL:
+            parts = urlsplit(value)
+            if (
+                len(value) > 2048
+                or parts.scheme not in {"http", "https"}
+                or not parts.hostname
+                or parts.username is not None
+                or parts.password is not None
+                or any(char.isspace() or ord(char) < 32 for char in value)
+                or "\\" in value
+            ):
+                raise ValueError("absolute HTTP(S) URL without credentials required")
+            _ = parts.port  # Validates numeric port range.
+            hostname = parts.hostname
+            assert hostname is not None
+            try:
+                ip_address(hostname)
+            except ValueError:
+                host = hostname.encode("idna").decode("ascii")
+                if len(host) > 253 or any(
+                    not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                    for label in host.split(".")
+                ):
+                    raise ValueError("invalid URL hostname") from None
+        if kind is FieldType.PHONE and not re.fullmatch(r"\+?[0-9][0-9 ()-]{1,30}[0-9]", value):
+            raise ValueError("bounded phone literal required")
 
 
 class MetadataLimits(_Contract):
@@ -206,6 +290,16 @@ class DefinitionSnapshot(_Contract):
             for rule in self.rules
         ):
             raise ValueError("validation rule references an unknown field")
+        by_name = {field.name: field for field in self.fields}
+        ordered = {FieldType.INTEGER, FieldType.DECIMAL, FieldType.DATE, FieldType.INSTANT}
+        for rule in self.rules:
+            field = by_name[rule.left_field]
+            field.validate_literal(rule.right_literal)
+            if (
+                rule.comparison not in {Comparison.EQ, Comparison.NE}
+                and field.value_type not in ordered
+            ):
+                raise ValueError("ordering comparison is incompatible with field type")
         return self
 
     def validate_limits(self, limits: MetadataLimits) -> None:

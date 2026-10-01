@@ -219,6 +219,7 @@ def _run_image(
         "BOS_OPERATIONS_PASSWORD",
         "BOS_WORKER_PASSWORD",
         "BOS_GOVERNANCE_PASSWORD",
+        "BOS_METADATA_PASSWORD",
     )
     command = ["docker", "run", "--rm", "--network", network]
     for name in names:
@@ -274,6 +275,7 @@ def _verify_global_geography_read_only(database_url: str) -> None:
 
 
 _APPROVED_DOWNGRADE_REFUSALS = (
+    "proof_0004 downgrade refused:",
     "metadata_0001 downgrade refused:",
     "audit_0005 downgrade refused:",
     "policy_0005 downgrade refused:",
@@ -359,6 +361,7 @@ def main() -> None:
             "BOS_OPERATIONS_PASSWORD": _required("BOS_OPERATIONS_PASSWORD"),
             "BOS_WORKER_PASSWORD": _required("BOS_WORKER_PASSWORD"),
             "BOS_GOVERNANCE_PASSWORD": _required("BOS_GOVERNANCE_PASSWORD"),
+            "BOS_METADATA_PASSWORD": _required("BOS_METADATA_PASSWORD"),
         }
     )
 

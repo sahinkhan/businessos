@@ -67,8 +67,6 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     plan = smoke._expected_plan()
     assert {source.owner for source in plan.sources} == smoke.REQUIRED_OWNERS
     assert plan.heads == (
-        "0006_governance_outbox",
-        "audit_0005",
         "geography_0003",
         "identity_0005",
         "metadata_0001",
@@ -118,16 +116,19 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["gov_0003"] == ("gov_0002",)
     assert parents["gov_0004"] == ("gov_0003",)
     assert parents["gov_0005"] == ("gov_0004",)
-    assert parents["metadata_0001"] == ("gov_0005",)
+    assert parents["metadata_0001"] == ("gov_0005", "0007_metadata_outbox", "audit_0006")
+    assert parents["audit_0006"] == ("audit_0005",)
+    assert parents["0007_metadata_outbox"] == ("0006_governance_outbox",)
     assert parents["0006_governance_outbox"] == ("0005_durable_event_subscribers",)
     smoke._verify_installed_plan(_plan_json(plan), plan)
     smoke._verify_state(set(plan.heads), _inventory(plan), plan)
 
 
-def test_destructive_smoke_accepts_only_approved_refusal() -> None:
+@pytest.mark.parametrize("revision", ["policy_0005", "proof_0004"])
+def test_destructive_smoke_accepts_only_approved_refusal(revision: str) -> None:
     def approved(_arguments: object) -> str:
         raise subprocess.CalledProcessError(
-            1, "businessos migrate downgrade base", stderr="policy_0005 downgrade refused: floor"
+            1, "businessos migrate downgrade base", stderr=f"{revision} downgrade refused: floor"
         )
 
     smoke._expect_approved_destructive_downgrade_refusal(approved)
@@ -287,7 +288,7 @@ def test_database_heads_must_equal_all_expected_heads(change: str) -> None:
     plan = smoke._expected_plan()
     heads = set(plan.heads)
     if change == "missing":
-        heads.remove("audit_0005")
+        heads.remove("metadata_0001")
     elif change == "rogue":
         heads.add("rogue_0001")
     else:

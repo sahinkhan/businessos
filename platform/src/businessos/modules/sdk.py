@@ -330,6 +330,11 @@ class ModuleRegistration:
                 if self._gate.state(self.generation) is ContributionState.STAGED
                 else None
             ),
+            _database_entitlement=(
+                self._owner_restricted_entitlement
+                if self._gate.state(self.generation) is ContributionState.STAGED
+                else None
+            ),
         )
 
     def event[E: DomainEvent](

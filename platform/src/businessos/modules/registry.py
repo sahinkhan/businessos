@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import sys
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
@@ -294,12 +295,24 @@ class ModuleRegistry:
         artifact = self._approved_artifacts.get(module_id)
         if artifact is not None:
             artifact.verify(registered.module, registered.manifest)
-            value = artifact.artifact_sha256 or artifact.install_identity
+            value = json.dumps(
+                [
+                    artifact.module_id,
+                    artifact.publisher,
+                    artifact.package_identity,
+                    artifact.loaded_type,
+                    artifact.install_identity,
+                    artifact.artifact_sha256,
+                    registered.manifest.model_dump(mode="json"),
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
         else:
             value = hashlib.sha256(
                 registered.manifest.model_dump_json().encode("utf-8")
             ).hexdigest()
-        return value[:200]
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class LifecycleManager:
@@ -388,7 +401,10 @@ class LifecycleManager:
                         start_attempted = True
                         await registered.module.start()
                         registered.started = True
-                        registration.publish()
+                    # Publication is synchronous and has no cancellation point.
+                    # The fence context must finish committing before a staged
+                    # generation can be observed or admitted by any registry.
+                    registration.publish()
             except BaseException as exc:
                 rollback_errors: list[BaseException] = []
                 if start_attempted:

@@ -1,14 +1,16 @@
 """Metadata-owned PostgreSQL fence for module and publication compatibility."""
 
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from businessos.sdk import ConfigurationError, InstallationUnitOfWorkFactory
+from businessos.sdk import ConfigurationError, UnitOfWork
 
 from .models import MODULE_FENCE
+
+InstallationTransaction = Callable[[], AbstractAsyncContextManager[UnitOfWork]]
 
 
 class MetadataActivationFence:
@@ -20,14 +22,14 @@ class MetadataActivationFence:
     activation today.
     """
 
-    def __init__(self, factory: InstallationUnitOfWorkFactory) -> None:
+    def __init__(self, factory: InstallationTransaction) -> None:
         self._factory = factory
 
     @asynccontextmanager
     async def activation(self, module_id: str, artifact_identity: str) -> AsyncGenerator[None]:
         if not module_id or not artifact_identity:
             raise ConfigurationError("Module activation identity is required")
-        async with self._factory.installation() as uow:
+        async with self._factory() as uow:
             persistence = uow.persistence
             await persistence.execute(
                 insert(MODULE_FENCE)

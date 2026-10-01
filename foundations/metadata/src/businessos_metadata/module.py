@@ -14,14 +14,13 @@ from businessos.sdk import (
     Command,
     DomainEvent,
     HandlingContext,
-    InstallationUnitOfWorkFactory,
     ModuleManifest,
     ModuleRegistration,
     PermissionDeclaration,
     Query,
 )
 
-from .activation_fence import MetadataActivationFence
+from .activation_fence import InstallationTransaction, MetadataActivationFence
 from .contracts import DefinitionKind, DefinitionSnapshot, MetadataLimits, PublishPreflight
 from .store import MetadataStore
 
@@ -89,7 +88,7 @@ class MetadataModule:
         self.manifest = ModuleManifest.model_validate(data)
         self._store = MetadataStore(limits or MetadataLimits())
 
-    def activation_fence(self, factory: InstallationUnitOfWorkFactory) -> MetadataActivationFence:
+    def _activation_fence(self, factory: InstallationTransaction) -> MetadataActivationFence:
         return MetadataActivationFence(factory)
 
     async def register(self, registration: ModuleRegistration) -> None:

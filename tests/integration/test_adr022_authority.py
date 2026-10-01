@@ -24,6 +24,10 @@ from businessos.application import BusinessOSApplication
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
+from businessos.database_execution import (
+    ProtectedDatabaseExecutionAuthority,
+    ProtectedDatabaseProfiles,
+)
 from businessos.errors import ConfigurationError, NotFoundError
 from businessos.logging import JsonFormatter
 from businessos.messages import Command
@@ -46,6 +50,7 @@ def _application(
             log_level=log_level,
             database_url=database.runtime_url,
             governance_database_url=database.governance_url,
+            metadata_database_url=database.metadata_url,
         ),
         modules=(
             module
@@ -72,6 +77,7 @@ async def test_adr022_startup_rejects_budget_above_postgresql_capacity(
             environment="test",
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
+            metadata_database_url=postgres_database.metadata_url,
             database_connection_budget=10_000,
         ),
         modules=(
@@ -217,7 +223,10 @@ async def test_adr022_exact_routing_identity_and_failed_rotation(
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
     dispatcher = app.runtime.messages
-    authority = dispatcher._protected_database
+    authority = cast(
+        ProtectedDatabaseExecutionAuthority,
+        cast(ProtectedDatabaseProfiles, dispatcher._protected_database)._profiles[0],
+    )
     assert authority is not None
     tenant = TenantContext(
         installation_id=uuid4(),
@@ -332,7 +341,10 @@ async def test_adr022_one_uow_commit_cancellation_and_next_tenant(
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
-    authority = app.runtime.messages._protected_database
+    authority = cast(
+        ProtectedDatabaseExecutionAuthority,
+        cast(ProtectedDatabaseProfiles, app.runtime.messages._protected_database)._profiles[0],
+    )
     assert authority is not None
     tenant_a, tenant_b = uuid4(), uuid4()
     context_a = TenantContext(
@@ -587,7 +599,10 @@ async def test_adr022_rotation_rejects_grant_drift_and_draining_generation(
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
-    authority = app.runtime.messages._protected_database
+    authority = cast(
+        ProtectedDatabaseExecutionAuthority,
+        cast(ProtectedDatabaseProfiles, app.runtime.messages._protected_database)._profiles[0],
+    )
     assert authority is not None
     tenant = TenantContext(
         installation_id=uuid4(),
@@ -679,7 +694,10 @@ async def test_adr022_protected_admission_checks_grants_without_readiness(
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
-    authority = app.runtime.messages._protected_database
+    authority = cast(
+        ProtectedDatabaseExecutionAuthority,
+        cast(ProtectedDatabaseProfiles, app.runtime.messages._protected_database)._profiles[0],
+    )
     assert authority is not None
     tenant = TenantContext(installation_id=uuid4(), tenant_id=uuid4(), principal_id=uuid4())
     command = PlaceLegalHoldCommand(
@@ -722,7 +740,10 @@ async def test_adr022_cancelled_validation_preserves_healthy_protected_pool(
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
-    authority = app.runtime.messages._protected_database
+    authority = cast(
+        ProtectedDatabaseExecutionAuthority,
+        cast(ProtectedDatabaseProfiles, app.runtime.messages._protected_database)._profiles[0],
+    )
     assert authority is not None
     pool = authority._active
     assert pool is not None
@@ -772,7 +793,10 @@ async def test_adr022_admission_rejects_tenant_classification_rls_drift(
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
-    authority = app.runtime.messages._protected_database
+    authority = cast(
+        ProtectedDatabaseExecutionAuthority,
+        cast(ProtectedDatabaseProfiles, app.runtime.messages._protected_database)._profiles[0],
+    )
     assert authority is not None
     tenant = TenantContext(installation_id=uuid4(), tenant_id=uuid4(), principal_id=uuid4())
     command = PlaceLegalHoldCommand(
@@ -820,7 +844,10 @@ async def test_adr022_admission_rejects_indirect_ordinary_write_drift(
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
-    authority = app.runtime.messages._protected_database
+    authority = cast(
+        ProtectedDatabaseExecutionAuthority,
+        cast(ProtectedDatabaseProfiles, app.runtime.messages._protected_database)._profiles[0],
+    )
     assert authority is not None
     tenant = TenantContext(installation_id=uuid4(), tenant_id=uuid4(), principal_id=uuid4())
     command = PlaceLegalHoldCommand(

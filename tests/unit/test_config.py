@@ -82,3 +82,22 @@ def test_production_composition_fails_closed_without_storage_configuration() -> 
             s3_bucket="businessos",
             s3_provision_bucket=True,
         )
+
+
+def test_metadata_profile_credentials_are_scoped_redacted_and_budgeted() -> None:
+    ordinary = "postgresql+psycopg://businessos_app:app@db:5432/businessos"
+    protected = "postgresql+psycopg://businessos_metadata:metadata-secret@db:5432/businessos"
+    settings = Settings(database_url=ordinary, metadata_database_url=protected)
+    assert "metadata-secret" not in repr(settings)
+    assert "metadata_database_url" not in settings.model_dump()
+    for invalid in (
+        protected.replace("businessos_metadata", "businessos_app"),
+        protected.replace("@db:", "@other:"),
+        protected.replace("/businessos", "/other"),
+    ):
+        with pytest.raises(ValidationError, match="dedicated role"):
+            Settings(database_url=ordinary, metadata_database_url=invalid)
+    with pytest.raises(ValidationError, match="connection budget"):
+        Settings(
+            database_url=ordinary, metadata_database_url=protected, database_connection_budget=23
+        )

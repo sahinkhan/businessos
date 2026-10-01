@@ -124,7 +124,11 @@ async def test_full_party_complete_at_99_and_100_then_overflows_at_101(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_AllowAll()),
     )
@@ -225,7 +229,11 @@ async def test_child_pagination_redaction_permissions_and_tenant_scope(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_AllowAll()),
     )
@@ -435,7 +443,11 @@ async def test_child_pagination_redaction_permissions_and_tenant_scope(
         await app.shutdown()
 
     denied = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_DenySensitive()),
     )

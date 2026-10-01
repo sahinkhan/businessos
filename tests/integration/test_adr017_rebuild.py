@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import boto3
@@ -36,6 +36,10 @@ from sqlalchemy import text
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext, bind_request_context
+from businessos.database_execution import (
+    ProtectedDatabaseExecutionAuthority,
+    ProtectedDatabaseProfiles,
+)
 from businessos.errors import BusinessOSError, ConfigurationError
 from businessos.messages import EventHandlingContext, handler_transaction_view
 from businessos.migrations import MigrationCoordinator
@@ -251,6 +255,7 @@ async def test_adr017_out_of_order_projection_keeps_latest_surviving_shared_valu
             environment="test",
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
+            metadata_database_url=postgres_database.metadata_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -474,6 +479,7 @@ async def _running_app(database: PostgreSQLTestDatabase) -> Any:
             environment="test",
             database_url=database.runtime_url,
             governance_database_url=database.governance_url,
+            metadata_database_url=database.metadata_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -1168,6 +1174,7 @@ async def test_adr017_real_protected_proof_owner_commit(
             environment="test",
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
+            metadata_database_url=postgres_database.metadata_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -1329,6 +1336,7 @@ async def test_adr017_concurrent_cleanup_cannot_restore_purged_shared_plaintext(
             environment="test",
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
+            metadata_database_url=postgres_database.metadata_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -1599,6 +1607,7 @@ async def test_adr017_owner_relation_rejects_ordinary_indirect_writers(
             environment="test",
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
+            metadata_database_url=postgres_database.metadata_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -1609,7 +1618,10 @@ async def test_adr017_owner_relation_rejects_ordinary_indirect_writers(
     assert app.runtime is not None
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
-    authority = app.runtime.messages._protected_database
+    authority = cast(
+        ProtectedDatabaseExecutionAuthority,
+        cast(ProtectedDatabaseProfiles, app.runtime.messages._protected_database)._profiles[0],
+    )
     assert authority is not None
     suffix = uuid4().hex
     source = f"adr017_owner_source_{suffix}"

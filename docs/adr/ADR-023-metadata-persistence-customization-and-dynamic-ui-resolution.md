@@ -46,7 +46,7 @@ Supersedes: None
 
 Superseded by: None
 
-Implementation authority: PHASE 5A ARCHITECTURALLY AUTHORIZED under ADR-023 and the Phase 5 roadmap. Runtime implementation remains subject to Phase 5A's own implementation, CI, independent audit, owner acceptance, merge, and certification gates. This reconciliation PR does not start Phase 5A; coding waits for its merge and post-merge certification. Accepted Phase 4 and frozen Phase 4.5 contracts remain unchanged.
+Implementation authority: PHASE 5A IMPLEMENTED / CERTIFIED / CLOSED / FROZEN under ADR-023 and the Phase 5 roadmap. The Phase 5A implementation, exact-head CI, independent audit/remediation, owner acceptance, guarded merge, and post-merge certification gates are complete. Phase 5B is authorized to begin as the next bounded batch, subject to its own implementation and certification gates. The earlier prospective Phase 5A entry gate is historical and satisfied. Accepted Phase 4 and frozen Phase 4.5 contracts remain unchanged.
 
 ## Context
 

@@ -13,6 +13,7 @@ APPLICATION_ROLE = "businessos_app"
 OPERATIONS_ROLE = "businessos_ops"
 WORKER_ROLE = "businessos_worker"
 GOVERNANCE_ROLE = "businessos_governance"
+METADATA_ROLE = "businessos_metadata"
 TRANSITION_LOCK = "businessos.database-role-transition.v1"
 
 
@@ -27,6 +28,7 @@ class DatabaseRolePasswords:
     operations: str
     worker: str
     governance: str
+    metadata: str
 
 
 def _role_exists(connection: psycopg.Connection[tuple[object, ...]], role: str) -> bool:
@@ -49,7 +51,8 @@ def _ensure_role(
     inheritance = sql.SQL("INHERIT") if inherit else sql.SQL("NOINHERIT")
     connection.execute(
         sql.SQL(
-            "ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE {} {} PASSWORD {}"
+            "ALTER ROLE {} WITH LOGIN NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOREPLICATION {} {} PASSWORD {}"
         ).format(identifier, inheritance, bypass, sql.Literal(password))
     )
 
@@ -272,12 +275,13 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
             _ensure_role(connection, OPERATIONS_ROLE, passwords.operations, bypass_rls=True)
             _ensure_role(connection, WORKER_ROLE, passwords.worker, bypass_rls=False, inherit=True)
             _ensure_role(connection, GOVERNANCE_ROLE, passwords.governance, bypass_rls=False)
+            _ensure_role(connection, METADATA_ROLE, passwords.metadata, bypass_rls=False)
             memberships = connection.execute(
                 "SELECT granted.rolname, member.rolname FROM pg_auth_members AS link "
                 "JOIN pg_roles AS granted ON granted.oid = link.roleid "
                 "JOIN pg_roles AS member ON member.oid = link.member "
-                "WHERE granted.rolname = %s OR member.rolname = %s",
-                (GOVERNANCE_ROLE, GOVERNANCE_ROLE),
+                "WHERE granted.rolname IN (%s, %s) OR member.rolname IN (%s, %s)",
+                (GOVERNANCE_ROLE, METADATA_ROLE, GOVERNANCE_ROLE, METADATA_ROLE),
             ).fetchall()
             for granted, member in memberships:
                 connection.execute(
@@ -310,13 +314,14 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
                 )
             )
             connection.execute(
-                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}, {}, {}").format(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}, {}, {}, {}").format(
                     sql.Identifier(database_name),
                     sql.Identifier(MIGRATOR_ROLE),
                     sql.Identifier(APPLICATION_ROLE),
                     sql.Identifier(OPERATIONS_ROLE),
                     sql.Identifier(WORKER_ROLE),
                     sql.Identifier(GOVERNANCE_ROLE),
+                    sql.Identifier(METADATA_ROLE),
                 )
             )
             role_state = connection.execute(

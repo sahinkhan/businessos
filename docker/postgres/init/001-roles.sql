@@ -30,6 +30,18 @@ BEGIN
 END
 $$;
 
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'businessos_metadata') THEN
+        CREATE ROLE businessos_metadata
+            LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS
+            PASSWORD 'businessos-metadata';
+    END IF;
+END $$;
+ALTER ROLE businessos_metadata
+    WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+REVOKE businessos_metadata FROM businessos_app, businessos_worker, businessos_migrator, businessos_ops, businessos_governance;
+REVOKE businessos_app, businessos_worker, businessos_migrator, businessos_ops, businessos_governance FROM businessos_metadata;
+
 ALTER ROLE businessos_migrator
     WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 ALTER ROLE businessos_app
@@ -48,6 +60,7 @@ REVOKE businessos_governance FROM businessos_app, businessos_worker, businessos_
 REVOKE businessos_app, businessos_worker, businessos_migrator, businessos_ops FROM businessos_governance;
 REVOKE ALL ON DATABASE businessos FROM PUBLIC;
 GRANT CONNECT ON DATABASE businessos TO businessos_migrator, businessos_app, businessos_ops, businessos_worker, businessos_governance;
+GRANT CONNECT ON DATABASE businessos TO businessos_metadata;
 ALTER DATABASE businessos OWNER TO businessos_migrator;
 ALTER SCHEMA public OWNER TO businessos_migrator;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;

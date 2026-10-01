@@ -72,6 +72,7 @@ class EventWorkerSettings(BaseSettings):
     runtime_database_url: str = Field(repr=False, exclude=True)
     operations_database_url: str = Field(repr=False, exclude=True)
     governance_database_url: str | None = Field(default=None, repr=False, exclude=True)
+    metadata_database_url: str | None = Field(default=None, repr=False, exclude=True)
     nats_url: str = "nats://localhost:4222"
     installation_id: UUID
     principal_id: UUID
@@ -704,6 +705,7 @@ def create_event_worker(
         Settings(
             database_url=settings.runtime_database_url,
             governance_database_url=settings.governance_database_url,
+            metadata_database_url=settings.metadata_database_url,
             installation_id=settings.installation_id,
             shutdown_timeout_seconds=settings.shutdown_timeout_seconds,
         ),

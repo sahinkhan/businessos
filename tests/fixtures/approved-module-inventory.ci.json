@@ -1,6 +1,15 @@
 {
   "approved_modules": [
     {
+      "module_id": "foundation.metadata",
+      "publisher": "BusinessOS",
+      "package_identity": "businessos-foundation-metadata",
+      "loaded_type": "businessos_metadata.module:MetadataModule",
+      "install_identity": "ci-test-only-phase5a-metadata-owner",
+      "first_party": true,
+      "approved_aliases": []
+    },
+    {
       "module_id": "foundation.data_governance",
       "publisher": "BusinessOS",
       "package_identity": "businessos-foundation-data-governance",

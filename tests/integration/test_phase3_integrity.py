@@ -77,7 +77,11 @@ async def test_currency_public_dispatch_and_permissions(
     from businessos_currency import CurrencyRecord, GetCurrency, ListCurrencies, ResolveCurrency
 
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_AllowAll()),
     )
@@ -115,7 +119,11 @@ async def test_currency_public_dispatch_and_permissions(
         await app.shutdown()
 
     denied = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_DenyCurrency()),
     )
@@ -133,7 +141,11 @@ def test_uom_base_move_and_rounding_database_integrity(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
     )
     assert app.runtime is not None
@@ -201,7 +213,11 @@ def test_uom_invalid_rounding_preflight_preserves_rows(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
     )
     assert app.runtime is not None
@@ -257,7 +273,11 @@ async def test_phase3_commands_enforce_parent_and_tenant_integrity(
     from businessos_uom import CreateMeasurementCategory, CreateUnitOfMeasure
 
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_AllowAll()),
     )
@@ -498,7 +518,11 @@ def test_runtime_role_cannot_mutate_global_geography_or_currency(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
     )
     assert app.runtime is not None
@@ -530,7 +554,11 @@ def test_trusted_geography_change_sees_all_tenant_dependents(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
     )
     assert app.runtime is not None
@@ -584,7 +612,11 @@ def test_trusted_city_change_waits_for_concurrent_address_write(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
     )
     assert app.runtime is not None
@@ -658,7 +690,11 @@ async def test_party_sensitive_projection_matching_and_bounded_search(
     from businessos_party.contracts import DuplicateMatchResult
 
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_AllowAll()),
     )
@@ -793,7 +829,11 @@ async def test_party_sensitive_projection_matching_and_bounded_search(
         await app.shutdown()
 
     denied_app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_DenySensitive()),
     )
@@ -818,7 +858,11 @@ def test_phase3_database_constraints_reject_cross_tenant_and_orphans(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
     )
     assert app.runtime is not None
@@ -986,7 +1030,11 @@ def test_phase3_dirty_data_preflight_preserves_and_retries(
     new_revision: str,
 ) -> None:
     app = create_application(
-        Settings(environment="test", database_url=postgres_database.runtime_url),
+        Settings(
+            environment="test",
+            database_url=postgres_database.runtime_url,
+            metadata_database_url=postgres_database.metadata_url,
+        ),
         modules=_foundation_modules(),
     )
     assert app.runtime is not None

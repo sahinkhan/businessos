@@ -93,6 +93,7 @@ mypy_path = [
   "foundations/policy/src",
   "foundations/audit/src",
   "foundations/data_governance/src",
+  "foundations/metadata/src",
   "examples/proof_module/src",
 ]
 files = ["platform/src", "foundations", "tests", "examples/proof_module/src"]
@@ -124,4 +125,5 @@ extraPaths = [
   "foundations/policy/src",
   "foundations/audit/src",
   "foundations/data_governance/src",
+  "foundations/metadata/src",
 ]

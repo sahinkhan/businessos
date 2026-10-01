@@ -13,7 +13,7 @@ from businessos.dependencies import (
     UNIT_OF_WORK_FACTORY,
 )
 from businessos.di import DependencyKey, DependencyResolver, DependencyScope, RequestDependencyScope
-from businessos.errors import BusinessOSError
+from businessos.errors import BusinessOSError, ConfigurationError
 from businessos.features import FeatureFlag
 from businessos.handler_invocation import (
     HandlerInvocationBinding,
@@ -41,7 +41,10 @@ from businessos.modules import (
 )
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence.contracts import TransactionalPersistence
-from businessos.persistence.uow import UnitOfWork, UnitOfWorkFactory
+from businessos.persistence.uow import (
+    UnitOfWork,
+    UnitOfWorkFactory,
+)
 from businessos.resources import (
     AdmittedResourceProvider,
     ResourceLocator,
@@ -72,6 +75,7 @@ __all__ = [
     "AdmittedResourceProvider",
     "BusinessOSError",
     "Command",
+    "ConfigurationError",
     "DependencyKey",
     "DependencyResolver",
     "DependencyScope",

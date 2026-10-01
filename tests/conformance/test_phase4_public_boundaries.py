@@ -52,6 +52,7 @@ async def test_phase4_public_contracts_are_registered_and_versioned() -> None:
             module
             for module in discover_modules()
             if module.manifest.module_id.startswith("foundation.")
+            and module.manifest.module_id != "foundation.metadata"
         ),
     )
     assert app.runtime is not None

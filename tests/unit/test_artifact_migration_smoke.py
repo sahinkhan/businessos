@@ -28,7 +28,8 @@ PHASE4_MIGRATION_PARENTS = {
     "foundation.audit": "foundation.policy",
     "foundation.data_governance": "foundation.audit",
 }
-MIGRATION_PARENTS = PHASE3_MIGRATION_PARENTS | PHASE4_MIGRATION_PARENTS
+PHASE5A_MIGRATION_PARENTS = {"foundation.metadata": "foundation.data_governance"}
+MIGRATION_PARENTS = PHASE3_MIGRATION_PARENTS | PHASE4_MIGRATION_PARENTS | PHASE5A_MIGRATION_PARENTS
 
 
 class _ManifestOverrideModule:
@@ -66,11 +67,9 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     plan = smoke._expected_plan()
     assert {source.owner for source in plan.sources} == smoke.REQUIRED_OWNERS
     assert plan.heads == (
-        "0006_governance_outbox",
-        "audit_0005",
         "geography_0003",
-        "gov_0005",
         "identity_0005",
+        "metadata_0001",
         "organization_0003",
         "party_0002",
         "policy_0005",
@@ -117,15 +116,19 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["gov_0003"] == ("gov_0002",)
     assert parents["gov_0004"] == ("gov_0003",)
     assert parents["gov_0005"] == ("gov_0004",)
+    assert parents["metadata_0001"] == ("gov_0005", "0007_metadata_outbox", "audit_0006")
+    assert parents["audit_0006"] == ("audit_0005",)
+    assert parents["0007_metadata_outbox"] == ("0006_governance_outbox",)
     assert parents["0006_governance_outbox"] == ("0005_durable_event_subscribers",)
     smoke._verify_installed_plan(_plan_json(plan), plan)
     smoke._verify_state(set(plan.heads), _inventory(plan), plan)
 
 
-def test_destructive_smoke_accepts_only_approved_refusal() -> None:
+@pytest.mark.parametrize("revision", ["policy_0005", "proof_0004"])
+def test_destructive_smoke_accepts_only_approved_refusal(revision: str) -> None:
     def approved(_arguments: object) -> str:
         raise subprocess.CalledProcessError(
-            1, "businessos migrate downgrade base", stderr="policy_0005 downgrade refused: floor"
+            1, "businessos migrate downgrade base", stderr=f"{revision} downgrade refused: floor"
         )
 
     smoke._expect_approved_destructive_downgrade_refusal(approved)
@@ -202,11 +205,24 @@ def test_cross_owner_migration_parent_requires_declared_dependency(
         loaded_type=f"{type(proof).__module__}:{type(proof).__qualname__}",
         install_identity="unit-test-migration-catalog-proof-owner",
     )
+    metadata = next(
+        module for module in modules if module.manifest.module_id == "foundation.metadata"
+    )
+    metadata_grant = ApprovedModuleArtifact(
+        loaded_module=metadata,
+        module_id="foundation.metadata",
+        publisher="BusinessOS",
+        package_identity="businessos-foundation-metadata",
+        loaded_type=f"{type(metadata).__module__}:{type(metadata).__qualname__}",
+        install_identity="unit-test-migration-catalog-metadata-owner",
+        first_party=True,
+    )
     registry = ModuleRegistry(
         platform_version=runtime_version(),
         sdk_version="0.1.0",
         approved_artifacts={
             "foundation.data_governance": grant,
+            "foundation.metadata": metadata_grant,
             "example.phase1-proof": proof_grant,
         },
     )
@@ -242,7 +258,7 @@ def test_artifact_discovery_rejects_missing_required_module(
     modules = [
         module
         for module in discover_modules()
-        if module.manifest.module_id != "foundation.data_governance"
+        if module.manifest.module_id != "foundation.metadata"
     ]
     monkeypatch.setattr(smoke, "discover_modules", lambda: modules)
     with pytest.raises(RuntimeError, match="missing required migration sources"):
@@ -272,7 +288,7 @@ def test_database_heads_must_equal_all_expected_heads(change: str) -> None:
     plan = smoke._expected_plan()
     heads = set(plan.heads)
     if change == "missing":
-        heads.remove("audit_0005")
+        heads.remove("metadata_0001")
     elif change == "rogue":
         heads.add("rogue_0001")
     else:

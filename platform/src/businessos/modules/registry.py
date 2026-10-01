@@ -1,10 +1,14 @@
 """Deterministic module dependency, lifecycle and upgrade coordination."""
 
 import asyncio
+import hashlib
+import json
 import sys
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Protocol
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -50,6 +54,14 @@ class RegisteredModule:
 class UpgradePlan:
     ordered_module_ids: tuple[str, ...]
     migration_locations: tuple[tuple[str, str], ...]
+
+
+class ModuleActivationFence(Protocol):
+    """Optional versioned compatibility admission held across contribution publish."""
+
+    def activation(
+        self, module_id: str, artifact_identity: str
+    ) -> AbstractAsyncContextManager[None]: ...
 
 
 def _ordered_manifests(
@@ -277,6 +289,31 @@ class ModuleRegistry:
     def entries(self) -> tuple[RegisteredModule, ...]:
         return tuple(self._modules[module_id] for module_id in sorted(self._modules))
 
+    def activation_identity(self, module_id: str) -> str:
+        """Stable, admitted artifact identity; never the transient process generation."""
+        registered = self.get(module_id)
+        artifact = self._approved_artifacts.get(module_id)
+        if artifact is not None:
+            artifact.verify(registered.module, registered.manifest)
+            value = json.dumps(
+                [
+                    artifact.module_id,
+                    artifact.publisher,
+                    artifact.package_identity,
+                    artifact.loaded_type,
+                    artifact.install_identity,
+                    artifact.artifact_sha256,
+                    registered.manifest.model_dump(mode="json"),
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        else:
+            value = hashlib.sha256(
+                registered.manifest.model_dump_json().encode("utf-8")
+            ).hexdigest()
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
 
 class LifecycleManager:
     def __init__(
@@ -285,11 +322,13 @@ class LifecycleManager:
         registration_factory: Callable[[str], ModuleRegistration],
         *,
         providers: ProviderRegistry | None = None,
+        activation_fence: ModuleActivationFence | None = None,
         drain_timeout_seconds: float = 10.0,
     ) -> None:
         self._registry = registry
         self._registration_factory = registration_factory
         self._providers = providers
+        self._activation_fence = activation_fence
         self._drain_timeout_seconds = drain_timeout_seconds
         self._lifecycle_lock = asyncio.Lock()
 
@@ -348,11 +387,24 @@ class LifecycleManager:
                     raise ConfigurationError("Module manifest changed after artifact admission")
                 self._validate_active_dependencies(registered.manifest)
                 self._validate_capabilities(registered.manifest)
-                await registered.module.register(registration)
-                start_attempted = True
-                await registered.module.start()
-                registered.started = True
-                registration.publish()
+                if self._activation_fence is None:
+                    await registered.module.register(registration)
+                    start_attempted = True
+                    await registered.module.start()
+                    registered.started = True
+                    registration.publish()
+                else:
+                    async with self._activation_fence.activation(
+                        module_id, self._registry.activation_identity(module_id)
+                    ):
+                        await registered.module.register(registration)
+                        start_attempted = True
+                        await registered.module.start()
+                        registered.started = True
+                    # Publication is synchronous and has no cancellation point.
+                    # The fence context must finish committing before a staged
+                    # generation can be observed or admitted by any registry.
+                    registration.publish()
             except BaseException as exc:
                 rollback_errors: list[BaseException] = []
                 if start_attempted:

@@ -9,7 +9,10 @@ from businessos.activation import ContributionGate
 from businessos.application import BusinessOSApplication
 from businessos.config import Settings, get_settings
 from businessos.contracts import ContractRegistry
-from businessos.database_execution import ProtectedDatabaseExecutionAuthority
+from businessos.database_execution import (
+    ProtectedDatabaseExecutionAuthority,
+    ProtectedDatabaseProfiles,
+)
 from businessos.dependencies import (
     AUTHORIZER,
     CACHE,
@@ -26,6 +29,7 @@ from businessos.dependencies import (
 )
 from businessos.di import Container, DependencyKey, DependencyResolver, DependencyScope
 from businessos.diagnostics import Diagnostics
+from businessos.errors import ConfigurationError
 from businessos.eventing import DurableEventConsumer
 from businessos.features import FeatureFlagRegistry
 from businessos.http import Router
@@ -34,6 +38,7 @@ from businessos.jobs import JobHandlerRegistry
 from businessos.logging import configure_logging
 from businessos.messages import EventBus, MessageDispatcher
 from businessos.metadata import MetadataRegistry
+from businessos.metadata_execution import MetadataDatabaseExecutionAuthority
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import (
     BusinessOSModule,
@@ -44,6 +49,7 @@ from businessos.modules import (
 )
 from businessos.modules.artifact import ApprovedModuleArtifact
 from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
+from businessos.modules.registry import ModuleActivationFence
 from businessos.permissions import PermissionRegistry
 from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
 from businessos.providers import (
@@ -132,6 +138,13 @@ def create_application(
         pool_timeout=resolved_settings.governance_database_pool_timeout_seconds,
         gate=contributions,
     )
+    metadata_database = MetadataDatabaseExecutionAuthority(
+        governance_url=resolved_settings.metadata_database_url,
+        database_name=database_name,
+        pool_size=resolved_settings.metadata_database_pool_size,
+        pool_timeout=resolved_settings.metadata_database_pool_timeout_seconds,
+        gate=contributions,
+    )
     if context_resolver is not None and context_resolver_factory is not None:
         raise ValueError("Provide a context resolver or resolver factory, not both")
     if context_resolver_factory is not None:
@@ -146,7 +159,7 @@ def create_application(
         contributions,
         resolved_authorizer,
         resources=resources,
-        protected_database=protected_database,
+        protected_database=ProtectedDatabaseProfiles(protected_database, metadata_database),
     )
     event_consumer = DurableEventConsumer(
         unit_of_work_factory, event_bus, durable_subscriber_authorizer
@@ -253,6 +266,23 @@ def create_application(
     for module in loaded_modules:
         module_registry.add(module)
 
+    activation_fence: ModuleActivationFence | None = None
+    metadata_module = next(
+        (item for item in loaded_modules if item.manifest.module_id == "foundation.metadata"),
+        None,
+    )
+    if metadata_module is not None:
+        artifact = approved_module_artifacts.get("foundation.metadata")
+        if artifact is None or not artifact.first_party:
+            raise ConfigurationError("Metadata activation requires approved first-party evidence")
+        artifact.verify(metadata_module, metadata_module.manifest)
+        factory_method = getattr(metadata_module, "_activation_fence", None)
+        if not callable(factory_method):
+            raise ValueError("Metadata module lacks required publication/activation fence")
+        activation_fence = cast(
+            ModuleActivationFence, factory_method(metadata_database.internal_installation)
+        )
+
     runtime_placeholder: dict[str, FrameworkRuntime] = {}
 
     def registration(owner: str) -> ModuleRegistration:
@@ -262,6 +292,7 @@ def create_application(
         module_registry,
         registration,
         providers=providers,
+        activation_fence=activation_fence,
         drain_timeout_seconds=resolved_settings.shutdown_timeout_seconds,
     )
     upgrades = UpgradeCoordinator(module_registry)
@@ -305,6 +336,8 @@ def create_application(
             module.manifest.module_id == "foundation.data_governance" for module in loaded_modules
         ):
             diagnostics.add_readiness_check("governance-postgresql", protected_database.validate)
+        if metadata_module is not None:
+            diagnostics.add_readiness_check("metadata-postgresql", metadata_database.validate)
     for capability in sorted(infrastructure_providers or {}):
 
         async def provider_readiness(name: str = capability) -> None:
@@ -330,12 +363,16 @@ def create_application(
         providers.close_infrastructure,
     )
     application.add_lifecycle("modules", start_modules, lifecycle.disable_all)
-    if resolved_settings.governance_database_url is not None and any(
-        module.manifest.module_id == "foundation.data_governance" for module in loaded_modules
+    if metadata_module is not None or (
+        resolved_settings.governance_database_url is not None
+        and any(
+            module.manifest.module_id == "foundation.data_governance" for module in loaded_modules
+        )
     ):
         application.on_startup(database.check_connection_budget)
     application.on_shutdown(database.close)
     application.on_shutdown(protected_database.close)
+    application.on_shutdown(metadata_database.close)
     if context_resolver is not None:
         close_resolver = getattr(context_resolver, "close", None)
         if callable(close_resolver):

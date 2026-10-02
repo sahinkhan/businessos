@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
@@ -21,13 +22,17 @@ from businessos_party import CreatePersonParty, UpdateParty
 from businessos_party.custom_fields import (
     ClearPartyCustomValues,
     ExportPartyCustomValues,
+    PartyCustomFields,
     ReadPartyCustomValues,
     WritePartyCustomValues,
 )
+from pydantic import ValidationError
 from sqlalchemy import text
 
-from businessos.custom_fields import CustomFieldValue
+from businessos.custom_fields import PUBLISHED_CUSTOM_FIELD_SCHEMA, CustomFieldValue
 from businessos.errors import BusinessOSError
+from businessos.messages import Command, Query
+from businessos.metadata_execution import MetadataDatabaseExecutionAuthority
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import ModuleRegistry, discover_modules
 from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
@@ -35,6 +40,7 @@ from businessos.persistence.uow import SQLAlchemyUnitOfWork
 from businessos.version import runtime_version
 from tests.conftest import PostgreSQLTestDatabase
 from tests.integration.test_phase5a_metadata import _app, _command, _context, _Policy, _query, _url
+from tests.unit.test_phase5b_authority import _instance_graph
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.asyncio]
 
@@ -261,18 +267,22 @@ async def test_unknown_schema_policy_retirement_and_generation_replacement(
         new_binding = app.runtime.resources.resolve_owner("foundation.party.party", "1")
         assert old_binding.generation != new_binding.generation
         new_reader = app.runtime.modules.get("foundation.metadata").module._schema_reader
-        assert new_reader is not old_reader and not old_reader.active
+        assert new_reader is not old_reader
 
-        async def stale(*args: Any, **kwargs: Any) -> Any:
-            return await old_reader.resolve(*args, **kwargs)
+        original_resolve = PublishedSchemaReader.resolve
+
+        async def stale(self: Any, *args: Any, **kwargs: Any) -> Any:
+            if self is new_reader:
+                return await old_reader.resolve(*args, **kwargs)
+            return await original_resolve(self, *args, **kwargs)
 
         # Even a cached reader's stale lifecycle flag cannot bypass current DI admission.
-        old_reader.active = True
-        monkeypatch.setattr(new_reader, "resolve", stale)
+        with pytest.raises(AttributeError):
+            old_reader.active = True
+        monkeypatch.setattr(PublishedSchemaReader, "resolve", stale)
         with pytest.raises(BusinessOSError) as stale_failure:
             await _command(app, command, context)
         assert stale_failure.value.code == "custom_schema_unavailable"
-        old_reader.active = False
         monkeypatch.undo()
         written = await _command(app, command, context)
         await _command(
@@ -539,8 +549,41 @@ async def test_cancellation_and_commit_failure_leave_no_values_or_events(
 
 
 async def test_rls_grants_and_private_schema_transaction_read_only(
-    postgres_database: PostgreSQLTestDatabase,
+    postgres_database: PostgreSQLTestDatabase, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    original_read = MetadataDatabaseExecutionAuthority.internal_schema_read
+    protected_authorities: list[Any] = []
+    mode = "normal"
+    entered = asyncio.Event()
+
+    @asynccontextmanager
+    async def probe(authority: Any, tenant: Any) -> Any:
+        protected_authorities.append(authority)
+        async with original_read(authority, tenant) as unit:
+            assert (
+                await unit.persistence.execute(text("SHOW transaction_read_only"))
+            ).scalar_one() == "on"
+            assert (
+                await unit.persistence.execute(text("SELECT current_user"))
+            ).scalar_one() == "businessos_metadata"
+            assert (
+                await unit.persistence.execute(text("SELECT current_setting('app.tenant_id')"))
+            ).scalar_one() == str(tenant.tenant_id)
+            await unit.persistence.execute(text("SAVEPOINT readonly_probe"))
+            with pytest.raises(Exception) as read_only:
+                await unit.persistence.execute(
+                    text("UPDATE platform_metadata.definitions SET updated_at=now()")
+                )
+            assert "read-only" in str(read_only.value)
+            await unit.persistence.execute(text("ROLLBACK TO SAVEPOINT readonly_probe"))
+            if mode == "failure":
+                raise RuntimeError("schema read failure probe")
+            if mode == "cancel":
+                entered.set()
+                await asyncio.Event().wait()
+            yield unit
+
+    monkeypatch.setattr(MetadataDatabaseExecutionAuthority, "internal_schema_read", probe)
     app, context, _, party, field = await _setup(postgres_database)
     tenant_id = context.tenant.tenant_id
     identity = {"tenant_id": tenant_id, "party_id": party.id}
@@ -598,14 +641,175 @@ async def test_rls_grants_and_private_schema_transaction_read_only(
             assert fks == [("platform_party.parties",)]
         module = app.runtime.modules.get("foundation.metadata").module
         reader = module._schema_reader
-        async with reader._factory(context.tenant) as unit:
-            assert (
-                await unit.persistence.execute(text("SHOW transaction_read_only"))
-            ).scalar_one() == "on"
-            with pytest.raises(Exception) as read_only:
-                await unit.persistence.execute(
-                    text("UPDATE platform_metadata.definitions SET updated_at=now()")
-                )
-            assert "read-only" in str(read_only.value)
+        async with app.container.request_scope() as dependencies:
+            assert await dependencies.resolve(PUBLISHED_CUSTOM_FIELD_SCHEMA) is reader
+        for surface in (module, reader):
+            graph = _instance_graph(surface)
+            assert not any(
+                isinstance(value, (MetadataDatabaseExecutionAuthority, SQLAlchemyUnitOfWork))
+                for value in graph
+            )
+            assert not any(callable(value) for value in graph)
+        assert not hasattr(reader, "_factory") and not hasattr(module, "_schema_factory")
+        assert protected_authorities and all(
+            not authority._leases for authority in protected_authorities
+        )
+        read = ReadPartyCustomValues(**identity)
+        mode = "failure"
+        with pytest.raises(RuntimeError, match="schema read failure probe"):
+            await _query(app, read, context)
+        assert all(not authority._leases for authority in protected_authorities)
+        mode = "cancel"
+        task = asyncio.create_task(_query(app, read, context))
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert all(not authority._leases for authority in protected_authorities)
+        mode = "normal"
+        document = await _query(app, read, context)
+        with pytest.raises(ValidationError, match="frozen"):
+            document.value_version = 999
     finally:
         await app.shutdown()
+
+
+async def test_raw_weaker_party_handler_cannot_access_any_custom_value_operation(
+    postgres_database: PostgreSQLTestDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, context, policy, party, field = await _setup(postgres_database)
+    identity = {"tenant_id": context.tenant.tenant_id, "party_id": party.id}
+    write = WritePartyCustomValues(
+        **identity,
+        expected_version=0,
+        values=(CustomFieldValue(field_id=field.field_id, value="bypass"),),
+    )
+    adapter = PartyCustomFields()
+    generation = app.runtime.resources.resolve_owner("foundation.party.party", "1").generation
+
+    async def read_only_policy(principal: Any, tenant: Any, permission: str) -> bool:
+        return permission in {"foundation.party.read", "foundation.metadata.definition.read"}
+
+    class RawCommand(Command):
+        operation: str
+
+    class RawQuery(Query):
+        operation: str
+
+    async def raw(message: Any, handling: Any) -> Any:
+        assert handling.invocation is None
+        if message.operation == "write":
+            return await adapter.write(write, handling)
+        if message.operation == "clear":
+            return await adapter.clear(
+                ClearPartyCustomValues(**identity, expected_version=0), handling
+            )
+        payload = (
+            ReadPartyCustomValues if message.operation == "read" else ExportPartyCustomValues
+        )(**identity)
+        return await adapter.read(payload, handling)
+
+    app.runtime.messages.commands.register(
+        RawCommand,
+        "foundation.party",
+        raw,
+        generation=generation,
+        permission="foundation.party.read",
+    )
+    app.runtime.messages.queries.register(
+        RawQuery, "foundation.party", raw, generation=generation, permission="foundation.party.read"
+    )
+    monkeypatch.setattr(policy, "is_allowed", read_only_policy)
+
+    def unchanged() -> None:
+        with psycopg.connect(_url(postgres_database.migration_url)) as db:
+            assert db.execute("SELECT count(*) FROM platform_party.custom_values").fetchone() == (
+                0,
+            )
+            assert db.execute(
+                "SELECT count(*) FROM eventing.outbox_messages "
+                "WHERE event_type='party.custom-values.changed.v1'"
+            ).fetchone() == (0,)
+
+    try:
+        with pytest.raises(BusinessOSError) as forbidden:
+            await _command(app, write, context)
+        assert forbidden.value.code == "forbidden"
+        unchanged()
+        for operation in ("write", "clear", "read", "export"):
+            with pytest.raises(PermissionError, match="framework"):
+                if operation in {"write", "clear"}:
+                    await _command(app, RawCommand(operation=operation), context)
+                else:
+                    await _query(app, RawQuery(operation=operation), context)
+            unchanged()
+    finally:
+        await app.shutdown()
+
+
+async def test_schema_read_pool_rotation_drains_and_shutdown_revokes_cached_reader(
+    postgres_database: PostgreSQLTestDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_read = MetadataDatabaseExecutionAuthority.internal_schema_read
+    entered, release = asyncio.Event(), asyncio.Event()
+    captured: list[Any] = []
+    pause = False
+
+    @asynccontextmanager
+    async def probe(authority: Any, tenant: Any) -> Any:
+        captured.append(authority)
+        async with original_read(authority, tenant) as unit:
+            if pause:
+                entered.set()
+                await release.wait()
+            yield unit
+
+    monkeypatch.setattr(MetadataDatabaseExecutionAuthority, "internal_schema_read", probe)
+    app, context, _, party, field = await _setup(postgres_database)
+    identity = {"tenant_id": context.tenant.tenant_id, "party_id": party.id}
+    task: asyncio.Task[Any] | None = None
+    reader = app.runtime.modules.get("foundation.metadata").module._schema_reader
+    try:
+        written = await _command(
+            app,
+            WritePartyCustomValues(
+                **identity,
+                expected_version=0,
+                values=(CustomFieldValue(field_id=field.field_id, value="retained"),),
+            ),
+            context,
+        )
+        authority = captured[-1]
+        old_pool = authority._active
+        closed: list[Any] = []
+        original_close = old_pool.close
+
+        async def record_close() -> None:
+            closed.append(old_pool)
+            await original_close()
+
+        monkeypatch.setattr(old_pool, "close", record_close)
+        pause = True
+        task = asyncio.create_task(_query(app, ReadPartyCustomValues(**identity), context))
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        assert authority._leases[old_pool] == 1
+        await authority.rotate(postgres_database.metadata_url)
+        assert authority._active is not old_pool
+        assert closed == []
+        release.set()
+        assert await asyncio.wait_for(task, timeout=10) == written
+        assert closed == [old_pool] and not authority._leases
+        pause = False
+        assert await _query(app, ReadPartyCustomValues(**identity), context) == written
+    finally:
+        release.set()
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await app.shutdown()
+    assert captured and all(
+        authority._closed and authority._active is None and not authority._leases
+        for authority in captured
+    )
+    with pytest.raises(BusinessOSError, match="unavailable"):
+        await reader.resolve(None, None)

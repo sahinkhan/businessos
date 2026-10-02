@@ -26,16 +26,26 @@ type names from the certified `DefinitionSnapshot` and `FieldDefinition` grammar
 
 The reserved `foundation.metadata.published-custom-field-schema.v1` dependency is
 registered by the approved Metadata generation. Cached readers re-admit through
-that reserved entry and reject replacement. The reader checks exact Party handler
-authority, tenant, owner, namespace/version and the backend permission
+that reserved entry and reject replacement. The reader checks canonical owner
+transaction scope, tenant, owner, namespace/version and the backend permission
 `foundation.metadata.definition.read`. Party read/export additionally require
 `foundation.party.read`; replace/clear require `foundation.party.manage`.
 
-Only private trusted bootstrap composition receives the Metadata schema-read
-transaction callback. It validates the protected Metadata database profile and
-uses a tenant-bound PostgreSQL **READ ONLY** transaction from BEGIN. No database
-handle, credentials, private tables, draft state or arbitrary Metadata record is
-returned to Party. Metadata cannot read or mutate the Party value table.
+Private trusted bootstrap composition retains the Metadata schema-read callback
+in an external identity-bound internal registry. Neither the public resolver nor
+the Metadata module stores that callback, its bound authority, a pool, session or
+UOW in its instance graph. The public reader holds only bounded validation limits;
+constructing one conveys no authority. Each lifecycle registration binds a new
+reader to the exact Metadata contribution generation. Disable drops its issued
+state, replacement revokes the old reader, and changing an active flag cannot
+restore authority. Reserved DI admission remains held by the request scope.
+
+The protected callback validates the Metadata database profile and uses a
+tenant-bound PostgreSQL **READ ONLY** transaction from BEGIN. Failure and
+cancellation release the read UOW and pool lease. Only immutable admitted schema
+facts are returned to Party. Metadata cannot read or mutate the Party value table.
+This uses the accepted trusted first-party in-process boundary, not a Python
+sandbox against code importing protected internals or inspecting module globals.
 
 Normal writes resolve the active published Party `field_set`; absent or retired
 active definitions deny writes. Historical reads/export/clear resolve the exact
@@ -50,6 +60,17 @@ Public typed operations are `WritePartyCustomValues`, `ReadPartyCustomValues`,
 or silent coercion. Stable UUID field IDs are used. Duplicate IDs, unknown IDs,
 caller schema/owner facts, malformed values, missing non-nullable values and
 unsupported query operations are rejected. Defaults are not implicitly applied.
+
+Every Party adapter operation combines ADR-018 canonical owner admission with
+the existing framework-issued handler invocation validation. Write/clear require
+COMMAND; read/export require QUERY. The binding must be live in the issuing task,
+match the exact request and restricted transaction objects, and identify the
+current admitted Party owner generation. Missing, structural fake, expired,
+cross-task, mismatched-kind, wrong-owner and replaced-generation bindings fail
+before any persistence or success event. Raw registration with a claimed Party
+owner/generation and weaker read permission conveys no invocation authority.
+Policy remains dispatcher authority through the registered manage/read permissions;
+the helper accepts no caller-provided permission decision.
 
 Validation reuses certified literal validation for text, long text, integer,
 boolean, exact decimal/money, enum, UUID, date, timezone-aware instant, email,

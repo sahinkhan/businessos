@@ -23,7 +23,14 @@ from businessos.sdk import (
 
 from .activation_fence import InstallationTransaction, MetadataActivationFence
 from .contracts import DefinitionKind, DefinitionSnapshot, MetadataLimits, PublishPreflight
-from .custom_schema import PublishedSchemaReader, SchemaReadTransaction
+from .custom_schema import (
+    PublishedSchemaReader,
+    SchemaReadTransaction,
+    internal_configure_schema_reader,
+    internal_register_schema_reader,
+    internal_start_schema_reader,
+    internal_stop_schema_reader,
+)
 from .store import MetadataStore
 
 
@@ -90,18 +97,19 @@ class MetadataModule:
         self.manifest = ModuleManifest.model_validate(data)
         self._limits = limits or MetadataLimits()
         self._store = MetadataStore(self._limits)
-        self._schema_factory: SchemaReadTransaction | None = None
         self._schema_reader: PublishedSchemaReader | None = None
 
     def _configure_custom_field_reader(self, factory: SchemaReadTransaction) -> None:
         """Private trusted bootstrap composition, not an SDK credential surface."""
-        self._schema_factory = factory
+        internal_configure_schema_reader(self, factory)
 
     def _activation_fence(self, factory: InstallationTransaction) -> MetadataActivationFence:
         return MetadataActivationFence(factory)
 
     async def register(self, registration: ModuleRegistration) -> None:
-        self._schema_reader = PublishedSchemaReader(self._schema_factory, self._limits)
+        self._schema_reader = internal_register_schema_reader(
+            self, registration.generation, self._limits
+        )
         reader = self._schema_reader
         registration.dependency(PUBLISHED_CUSTOM_FIELD_SCHEMA, lambda _: reader)
         registration.contract("foundation.metadata.published-custom-field-schema.v1", reader)
@@ -144,12 +152,10 @@ class MetadataModule:
         )
 
     async def start(self) -> None:
-        if self._schema_reader is not None:
-            self._schema_reader.active = True
+        internal_start_schema_reader(self)
 
     async def stop(self) -> None:
-        if self._schema_reader is not None:
-            self._schema_reader.active = False
+        internal_stop_schema_reader(self)
 
     async def _create(self, cmd: CreateDefinition, ctx: HandlingContext) -> object:
         record = await self._store.create(cmd, ctx)

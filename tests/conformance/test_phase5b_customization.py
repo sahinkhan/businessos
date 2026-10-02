@@ -44,7 +44,7 @@ def test_exact_artifact_spoof_and_duplicate_owner_denied() -> None:
     with pytest.raises(ConfigurationError):
         Container().register(
             PUBLISHED_CUSTOM_FIELD_SCHEMA,
-            lambda _: PublishedSchemaReader(None, MetadataLimits()),
+            lambda _: PublishedSchemaReader(MetadataLimits()),
             owner="foundation.party",
         )
 

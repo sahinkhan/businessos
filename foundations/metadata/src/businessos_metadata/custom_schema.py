@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import cast
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import and_, select
 
@@ -18,6 +19,7 @@ from businessos.sdk import (
     PUBLISHED_CUSTOM_FIELD_SCHEMA,
     RESOURCE_OWNER_RESOLVER,
     BusinessOSError,
+    ContributionGeneration,
     CustomSchemaPin,
     HandlingContext,
     PublishedCustomFieldSchema,
@@ -30,6 +32,54 @@ from .contracts import Comparison, DefinitionSnapshot, FieldType, MetadataLimits
 from .models import DEFINITIONS, REVISIONS
 
 SchemaReadTransaction = Callable[[TenantContext], AbstractAsyncContextManager[UnitOfWork]]
+
+
+@dataclass(slots=True)
+class _ReaderAuthority:
+    factory: SchemaReadTransaction
+    generation: ContributionGeneration
+    active: bool = False
+
+
+# Like issued handler provenance, authority is identity-bound external state.
+# Neither the public module nor the SDK reader holds a callback/authority object.
+_composition: WeakKeyDictionary[object, SchemaReadTransaction] = WeakKeyDictionary()
+_readers: WeakKeyDictionary[PublishedSchemaReader, _ReaderAuthority] = WeakKeyDictionary()
+_current: WeakKeyDictionary[object, PublishedSchemaReader] = WeakKeyDictionary()
+
+
+def internal_configure_schema_reader(module: object, factory: SchemaReadTransaction) -> None:
+    """Trusted bootstrap only; never a registered SDK dependency."""
+    _composition[module] = factory
+
+
+def internal_register_schema_reader(
+    module: object, generation: ContributionGeneration, limits: MetadataLimits
+) -> PublishedSchemaReader:
+    if generation.owner != "foundation.metadata":
+        raise PermissionError("Published schema reader requires Metadata generation")
+    previous = _current.pop(module, None)
+    if previous is not None:
+        _readers.pop(previous, None)
+    reader = PublishedSchemaReader(limits)
+    factory = _composition.get(module)
+    if factory is not None:
+        _readers[reader] = _ReaderAuthority(factory, generation)
+    _current[module] = reader
+    return reader
+
+
+def internal_start_schema_reader(module: object) -> None:
+    reader = _current.get(module)
+    state = _readers.get(reader) if reader is not None else None
+    if state is not None:
+        state.active = True
+
+
+def internal_stop_schema_reader(module: object) -> None:
+    reader = _current.pop(module, None)
+    if reader is not None:
+        _readers.pop(reader, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,10 +179,10 @@ class _PublishedSchema:
 
 
 class PublishedSchemaReader:
+    __slots__ = ("__weakref__", "_limits")
     version = "1.0"
 
-    def __init__(self, factory: SchemaReadTransaction | None, limits: MetadataLimits) -> None:
-        self._factory = factory
+    def __init__(self, limits: MetadataLimits) -> None:
         # Owner v1 capability is bounded even when definition-authoring limits are larger.
         self._limits = limits.model_copy(
             update={
@@ -140,7 +190,6 @@ class PublishedSchemaReader:
                 "max_document_bytes": min(limits.max_document_bytes, 65536),
             }
         )
-        self.active = False
 
     async def resolve(
         self,
@@ -149,7 +198,8 @@ class PublishedSchemaReader:
         *,
         pin: CustomSchemaPin | None = None,
     ) -> PublishedCustomFieldSchema:
-        if not self.active or self._factory is None:
+        state = _readers.get(self)
+        if state is None or not state.active:
             raise BusinessOSError(
                 "custom_schema_unavailable",
                 "Published schema resolver unavailable",
@@ -190,7 +240,7 @@ class PublishedSchemaReader:
                     REVISIONS.c.digest == pin.digest,
                 ]
             )
-        async with self._factory(tenant) as unit:
+        async with state.factory(tenant) as unit:
             result = await unit.persistence.execute(
                 select(
                     REVISIONS.c.id,

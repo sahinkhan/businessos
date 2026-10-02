@@ -1,5 +1,6 @@
 """Stable public SDK facade for trusted first-party in-process modules."""
 
+from businessos.activation import ContributionGeneration
 from businessos.context import RequestContext, TenantContext
 from businessos.custom_fields import (
     PUBLISHED_CUSTOM_FIELD_SCHEMA,
@@ -29,6 +30,7 @@ from businessos.handler_invocation import (
     HandlerInvocationBinding,
     HandlerInvocationDependency,
     HandlerInvocationKind,
+    assert_resource_owner_invocation,
     validate_handler_invocation,
 )
 from businessos.http import Request, Response
@@ -87,6 +89,7 @@ __all__ = [
     "BusinessOSError",
     "Command",
     "ConfigurationError",
+    "ContributionGeneration",
     "CustomFieldQueryCapabilities",
     "CustomFieldValue",
     "CustomSchemaPin",
@@ -133,5 +136,6 @@ __all__ = [
     "UnitOfWork",
     "UnitOfWorkFactory",
     "WorkloadAdmissionDenied",
+    "assert_resource_owner_invocation",
     "validate_handler_invocation",
 ]

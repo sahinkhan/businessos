@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from businessos.context import RequestContext
     from businessos.messages import HandlerTransaction
     from businessos.modules.manifest import ModuleManifest
+    from businessos.resources import ResourceLocator, ResourceOwnerResolver
 
 
 class HandlerInvocationKind(StrEnum):
@@ -184,6 +185,32 @@ def validate_handler_invocation(
     ):
         raise PermissionError("Handler invocation does not match this request or transaction")
     return issued_binding
+
+
+def assert_resource_owner_invocation(
+    binding: object,
+    locator: "ResourceLocator",
+    request: "RequestContext",
+    transaction: "HandlerTransaction",
+    owners: "ResourceOwnerResolver",
+    *,
+    invocation_kind: HandlerInvocationKind,
+) -> None:
+    """Combine issued invocation identity with current canonical owner admission.
+
+    Additive opt-in for owner adapters; legacy ADR-018 contracts stay unchanged.
+    Policy authorization remains the responsibility of registered dispatch.
+    """
+    invocation = validate_handler_invocation(
+        binding, request, transaction, invocation_kind=invocation_kind
+    )
+    owners.assert_owner_handler(locator, request, transaction)
+    owner = owners.resolve_owner(locator.namespace, locator.contract_version)
+    if (
+        invocation.owner_module_id != owner.ownership.owner_module_id
+        or invocation.generation is not owner.generation
+    ):
+        raise PermissionError("Handler invocation does not match the current canonical owner")
 
 
 @contextmanager

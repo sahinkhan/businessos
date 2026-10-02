@@ -20,6 +20,7 @@ from businessos.sdk import (
     CustomSchemaPin,
     CustomValueDocument,
     DomainEvent,
+    HandlerInvocationKind,
     HandlerTransaction,
     HandlingContext,
     ModuleRegistration,
@@ -27,6 +28,7 @@ from businessos.sdk import (
     RequestContext,
     ResourceLocator,
     ResourceOwnerFacts,
+    assert_resource_owner_invocation,
 )
 
 from .models import CUSTOM_VALUES, PARTIES
@@ -156,7 +158,16 @@ class PartyCustomFields:
             raise BusinessOSError("forbidden", "Trusted Party tenant required", status_code=403)
         locator = ResourceLocator(PARTY_NAMESPACE, "1", party_id, tenant_id)
         owners = await ctx.dependencies.resolve(RESOURCE_OWNER_RESOLVER)
-        owners.assert_owner_handler(locator, ctx.request, ctx.unit_of_work)
+        assert_resource_owner_invocation(
+            ctx.invocation,
+            locator,
+            ctx.request,
+            ctx.unit_of_work,
+            owners,
+            invocation_kind=(
+                HandlerInvocationKind.QUERY if action is None else HandlerInvocationKind.COMMAND
+            ),
+        )
         provider = await owners.resolve_provider(locator, "facts", ctx.request, ctx.unit_of_work)
         facts = (
             await provider.read_facts()

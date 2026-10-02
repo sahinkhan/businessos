@@ -1,6 +1,16 @@
 """Stable public SDK facade for trusted first-party in-process modules."""
 
 from businessos.context import RequestContext, TenantContext
+from businessos.custom_fields import (
+    PUBLISHED_CUSTOM_FIELD_SCHEMA,
+    CustomFieldQueryCapabilities,
+    CustomFieldValue,
+    CustomizableResource,
+    CustomSchemaPin,
+    CustomValueDocument,
+    PublishedCustomFieldSchema,
+    PublishedCustomFieldSchemaResolver,
+)
 from businessos.dependencies import (
     AUTHORIZER,
     INSTALLATION_ID,
@@ -70,12 +80,18 @@ __all__ = [
     "OBJECT_STORAGE_DELETE",
     "OBJECT_STORAGE_FENCED",
     "OBJECT_STORAGE_FENCED_ERASURE",
+    "PUBLISHED_CUSTOM_FIELD_SCHEMA",
     "RESOURCE_OWNER_RESOLVER",
     "UNIT_OF_WORK_FACTORY",
     "AdmittedResourceProvider",
     "BusinessOSError",
     "Command",
     "ConfigurationError",
+    "CustomFieldQueryCapabilities",
+    "CustomFieldValue",
+    "CustomSchemaPin",
+    "CustomValueDocument",
+    "CustomizableResource",
     "DependencyKey",
     "DependencyResolver",
     "DependencyScope",
@@ -96,6 +112,8 @@ __all__ = [
     "PermissionDeclaration",
     "Principal",
     "PrincipalType",
+    "PublishedCustomFieldSchema",
+    "PublishedCustomFieldSchemaResolver",
     "Query",
     "Request",
     "RequestContext",

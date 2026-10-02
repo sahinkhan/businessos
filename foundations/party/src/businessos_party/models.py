@@ -1,12 +1,14 @@
 """SQLAlchemy models owned by the party foundation."""
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     MetaData,
     String,
     Table,
@@ -14,9 +16,39 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 metadata = MetaData()
+
+CUSTOM_VALUES = Table(
+    "custom_values",
+    metadata,
+    Column("tenant_id", UUID(as_uuid=True), primary_key=True),
+    Column("party_id", UUID(as_uuid=True), primary_key=True),
+    Column("definition_id", UUID(as_uuid=True), nullable=False),
+    Column("revision_id", UUID(as_uuid=True), nullable=False),
+    Column("revision_digest", String(64), nullable=False),
+    Column("value_version", BigInteger(), nullable=False),
+    Column("value_document", JSONB(), nullable=False),
+    Column("cleared", Boolean(), nullable=False),
+    Column("updated_by", UUID(as_uuid=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    ForeignKeyConstraint(
+        ["tenant_id", "party_id"],
+        ["platform_party.parties.tenant_id", "platform_party.parties.id"],
+        name="fk_party_custom_values_tenant",
+        ondelete="RESTRICT",
+    ),
+    CheckConstraint("value_version > 0", name="ck_party_custom_version"),
+    CheckConstraint("revision_digest ~ '^[a-f0-9]{64}$'", name="ck_party_custom_digest"),
+    CheckConstraint(
+        "jsonb_typeof(value_document) = 'object' AND octet_length(value_document::text) <= 131072",
+        name="ck_party_custom_document",
+    ),
+    CheckConstraint("NOT cleared OR value_document = '{}'::jsonb", name="ck_party_custom_clear"),
+    schema="platform_party",
+)
 
 PARTIES = Table(
     "parties",

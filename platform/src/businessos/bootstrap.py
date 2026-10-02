@@ -282,6 +282,9 @@ def create_application(
         activation_fence = cast(
             ModuleActivationFence, factory_method(metadata_database.internal_installation)
         )
+        schema_reader_method = getattr(metadata_module, "_configure_custom_field_reader", None)
+        if callable(schema_reader_method):
+            schema_reader_method(metadata_database.internal_schema_read)
 
     runtime_placeholder: dict[str, FrameworkRuntime] = {}
 

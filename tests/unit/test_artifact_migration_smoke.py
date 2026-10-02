@@ -71,7 +71,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
         "identity_0005",
         "metadata_0001",
         "organization_0003",
-        "party_0002",
+        "party_0003_custom_fields",
         "policy_0005",
         "proof_0004",
         "tenant_0002",
@@ -101,6 +101,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["uom_0002"] == ("uom_0001", "reference_0002")
     assert parents["party_0001"] == ("uom_0001",)
     assert parents["party_0002"] == ("party_0001", "uom_0002")
+    assert parents["party_0003_custom_fields"] == ("party_0002",)
     assert parents["policy_0001"] == ("party_0001",)
     assert parents["policy_0002"] == ("policy_0001",)
     assert parents["policy_0003"] == ("policy_0002",)
@@ -217,12 +218,23 @@ def test_cross_owner_migration_parent_requires_declared_dependency(
         install_identity="unit-test-migration-catalog-metadata-owner",
         first_party=True,
     )
+    party = next(module for module in modules if module.manifest.module_id == "foundation.party")
+    party_grant = ApprovedModuleArtifact(
+        loaded_module=party,
+        module_id="foundation.party",
+        publisher="BusinessOS",
+        package_identity="businessos-foundation-party",
+        loaded_type=f"{type(party).__module__}:{type(party).__qualname__}",
+        install_identity="unit-test-migration-catalog-party-owner",
+        first_party=True,
+    )
     registry = ModuleRegistry(
         platform_version=runtime_version(),
         sdk_version="0.1.0",
         approved_artifacts={
             "foundation.data_governance": grant,
             "foundation.metadata": metadata_grant,
+            "foundation.party": party_grant,
             "example.phase1-proof": proof_grant,
         },
     )

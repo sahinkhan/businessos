@@ -33,7 +33,13 @@
   ],
   "public_contracts": [
     {"contract_id": "foundation.party.sensitive-read.v1", "version": "1.0.0"},
-    {"contract_id": "foundation.party.full-read.v2", "version": "2.0.0"}
+    {"contract_id": "foundation.party.full-read.v2", "version": "2.0.0"},
+    {"contract_id": "foundation.party.custom-values.v1", "version": "1.0"},
+    {"contract_id": "foundation.party.customizable-resource.v1", "version": "1.0"},
+    {"contract_id": "foundation.party.custom-query-capabilities.v1", "version": "1.0"}
+  ],
+  "resource_ownership": [
+    {"resource_namespace": "foundation.party.party", "owner_module_id": "foundation.party", "contract_version": "1"}
   ],
   "migrations": ["python://businessos_party/migrations/versions"],
   "migration_namespace": "foundation_party",

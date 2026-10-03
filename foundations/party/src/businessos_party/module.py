@@ -43,6 +43,7 @@ from .contracts import (
     PartySensitiveReadContract,
     PersonProfileRecord,
 )
+from .custom_fields import PartyCustomFields
 from .models import (
     CONTACT_POINTS,
     EXTERNAL_IDENTIFIERS,
@@ -264,6 +265,8 @@ class PartyModule:
                 key="foundation.party.manage", description="Manage party and profile records"
             )
         )
+
+        PartyCustomFields().register(registration)
 
         registration.command(
             CreatePersonParty, self._create_person, permission="foundation.party.manage"

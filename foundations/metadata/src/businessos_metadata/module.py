@@ -11,6 +11,7 @@ from businessos_audit.v2_contracts import AUDIT_APPENDER_V2, AuditEvidenceV2
 from pydantic import ConfigDict, Field
 
 from businessos.sdk import (
+    PUBLISHED_CUSTOM_FIELD_SCHEMA,
     Command,
     DomainEvent,
     HandlingContext,
@@ -22,6 +23,14 @@ from businessos.sdk import (
 
 from .activation_fence import InstallationTransaction, MetadataActivationFence
 from .contracts import DefinitionKind, DefinitionSnapshot, MetadataLimits, PublishPreflight
+from .custom_schema import (
+    PublishedSchemaReader,
+    SchemaReadTransaction,
+    internal_configure_schema_reader,
+    internal_register_schema_reader,
+    internal_start_schema_reader,
+    internal_stop_schema_reader,
+)
 from .store import MetadataStore
 
 
@@ -86,12 +95,24 @@ class MetadataModule:
             files("businessos_metadata").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
-        self._store = MetadataStore(limits or MetadataLimits())
+        self._limits = limits or MetadataLimits()
+        self._store = MetadataStore(self._limits)
+        self._schema_reader: PublishedSchemaReader | None = None
+
+    def _configure_custom_field_reader(self, factory: SchemaReadTransaction) -> None:
+        """Private trusted bootstrap composition, not an SDK credential surface."""
+        internal_configure_schema_reader(self, factory)
 
     def _activation_fence(self, factory: InstallationTransaction) -> MetadataActivationFence:
         return MetadataActivationFence(factory)
 
     async def register(self, registration: ModuleRegistration) -> None:
+        self._schema_reader = internal_register_schema_reader(
+            self, registration.generation, self._limits
+        )
+        reader = self._schema_reader
+        registration.dependency(PUBLISHED_CUSTOM_FIELD_SCHEMA, lambda _: reader)
+        registration.contract("foundation.metadata.published-custom-field-schema.v1", reader)
         for key, description in (
             ("foundation.metadata.definition.read", "Read published Metadata definitions"),
             ("foundation.metadata.draft.create", "Create Metadata draft"),
@@ -131,10 +152,10 @@ class MetadataModule:
         )
 
     async def start(self) -> None:
-        return None
+        internal_start_schema_reader(self)
 
     async def stop(self) -> None:
-        return None
+        internal_stop_schema_reader(self)
 
     async def _create(self, cmd: CreateDefinition, ctx: HandlingContext) -> object:
         record = await self._store.create(cmd, ctx)

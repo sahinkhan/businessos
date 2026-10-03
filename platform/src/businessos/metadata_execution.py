@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from businessos.context import TenantContext
 from businessos.database_execution import (
@@ -275,6 +276,42 @@ class MetadataDatabaseExecutionAuthority(ProtectedDatabaseExecutionAuthority):
             and command_type.__module__ == "businessos_metadata.module"
             and command_type.__name__ in _HANDLERS
         )
+
+    @asynccontextmanager
+    async def internal_schema_read(self, tenant: TenantContext) -> AsyncGenerator[UnitOfWork]:
+        """Private tenant-bound READ ONLY composition; never registered in module DI.
+
+        PostgreSQL enforces read-only from transaction BEGIN, before identity/RLS setup.
+        The Metadata-owned public reader returns only immutable schema facts.
+        """
+        async with self._lock:
+            pool = self._active
+            if not isinstance(pool, _MetadataPool) or self._closed:
+                raise ConfigurationError("Metadata database profile unavailable")
+            try:
+                await pool.validate()
+            except Exception:
+                self._active = None
+                if self._leases.get(pool, 0) == 0:
+                    await pool.close()
+                raise
+            self._leases[pool] = self._leases.get(pool, 0) + 1
+        try:
+            sessions = async_sessionmaker(
+                pool.engine.execution_options(postgresql_readonly=True), expire_on_commit=False
+            )
+            async with SQLAlchemyUnitOfWork(
+                sessions, tenant, expected_database=pool.database_name, expected_user=METADATA_ROLE
+            ) as unit:
+                yield unit
+        finally:
+            async with self._lock:
+                self._leases[pool] -= 1
+                last = self._leases[pool] == 0
+                if last:
+                    del self._leases[pool]
+            if last and pool is not self._active:
+                await pool.close()
 
     @asynccontextmanager
     async def internal_installation(self) -> AsyncGenerator[UnitOfWork]:

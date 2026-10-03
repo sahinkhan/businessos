@@ -166,7 +166,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
             "metadata_0001",
             "identity_0005",
             "organization_0003",
-            "party_0002",
+            "party_0003_custom_fields",
             "policy_0005",
             "proof_0004",
             "tenant_0002",

@@ -27,7 +27,8 @@
   "public_contracts": [
     {"contract_id": "foundation.metadata.definition", "version": "1.0"},
     {"contract_id": "foundation.metadata.publication", "version": "1.0"},
-    {"contract_id": "foundation.metadata.reference-resolution", "version": "1.0"}
+    {"contract_id": "foundation.metadata.reference-resolution", "version": "1.0"},
+    {"contract_id": "foundation.metadata.published-custom-field-schema.v1", "version": "1.0"}
   ],
   "resource_ownership": [
     {"resource_namespace": "foundation.metadata.definition", "owner_module_id": "foundation.metadata", "contract_version": "1"}

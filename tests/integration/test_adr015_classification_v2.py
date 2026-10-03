@@ -77,6 +77,7 @@ def _application(database: PostgreSQLTestDatabase) -> BusinessOSApplication:
     metadata = next(
         module for module in modules if module.manifest.module_id == "foundation.metadata"
     )
+    party = next(module for module in modules if module.manifest.module_id == "foundation.party")
     grant = ApprovedModuleArtifact(
         loaded_module=governance,
         module_id="foundation.data_governance",
@@ -104,6 +105,15 @@ def _application(database: PostgreSQLTestDatabase) -> BusinessOSApplication:
         modules=modules,
         authorizer=Authorizer(_AllowAllPolicy()),
         approved_module_artifacts={
+            "foundation.party": ApprovedModuleArtifact(
+                loaded_module=party,
+                module_id="foundation.party",
+                publisher="BusinessOS",
+                package_identity="businessos-foundation-party",
+                loaded_type="businessos_party.module:PartyModule",
+                install_identity="phase5b-test-operator-grant",
+                first_party=True,
+            ),
             "foundation.data_governance": grant,
             "foundation.metadata": ApprovedModuleArtifact(
                 loaded_module=metadata,

@@ -41,6 +41,15 @@
       "install_identity": "ci-test-only-adr017-proof-resource-owner",
       "first_party": false,
       "approved_aliases": []
+    },
+    {
+      "package_identity": "businessos-foundation-party",
+      "install_identity": "ci-test-only-phase5b-party-owner",
+      "first_party": true,
+      "approved_aliases": [],
+      "publisher": "BusinessOS",
+      "module_id": "foundation.party",
+      "loaded_type": "businessos_party.module:PartyModule"
     }
   ]
 }

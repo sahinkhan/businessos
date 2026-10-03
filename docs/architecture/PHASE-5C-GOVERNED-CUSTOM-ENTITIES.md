@@ -1,13 +1,67 @@
 # Phase 5C — Governed Custom Entities
 
-Status: **Phase 5C implementation candidate**. Independent audit, personal
-exact-SHA owner acceptance, guarded merge and post-merge certification remain
-required. Phase 5 overall is incomplete; Phase 5D–5H are not authorized by this
-document.
+Status: **Phase 5C CERTIFIED / CLOSED / FROZEN** on protected `main` at
+`e9baad7b7b8b7ef681099808d7ebed2db2f8337c`.
+Phase 4.5 remains FINAL PASS / CERTIFIED / FROZEN; Phase 5A and Phase 5B remain
+CERTIFIED / CLOSED / FROZEN. Phase 5 overall remains INCOMPLETE.
+Phase 5D is AUTHORIZED TO BEGIN only within the
+[bounded roadmap authorization](../roadmap/PHASE-5-METADATA-STUDIO-DYNAMIC-UI.md#phase-5d-authorization-boundary).
+Phase 5D coding remains blocked until this reconciliation PR passes fresh
+exact-head CI, independent audit, personal owner exact-SHA attestation, guarded
+merge and successful protected-main post-merge CI.
+Phase 5D is not implemented or certified; Phase 5E–5H remain UNAUTHORIZED / UNCERTIFIED.
 
-Certified starting point: `c4e48ca365338f8142d06525f64aec39ac39e554`.
-This bounded backend extension uses accepted ADR-023, ADR-018, ADR-017 and ADR-015.
-It does not replace their decisions or reopen earlier frozen certifications.
+Implementation starting point: `c4e48ca365338f8142d06525f64aec39ac39e554`.
+The certified bounded backend extension uses accepted ADR-023, ADR-018, ADR-017
+and ADR-015. It does not replace their decisions or reopen earlier frozen
+certifications. The runtime architecture description below is preserved.
+
+## Phase 5C certification provenance
+
+Phase 5C is **CERTIFIED / CLOSED / FROZEN** on protected `main` at
+`e9baad7b7b8b7ef681099808d7ebed2db2f8337c`, following
+[PR #65](https://github.com/sahinkhan/businessos/pull/65).
+The original failed audit remains part of the certification chronology:
+
+| Stage | Exact evidence |
+| --- | --- |
+| Original implementation candidate | `3ac10a34c572a6c4a1d3301310f6328f36698112` |
+| Original parent/base | `c4e48ca365338f8142d06525f64aec39ac39e554` |
+| Original tree | `bf15c834f9d9664cbb29def2588b6f089687c347` |
+| Original exact-head CI | [37120604413](https://github.com/sahinkhan/businessos/actions/runs/37120604413) — SUCCESS |
+| Original independent audit | PHASE 5C INDEPENDENT AUDIT — FAIL; Critical 0 / High 0 / Medium 2 / Low 1 |
+| Original M1 | Frozen Phase 5A v1 definition compatibility broken by adding `custom_entity` to `DefinitionKind` |
+| Original M2 | Tenant-wide mutation contention could exhaust the protected DB pool; transient capacity exhaustion could permanently invalidate healthy protected Metadata execution |
+| Original L1 | Archived-list inclusion was not explicitly documented |
+| First remediation candidate | `a8bd9b370e65347a456e65919ed612f6b93919e0` |
+| Remediation parent | `3ac10a34c572a6c4a1d3301310f6328f36698112` |
+| Remediation tree | `9a364d60389feccf5ecb3678f9d083257809e89f` |
+| Fresh remediation exact-head CI | [37135779483](https://github.com/sahinkhan/businessos/actions/runs/37135779483) — SUCCESS; all three required jobs PASS |
+| Independent remediation re-audit | PHASE 5C REMEDIATION INDEPENDENT RE-AUDIT — PASS; Critical 0 / High 0 / Medium 0 / Low 1 |
+| Resolved findings | M1, M2 and L1 — RESOLVED |
+| Remaining Low after first remediation | L2 — documentation punctuation encoding |
+| Final accepted documentation candidate | `22d15f6f9e09be49225e7a32534ac23393387a18` |
+| Final candidate parent | `a8bd9b370e65347a456e65919ed612f6b93919e0` |
+| Final candidate tree | `d058581c6e53cb6da829cd04e53c65e6d92b58d3` |
+| Final exact-head CI | [37143827091](https://github.com/sahinkhan/businessos/actions/runs/37143827091) — COMPLETED / SUCCESS; all three required jobs PASS |
+| Focused independent documentation re-audit | PHASE 5C FINAL DOCUMENTATION RE-AUDIT — PASS; Critical 0 / High 0 / Medium 0 / Low 0; L2 — RESOLVED |
+| Personal owner acceptance | [@sahinkhan, PR #65 comment 5972579781](https://github.com/sahinkhan/businessos/pull/65#issuecomment-5972579781), approving exact candidate `22d15f6f9e09be49225e7a32534ac23393387a18` |
+| Guarded merge / certified checkpoint | `e9baad7b7b8b7ef681099808d7ebed2db2f8337c` |
+| Direct merge parents | `c4e48ca365338f8142d06525f64aec39ac39e554` and `22d15f6f9e09be49225e7a32534ac23393387a18` |
+| Merge tree | `d058581c6e53cb6da829cd04e53c65e6d92b58d3`, identical to the final accepted candidate tree |
+| Protected-main post-merge CI | [37147061189](https://github.com/sahinkhan/businessos/actions/runs/37147061189) — COMPLETED / SUCCESS on the guarded merge SHA; all three required jobs PASS |
+
+The required jobs are `web-quality`, `python-quality` and `windows-typing`.
+The focused documentation audit established that the final commit changed no
+runtime, security, contract, migration or test semantics, so the previous
+technical PASS remained applicable. The original successful CI did not override
+the original failed audit.
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION.
+Independent human review: NOT PERFORMED.
+Independent technical audit: PERFORMED.
+The personal acceptance above is the existing approval record; this
+reconciliation does not create another owner approval.
 
 ## Ownership and type identity
 

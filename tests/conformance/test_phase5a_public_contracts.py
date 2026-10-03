@@ -18,6 +18,9 @@ def test_phase5a_manifest_advertises_versioned_public_contracts() -> None:
         ("foundation.metadata.publication", "1.0"),
         ("foundation.metadata.reference-resolution", "1.0"),
         ("foundation.metadata.published-custom-field-schema.v1", "1.0"),
+        ("foundation.metadata.custom-entity.v1", "1.0"),
+        ("foundation.metadata.custom-entity-query.v1", "1.0"),
+        ("foundation.metadata.custom-entity-definition.v1", "1.0"),
     }
     for contract in (
         DefinitionIdentity,

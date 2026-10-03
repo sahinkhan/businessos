@@ -1,5 +1,63 @@
 """Metadata/Studio Foundation; persistent definitions are not kernel metadata declarations."""
 
-from .module import MetadataModule
+from .custom_entities import (
+    CustomEntityExport,
+    CustomEntityIdentity,
+    CustomEntityLifecycle,
+    CustomEntityLimits,
+    CustomEntityPage,
+    CustomEntityQueryCapabilities,
+    CustomEntityRecord,
+    CustomEntityScopeKind,
+)
+from .custom_entity_definitions import (
+    CustomEntityDefinitionIdentity,
+    CustomEntityDefinitionKind,
+    CustomEntityDefinitionRecord,
+    CustomEntityDefinitionSnapshot,
+    CustomEntityDraftRecord,
+    CustomEntityRevisionRecord,
+)
+from .module import (
+    ArchiveCustomEntity,
+    CreateCustomEntity,
+    CreateCustomEntityDefinition,
+    EditCustomEntityDraft,
+    ExportCustomEntity,
+    ListCustomEntities,
+    MetadataModule,
+    ReadActiveCustomEntityRevision,
+    ReadCustomEntity,
+    ReadCustomEntityDraft,
+    RetireCustomEntityDefinition,
+    UpdateCustomEntity,
+)
 
-__all__ = ["MetadataModule"]
+__all__ = [
+    "ArchiveCustomEntity",
+    "CreateCustomEntity",
+    "CreateCustomEntityDefinition",
+    "CustomEntityDefinitionIdentity",
+    "CustomEntityDefinitionKind",
+    "CustomEntityDefinitionRecord",
+    "CustomEntityDefinitionSnapshot",
+    "CustomEntityDraftRecord",
+    "CustomEntityExport",
+    "CustomEntityIdentity",
+    "CustomEntityLifecycle",
+    "CustomEntityLimits",
+    "CustomEntityPage",
+    "CustomEntityQueryCapabilities",
+    "CustomEntityRecord",
+    "CustomEntityRevisionRecord",
+    "CustomEntityScopeKind",
+    "EditCustomEntityDraft",
+    "ExportCustomEntity",
+    "ListCustomEntities",
+    "MetadataModule",
+    "ReadActiveCustomEntityRevision",
+    "ReadCustomEntity",
+    "ReadCustomEntityDraft",
+    "RetireCustomEntityDefinition",
+    "UpdateCustomEntity",
+]

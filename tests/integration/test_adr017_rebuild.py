@@ -337,7 +337,7 @@ def test_adr017_fresh_forward_migrations(postgres_database: PostgreSQLTestDataba
             row[0]
             for row in connection.execute("SELECT version_num FROM alembic_version").fetchall()
         }
-        assert "metadata_0001" in revisions
+        assert "metadata_0002_custom_entities" in revisions
         assert "proof_0004" in revisions
         for table in (
             "platform_gov.retention_policies_v2",

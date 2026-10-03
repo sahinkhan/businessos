@@ -51,6 +51,43 @@ python -m venv "$environment_dir"
     "$artifact_dir"/businessos_phase1_proof-*.whl
 
 cd "$outside_dir"
+"$environment_dir/bin/python" - <<'PY'
+from importlib.resources import files
+from pathlib import Path
+
+from businessos_metadata import (
+    ArchiveCustomEntity, CreateCustomEntity, CustomEntityExport,
+    CustomEntityIdentity, CustomEntityLifecycle, CustomEntityLimits,
+    CustomEntityPage, CustomEntityQueryCapabilities, CustomEntityRecord,
+    CustomEntityScopeKind, ExportCustomEntity, ListCustomEntities,
+    MetadataModule, ReadCustomEntity, UpdateCustomEntity,
+    CreateCustomEntityDefinition, EditCustomEntityDraft, ReadCustomEntityDraft,
+    ReadActiveCustomEntityRevision, RetireCustomEntityDefinition,
+    CustomEntityDefinitionSnapshot, CustomEntityDefinitionRecord,
+)
+from businessos_metadata.contracts import DefinitionKind
+from businessos_metadata.custom_entity_store import CustomEntityStore
+
+package = Path(str(files('businessos_metadata'))).resolve()
+assert Path('/app') not in package.parents
+assert files('businessos_metadata').joinpath(
+    'migrations', 'versions', 'metadata_0002_custom_entities.py'
+).is_file()
+assert package.joinpath('custom_entities.py').is_file()
+assert package.joinpath('custom_entity_store.py').is_file()
+assert package.joinpath('custom_entity_definitions.py').is_file()
+assert {kind.value for kind in DefinitionKind} == {'field_set', 'reference_set'}
+contracts = {(c.contract_id, c.version) for c in MetadataModule().manifest.public_contracts}
+assert {
+    ('foundation.metadata.custom-entity.v1', '1.0'),
+    ('foundation.metadata.custom-entity-query.v1', '1.0'),
+    ('foundation.metadata.custom-entity-definition.v1', '1.0'),
+} <= contracts
+assert CustomEntityQueryCapabilities().version == '1.0'
+assert not CustomEntityQueryCapabilities().custom_field_filter
+assert CustomEntityStore.__module__ == 'businessos_metadata.custom_entity_store'
+print('PHASE5C_INSTALLED_PUBLIC_SURFACES_PASS — runtime/contracts/migration packaged; no source shadowing')
+PY
 "$environment_dir/bin/businessos" migrate plan
 "$environment_dir/bin/python" -c \
     "from importlib.resources import files; from pathlib import Path; root=Path('$repository_root').resolve(); package=Path(str(files('businessos_metadata'))).resolve(); assert root not in package.parents; assert package.joinpath('migrations','versions','metadata_0001_definition_foundation.py').is_file()"

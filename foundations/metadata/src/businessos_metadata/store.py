@@ -12,6 +12,7 @@ from businessos.sdk import RESOURCE_OWNER_RESOLVER, BusinessOSError, HandlingCon
 
 from .contracts import (
     DefinitionIdentity,
+    DefinitionKind,
     DefinitionLifecycle,
     DefinitionRecord,
     DefinitionSnapshot,
@@ -23,6 +24,7 @@ from .contracts import (
     PublishPreflight,
     RevisionRecord,
 )
+from .custom_entities import CUSTOM_ENTITY_NAMESPACE
 from .models import CONTRACT_FENCE, DEFINITIONS, MODULE_FENCE, REVISION_MODULE_BINDINGS, REVISIONS
 
 if TYPE_CHECKING:
@@ -158,6 +160,12 @@ class MetadataStore:
         self._validate_snapshot(cmd.snapshot)
         if cmd.snapshot.kind is not cmd.kind:
             raise BusinessOSError("kind_mismatch", "Definition kind mismatch", status_code=400)
+        if (cmd.kind is DefinitionKind.CUSTOM_ENTITY) != (
+            cmd.resource_namespace == CUSTOM_ENTITY_NAMESPACE
+        ) or (cmd.kind is DefinitionKind.CUSTOM_ENTITY and cmd.owner_contract_version != "1"):
+            raise BusinessOSError(
+                "kind_mismatch", "Custom entity kind requires exact Metadata family"
+            )
         resolver = await ctx.dependencies.resolve(RESOURCE_OWNER_RESOLVER)
         owner = resolver.resolve_owner(cmd.resource_namespace, cmd.owner_contract_version)
         if owner.ownership.resource_namespace != cmd.resource_namespace:
@@ -558,6 +566,14 @@ class MetadataStore:
         initial = await self._row(cmd.definition_id, ctx)
         if initial is None:
             raise BusinessOSError("not_found", "Metadata definition not found", status_code=404)
+        if initial["kind"] == DefinitionKind.CUSTOM_ENTITY.value:
+            tenant_id, _ = _tenant(ctx)
+            # Same first lock as instance mutation and new references. Publication
+            # intentionally does not use it: resolved immutable pins survive races.
+            await ctx.unit_of_work.persistence.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": f"metadata-custom-entity:{tenant_id}"},
+            )
         old_bindings = await self._bindings(initial["active_revision_id"], ctx)
         if old_bindings:
             await ctx.unit_of_work.persistence.execute(

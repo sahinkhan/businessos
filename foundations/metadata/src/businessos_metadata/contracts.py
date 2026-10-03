@@ -44,6 +44,7 @@ class _Contract(BaseModel):
 class DefinitionKind(StrEnum):
     FIELD_SET = "field_set"
     REFERENCE_SET = "reference_set"
+    CUSTOM_ENTITY = "custom_entity"
 
 
 class DefinitionLifecycle(StrEnum):

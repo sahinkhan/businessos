@@ -163,7 +163,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
             ).fetchall()
         assert heads == {
             "geography_0003",
-            "metadata_0001",
+            "metadata_0002_custom_entities",
             "identity_0005",
             "organization_0003",
             "party_0003_custom_fields",

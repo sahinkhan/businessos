@@ -9,11 +9,26 @@
   "execution_type": "in_process",
   "entry_point": "businessos_metadata:MetadataModule",
   "dependencies": [
-    {"module_id": "foundation.tenant", "version": ">=0.2,<1"},
-    {"module_id": "foundation.identity", "version": ">=0.2,<1"},
-    {"module_id": "foundation.policy", "version": ">=0.4,<1"},
-    {"module_id": "foundation.audit", "version": ">=0.4,<1"},
-    {"module_id": "foundation.data_governance", "version": ">=0.4,<1"}
+    {
+      "module_id": "foundation.tenant",
+      "version": ">=0.2,<1"
+    },
+    {
+      "module_id": "foundation.identity",
+      "version": ">=0.2,<1"
+    },
+    {
+      "module_id": "foundation.policy",
+      "version": ">=0.4,<1"
+    },
+    {
+      "module_id": "foundation.audit",
+      "version": ">=0.4,<1"
+    },
+    {
+      "module_id": "foundation.data_governance",
+      "version": ">=0.4,<1"
+    }
   ],
   "capabilities": [],
   "permissions": [
@@ -22,18 +37,58 @@
     "foundation.metadata.draft.edit",
     "foundation.metadata.publish",
     "foundation.metadata.rollback",
-    "foundation.metadata.retire"
+    "foundation.metadata.retire",
+    "foundation.metadata.custom_entity.read",
+    "foundation.metadata.custom_entity.create",
+    "foundation.metadata.custom_entity.update",
+    "foundation.metadata.custom_entity.archive",
+    "foundation.metadata.custom_entity.export"
   ],
   "public_contracts": [
-    {"contract_id": "foundation.metadata.definition", "version": "1.0"},
-    {"contract_id": "foundation.metadata.publication", "version": "1.0"},
-    {"contract_id": "foundation.metadata.reference-resolution", "version": "1.0"},
-    {"contract_id": "foundation.metadata.published-custom-field-schema.v1", "version": "1.0"}
+    {
+      "contract_id": "foundation.metadata.definition",
+      "version": "1.0"
+    },
+    {
+      "contract_id": "foundation.metadata.publication",
+      "version": "1.0"
+    },
+    {
+      "contract_id": "foundation.metadata.reference-resolution",
+      "version": "1.0"
+    },
+    {
+      "contract_id": "foundation.metadata.published-custom-field-schema.v1",
+      "version": "1.0"
+    },
+    {
+      "contract_id": "foundation.metadata.custom-entity.v1",
+      "version": "1.0"
+    },
+    {
+      "contract_id": "foundation.metadata.custom-entity-query.v1",
+      "version": "1.0"
+    }
   ],
   "resource_ownership": [
-    {"resource_namespace": "foundation.metadata.definition", "owner_module_id": "foundation.metadata", "contract_version": "1"}
+    {
+      "resource_namespace": "foundation.metadata.definition",
+      "owner_module_id": "foundation.metadata",
+      "contract_version": "1"
+    },
+    {
+      "owner_module_id": "foundation.metadata",
+      "resource_namespace": "foundation.metadata.custom_entity",
+      "contract_version": "1"
+    }
   ],
-  "migrations": ["python://businessos_metadata/migrations/versions"],
+  "migrations": [
+    "python://businessos_metadata/migrations/versions"
+  ],
   "migration_namespace": "foundation_metadata",
-  "supported_tenancy_modes": ["dedicated", "database_per_tenant", "shared_schema"]
+  "supported_tenancy_modes": [
+    "dedicated",
+    "database_per_tenant",
+    "shared_schema"
+  ]
 }

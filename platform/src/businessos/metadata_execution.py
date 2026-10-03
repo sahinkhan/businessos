@@ -29,6 +29,7 @@ _TABLES = {
     "platform_metadata.definitions": {"SELECT", "INSERT", "UPDATE"},
     "platform_metadata.revisions": {"SELECT", "INSERT"},
     "platform_metadata.revision_module_bindings": {"SELECT", "INSERT"},
+    "platform_metadata.custom_entities": {"SELECT", "INSERT", "UPDATE"},
     "platform_audit.audit_logs": {"SELECT", "INSERT"},
     "eventing.outbox_messages": {"SELECT", "INSERT"},
 }
@@ -42,6 +43,12 @@ _HANDLERS = frozenset(
         "ReadDraft",
         "ReadActiveRevision",
         "PreflightPublication",
+        "CreateCustomEntity",
+        "UpdateCustomEntity",
+        "ArchiveCustomEntity",
+        "ReadCustomEntity",
+        "ExportCustomEntity",
+        "ListCustomEntities",
     }
 )
 

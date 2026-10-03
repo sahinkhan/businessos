@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 from importlib.resources import files
-from typing import ClassVar
+from typing import ClassVar, Self
 from uuid import UUID
 
 from businessos_audit.v2_contracts import AUDIT_APPENDER_V2, AuditEvidenceV2
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, StrictInt, model_validator
 
 from businessos.sdk import (
     PUBLISHED_CUSTOM_FIELD_SCHEMA,
     Command,
+    CustomFieldValue,
     DomainEvent,
     HandlingContext,
     ModuleManifest,
@@ -23,6 +24,14 @@ from businessos.sdk import (
 
 from .activation_fence import InstallationTransaction, MetadataActivationFence
 from .contracts import DefinitionKind, DefinitionSnapshot, MetadataLimits, PublishPreflight
+from .custom_entities import (
+    CUSTOM_ENTITY_NAMESPACE,
+    CustomEntityLimits,
+    CustomEntityQueryCapabilities,
+    CustomEntityRecord,
+    CustomEntityScopeKind,
+)
+from .custom_entity_store import CustomEntityStore
 from .custom_schema import (
     PublishedSchemaReader,
     SchemaReadTransaction,
@@ -78,6 +87,65 @@ class PreflightPublication(_Input, Query):
     target_revision_id: UUID | None = None
 
 
+class _EntityValues(_Input, Command):
+    values: tuple[CustomFieldValue, ...] = Field(max_length=1024)
+
+    @model_validator(mode="after")
+    def unique_fields(self) -> Self:
+        if len({v.field_id for v in self.values}) != len(self.values):
+            raise ValueError("Duplicate stable field IDs")
+        return self
+
+
+class CreateCustomEntity(_EntityValues):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    entity_type_id: UUID
+    scope_kind: CustomEntityScopeKind = CustomEntityScopeKind.TENANT
+
+
+class UpdateCustomEntity(_EntityValues):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    instance_id: UUID
+    expected_version: StrictInt = Field(ge=1, lt=2**63 - 1)
+
+
+class ArchiveCustomEntity(_Input, Command):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    instance_id: UUID
+    expected_version: StrictInt = Field(ge=1, lt=2**63 - 1)
+
+
+class ReadCustomEntity(_Input, Query):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    instance_id: UUID
+    query_operation: str = Field(default="read", max_length=30)
+
+
+class ExportCustomEntity(ReadCustomEntity):
+    pass
+
+
+class ListCustomEntities(_Input, Query):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    entity_type_id: UUID
+    scope_kind: CustomEntityScopeKind = CustomEntityScopeKind.TENANT
+    page_size: StrictInt = Field(default=50, ge=1, le=1000)
+    after: UUID | None = None
+    query_operation: str = Field(default="list", max_length=30)
+
+
+class CustomEntityChanged(DomainEvent):
+    event_type: ClassVar[str] = "metadata.custom-entity.changed.v1"
+    entity_type_id: UUID
+    instance_id: UUID
+    revision_id: UUID
+    value_version: int
+    lifecycle: str
+    action: str
+    scope_kind: str
+    scope_id: UUID
+
+
 class MetadataLifecycleEvent(DomainEvent):
     event_type: ClassVar[str] = "metadata.lifecycle.v1"
     definition_id: UUID
@@ -90,13 +158,21 @@ class MetadataLifecycleEvent(DomainEvent):
 class MetadataModule:
     version = "1.0"
 
-    def __init__(self, *, limits: MetadataLimits | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        limits: MetadataLimits | None = None,
+        custom_entity_limits: CustomEntityLimits | None = None,
+    ) -> None:
         data = json.loads(
             files("businessos_metadata").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
         self._limits = limits or MetadataLimits()
         self._store = MetadataStore(self._limits)
+        self._entities = CustomEntityStore(
+            self._limits, custom_entity_limits or CustomEntityLimits()
+        )
         self._schema_reader: PublishedSchemaReader | None = None
 
     def _configure_custom_field_reader(self, factory: SchemaReadTransaction) -> None:
@@ -120,14 +196,23 @@ class MetadataModule:
             ("foundation.metadata.publish", "Publish Metadata revision"),
             ("foundation.metadata.rollback", "Reactivate Metadata revision"),
             ("foundation.metadata.retire", "Retire Metadata definition"),
+            ("foundation.metadata.custom_entity.read", "Read governed custom entities"),
+            ("foundation.metadata.custom_entity.create", "Create governed custom entity"),
+            ("foundation.metadata.custom_entity.update", "Replace governed custom entity values"),
+            ("foundation.metadata.custom_entity.archive", "Archive governed custom entity"),
+            ("foundation.metadata.custom_entity.export", "Export one governed custom entity"),
         ):
             registration.permission(PermissionDeclaration(key=key, description=description))
         for contract_id in (
             "foundation.metadata.definition",
             "foundation.metadata.publication",
             "foundation.metadata.reference-resolution",
+            "foundation.metadata.custom-entity.v1",
         ):
             registration.contract(contract_id, self)
+        registration.contract(
+            "foundation.metadata.custom-entity-query.v1", CustomEntityQueryCapabilities()
+        )
         registration.command(
             CreateDefinition, self._create, permission="foundation.metadata.draft.create"
         )
@@ -149,6 +234,34 @@ class MetadataModule:
         )
         registration.query(
             PreflightPublication, self._preflight, permission="foundation.metadata.publish"
+        )
+        registration.command(
+            CreateCustomEntity,
+            self._create_entity,
+            permission="foundation.metadata.custom_entity.create",
+        )
+        registration.command(
+            UpdateCustomEntity,
+            self._update_entity,
+            permission="foundation.metadata.custom_entity.update",
+        )
+        registration.command(
+            ArchiveCustomEntity,
+            self._archive_entity,
+            permission="foundation.metadata.custom_entity.archive",
+        )
+        registration.query(
+            ReadCustomEntity, self._read_entity, permission="foundation.metadata.custom_entity.read"
+        )
+        registration.query(
+            ListCustomEntities,
+            self._list_entities,
+            permission="foundation.metadata.custom_entity.read",
+        )
+        registration.query(
+            ExportCustomEntity,
+            self._export_entity,
+            permission="foundation.metadata.custom_entity.export",
         )
 
     async def start(self) -> None:
@@ -224,6 +337,71 @@ class MetadataModule:
 
     async def _preflight(self, query: PreflightPublication, ctx: HandlingContext) -> object:
         return await self._store.preflight(query.definition_id, query.target_revision_id, ctx)
+
+    async def _create_entity(self, cmd: CreateCustomEntity, ctx: HandlingContext) -> object:
+        record = await self._entities.create(cmd, ctx)
+        await self._entity_evidence(record, "create", ctx)
+        return record
+
+    async def _update_entity(self, cmd: UpdateCustomEntity, ctx: HandlingContext) -> object:
+        record = await self._entities.mutate(cmd, ctx, archive=False)
+        await self._entity_evidence(record, "update", ctx)
+        return record
+
+    async def _archive_entity(self, cmd: ArchiveCustomEntity, ctx: HandlingContext) -> object:
+        record = await self._entities.mutate(cmd, ctx, archive=True)
+        await self._entity_evidence(record, "archive", ctx)
+        return record
+
+    async def _read_entity(self, query: ReadCustomEntity, ctx: HandlingContext) -> object:
+        CustomEntityQueryCapabilities().require(query.query_operation)
+        return await self._entities.read(query.instance_id, ctx)
+
+    async def _list_entities(self, query: ListCustomEntities, ctx: HandlingContext) -> object:
+        CustomEntityQueryCapabilities().require(query.query_operation)
+        return await self._entities.list(query, ctx)
+
+    async def _export_entity(self, query: ExportCustomEntity, ctx: HandlingContext) -> object:
+        CustomEntityQueryCapabilities().require(query.query_operation)
+        return await self._entities.export(query.instance_id, ctx)
+
+    async def _entity_evidence(
+        self, record: CustomEntityRecord, action: str, ctx: HandlingContext
+    ) -> None:
+        appender = await ctx.dependencies.resolve(AUDIT_APPENDER_V2)
+        facts = {
+            "entity_type_id": str(record.identity.entity_type_id),
+            "revision_id": str(record.revision_id),
+            "value_version": record.value_version,
+            "lifecycle": record.lifecycle.value,
+            "scope_kind": record.scope_kind.value,
+            "scope_id": str(record.scope_id),
+            "correlation_id": ctx.request.correlation_id,
+        }
+        await appender.append(
+            AuditEvidenceV2(
+                action=f"metadata.custom-entity.{action}",
+                resource_type=CUSTOM_ENTITY_NAMESPACE,
+                resource_id=str(record.identity.instance_id),
+                status="success",
+                details=facts,
+            ),
+            ctx,
+        )
+        ctx.emit(
+            CustomEntityChanged(
+                tenant_id=record.identity.tenant_id,
+                correlation_id=ctx.request.correlation_id,
+                entity_type_id=record.identity.entity_type_id,
+                instance_id=record.identity.instance_id,
+                revision_id=record.revision_id,
+                value_version=record.value_version,
+                lifecycle=record.lifecycle.value,
+                scope_kind=record.scope_kind.value,
+                scope_id=record.scope_id,
+                action=action,
+            )
+        )
 
     async def _audit(
         self,

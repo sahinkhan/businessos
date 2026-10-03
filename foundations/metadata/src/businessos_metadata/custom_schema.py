@@ -29,6 +29,7 @@ from businessos.sdk import (
 )
 
 from .contracts import Comparison, DefinitionSnapshot, FieldType, MetadataLimits, MoneyLiteral
+from .custom_entity_definitions import CustomEntityDefinitionSnapshot
 from .models import DEFINITIONS, REVISIONS
 
 SchemaReadTransaction = Callable[[TenantContext], AbstractAsyncContextManager[UnitOfWork]]
@@ -85,7 +86,7 @@ def internal_stop_schema_reader(module: object) -> None:
 @dataclass(frozen=True, slots=True)
 class _PublishedSchema:
     pin: CustomSchemaPin
-    _snapshot: DefinitionSnapshot
+    _snapshot: DefinitionSnapshot | CustomEntityDefinitionSnapshot
     _limits: MetadataLimits
 
     @property

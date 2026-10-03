@@ -31,6 +31,7 @@ from .custom_entities import (
     CustomEntityRecord,
     CustomEntityScopeKind,
 )
+from .custom_entity_definitions import CustomEntityDefinitionKind, CustomEntityDefinitionSnapshot
 from .custom_entity_store import CustomEntityStore
 from .custom_schema import (
     PublishedSchemaReader,
@@ -87,6 +88,38 @@ class PreflightPublication(_Input, Query):
     target_revision_id: UUID | None = None
 
 
+class CreateCustomEntityDefinition(_Input, Command):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    resource_namespace: str = Field(
+        default=CUSTOM_ENTITY_NAMESPACE, pattern=r"^foundation\.metadata\.custom_entity$"
+    )
+    owner_contract_version: str = Field(default="1", pattern=r"^1$")
+    kind: CustomEntityDefinitionKind = CustomEntityDefinitionKind.CUSTOM_ENTITY
+    snapshot: CustomEntityDefinitionSnapshot
+
+
+class EditCustomEntityDraft(_Input, Command):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    definition_id: UUID
+    expected_draft_generation: int = Field(ge=1)
+    snapshot: CustomEntityDefinitionSnapshot
+
+
+class ReadCustomEntityDraft(_Input, Query):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    definition_id: UUID
+
+
+class ReadActiveCustomEntityRevision(ReadCustomEntityDraft):
+    pass
+
+
+class RetireCustomEntityDefinition(_Input, Command):
+    contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
+    definition_id: UUID
+    expected_active_generation: int = Field(ge=0)
+
+
 class _EntityValues(_Input, Command):
     values: tuple[CustomFieldValue, ...] = Field(max_length=1024)
 
@@ -126,6 +159,12 @@ class ExportCustomEntity(ReadCustomEntity):
 
 
 class ListCustomEntities(_Input, Query):
+    """Includes current and archived rows in pagination; no lifecycle filter.
+
+    Each record declares lifecycle. Archived rows are immutable and exportable
+    under Policy; callers cannot turn this list into a current-only query.
+    """
+
     contract_version: str = Field(default="1.0", pattern=r"^1\.0$")
     entity_type_id: UUID
     scope_kind: CustomEntityScopeKind = CustomEntityScopeKind.TENANT
@@ -208,6 +247,7 @@ class MetadataModule:
             "foundation.metadata.publication",
             "foundation.metadata.reference-resolution",
             "foundation.metadata.custom-entity.v1",
+            "foundation.metadata.custom-entity-definition.v1",
         ):
             registration.contract(contract_id, self)
         registration.contract(
@@ -234,6 +274,31 @@ class MetadataModule:
         )
         registration.query(
             PreflightPublication, self._preflight, permission="foundation.metadata.publish"
+        )
+        registration.command(
+            CreateCustomEntityDefinition,
+            self._create_custom_definition,
+            permission="foundation.metadata.draft.create",
+        )
+        registration.command(
+            EditCustomEntityDraft,
+            self._edit_custom_draft,
+            permission="foundation.metadata.draft.edit",
+        )
+        registration.command(
+            RetireCustomEntityDefinition,
+            self._retire_custom_definition,
+            permission="foundation.metadata.retire",
+        )
+        registration.query(
+            ReadCustomEntityDraft,
+            self._read_custom_draft,
+            permission="foundation.metadata.draft.edit",
+        )
+        registration.query(
+            ReadActiveCustomEntityRevision,
+            self._read_custom_active,
+            permission="foundation.metadata.definition.read",
         )
         registration.command(
             CreateCustomEntity,
@@ -270,6 +335,35 @@ class MetadataModule:
     async def stop(self) -> None:
         internal_stop_schema_reader(self)
 
+    async def _create_custom_definition(
+        self, cmd: CreateCustomEntityDefinition, ctx: HandlingContext
+    ) -> object:
+        record = await self._store.create(cmd, ctx)
+        await self._audit(ctx, "draft.create", record.identity.definition_id, None, None)
+        return record
+
+    async def _edit_custom_draft(self, cmd: EditCustomEntityDraft, ctx: HandlingContext) -> object:
+        record = await self._store.edit(cmd, ctx)
+        await self._audit(ctx, "draft.edit", cmd.definition_id, None, None)
+        return record
+
+    async def _retire_custom_definition(
+        self, cmd: RetireCustomEntityDefinition, ctx: HandlingContext
+    ) -> object:
+        record = await self._store.retire(cmd, ctx)
+        await self._audit(ctx, "retire", cmd.definition_id, None, None)
+        return record
+
+    async def _read_custom_draft(
+        self, query: ReadCustomEntityDraft, ctx: HandlingContext
+    ) -> object:
+        return await self._store.read_draft(query.definition_id, ctx, custom=True)
+
+    async def _read_custom_active(
+        self, query: ReadActiveCustomEntityRevision, ctx: HandlingContext
+    ) -> object:
+        return await self._store.read_active(query.definition_id, ctx, custom=True)
+
     async def _create(self, cmd: CreateDefinition, ctx: HandlingContext) -> object:
         record = await self._store.create(cmd, ctx)
         await self._audit(ctx, "draft.create", record.identity.definition_id, None, None)
@@ -283,7 +377,9 @@ class MetadataModule:
     async def _publish(self, cmd: PublishDefinition, ctx: HandlingContext) -> object:
         result = await self._store.publish(cmd.preflight, ctx)
         if result.revision_id is not None:
-            revision = await self._store.read_active(cmd.preflight.definition_id, ctx)
+            revision = await self._store.read_active(
+                cmd.preflight.definition_id, ctx, internal=True
+            )
             assert revision is not None
             await self._audit(
                 ctx, "publish", cmd.preflight.definition_id, revision.revision_id, revision.digest
@@ -303,7 +399,9 @@ class MetadataModule:
     async def _reactivate(self, cmd: ReactivateRevision, ctx: HandlingContext) -> object:
         result = await self._store.reactivate(cmd.preflight, cmd.revision_id, ctx)
         if result.revision_id is not None:
-            revision = await self._store.read_active(cmd.preflight.definition_id, ctx)
+            revision = await self._store.read_active(
+                cmd.preflight.definition_id, ctx, internal=True
+            )
             assert revision is not None
             await self._audit(
                 ctx,

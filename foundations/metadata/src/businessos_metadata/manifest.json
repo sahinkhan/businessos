@@ -68,6 +68,10 @@
     {
       "contract_id": "foundation.metadata.custom-entity-query.v1",
       "version": "1.0"
+    },
+    {
+      "contract_id": "foundation.metadata.custom-entity-definition.v1",
+      "version": "1.0"
     }
   ],
   "resource_ownership": [

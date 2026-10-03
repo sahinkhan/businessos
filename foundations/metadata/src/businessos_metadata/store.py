@@ -12,7 +12,6 @@ from businessos.sdk import RESOURCE_OWNER_RESOLVER, BusinessOSError, HandlingCon
 
 from .contracts import (
     DefinitionIdentity,
-    DefinitionKind,
     DefinitionLifecycle,
     DefinitionRecord,
     DefinitionSnapshot,
@@ -25,10 +24,25 @@ from .contracts import (
     RevisionRecord,
 )
 from .custom_entities import CUSTOM_ENTITY_NAMESPACE
+from .custom_entity_definitions import (
+    CustomEntityDefinitionIdentity,
+    CustomEntityDefinitionRecord,
+    CustomEntityDefinitionSnapshot,
+    CustomEntityDraftRecord,
+    CustomEntityRevisionRecord,
+    internal_snapshot,
+)
 from .models import CONTRACT_FENCE, DEFINITIONS, MODULE_FENCE, REVISION_MODULE_BINDINGS, REVISIONS
 
 if TYPE_CHECKING:
-    from .module import CreateDefinition, EditDraft, RetireDefinition
+    from .module import (
+        CreateCustomEntityDefinition,
+        CreateDefinition,
+        EditCustomEntityDraft,
+        EditDraft,
+        RetireCustomEntityDefinition,
+        RetireDefinition,
+    )
 
 
 def _tenant(ctx: HandlingContext) -> tuple[UUID, UUID]:
@@ -44,33 +58,54 @@ def _tenant(ctx: HandlingContext) -> tuple[UUID, UUID]:
     return trusted.tenant_id, trusted.principal_id
 
 
-def _definition(row: Mapping[str, Any]) -> DefinitionRecord:
-    return DefinitionRecord(
-        identity=DefinitionIdentity(
-            definition_id=row["id"],
-            tenant_id=row["tenant_id"],
-            owner_module_id=row["owner_module_id"],
-            resource_namespace=row["resource_namespace"],
-            owner_contract_version=row["owner_contract_version"],
-            kind=row["kind"],
-        ),
+def _definition(row: Mapping[str, Any]) -> DefinitionRecord | CustomEntityDefinitionRecord:
+    identity = dict(
+        definition_id=row["id"],
+        tenant_id=row["tenant_id"],
+        owner_module_id=row["owner_module_id"],
+        resource_namespace=row["resource_namespace"],
+        owner_contract_version=row["owner_contract_version"],
+        kind=row["kind"],
+    )
+    facts = dict(
         lifecycle=row["lifecycle"],
         draft_generation=row["draft_generation"],
         active_revision_id=row["active_revision_id"],
         active_generation=row["active_generation"],
     )
+    if row["kind"] == "custom_entity":
+        return CustomEntityDefinitionRecord(
+            identity=CustomEntityDefinitionIdentity(**identity), **facts
+        )
+    return DefinitionRecord(identity=DefinitionIdentity(**identity), **facts)
 
 
-def _revision(row: Mapping[str, Any]) -> RevisionRecord:
-    return RevisionRecord(
+def _revision(row: Mapping[str, Any]) -> RevisionRecord | CustomEntityRevisionRecord:
+    facts = dict(
         revision_id=row["id"],
         tenant_id=row["tenant_id"],
         definition_id=row["definition_id"],
         sequence=row["sequence"],
-        snapshot=DefinitionSnapshot.model_validate(row["snapshot"]),
         digest=row["digest"],
         published_at=row["published_at"],
         provenance=row["provenance"],
+    )
+    if row["snapshot"]["kind"] == "custom_entity":
+        return CustomEntityRevisionRecord(
+            snapshot=CustomEntityDefinitionSnapshot.model_validate(row["snapshot"]), **facts
+        )
+    return RevisionRecord(snapshot=DefinitionSnapshot.model_validate(row["snapshot"]), **facts)
+
+
+def _draft(row: Mapping[str, Any]) -> DraftRecord | CustomEntityDraftRecord:
+    definition = _definition(row)
+    if isinstance(definition, CustomEntityDefinitionRecord):
+        return CustomEntityDraftRecord(
+            definition=definition,
+            snapshot=CustomEntityDefinitionSnapshot.model_validate(row["draft_snapshot"]),
+        )
+    return DraftRecord(
+        definition=definition, snapshot=DefinitionSnapshot.model_validate(row["draft_snapshot"])
     )
 
 
@@ -117,7 +152,10 @@ class MetadataStore:
         return cast(Mapping[str, Any] | None, result.mappings().one_or_none())
 
     async def _owner_and_dependencies(
-        self, row: Mapping[str, Any], snapshot: DefinitionSnapshot, ctx: HandlingContext
+        self,
+        row: Mapping[str, Any],
+        snapshot: DefinitionSnapshot | CustomEntityDefinitionSnapshot,
+        ctx: HandlingContext,
     ) -> tuple[str, ...]:
         resolver = await ctx.dependencies.resolve(RESOURCE_OWNER_RESOLVER)
         owner = resolver.resolve_owner(row["resource_namespace"], row["owner_contract_version"])
@@ -142,8 +180,13 @@ class MetadataStore:
             modules.add(target.ownership.owner_module_id)
         return tuple(sorted(modules))
 
-    def _validate_snapshot(self, snapshot: DefinitionSnapshot, *, publishing: bool = False) -> None:
-        DefinitionSnapshot.model_validate(snapshot.model_dump(mode="json"))
+    def _validate_snapshot(
+        self,
+        snapshot: DefinitionSnapshot | CustomEntityDefinitionSnapshot,
+        *,
+        publishing: bool = False,
+    ) -> None:
+        internal_snapshot(snapshot.model_dump(mode="json"))
         snapshot.validate_limits(self._limits)
         # ADR-015's authoritative classification resolver is a separate
         # certification prerequisite. A classified field cannot publish by
@@ -155,14 +198,24 @@ class MetadataStore:
                 status_code=409,
             )
 
-    async def create(self, cmd: CreateDefinition, ctx: HandlingContext) -> DefinitionRecord:
+    async def create(
+        self, cmd: CreateDefinition | CreateCustomEntityDefinition, ctx: HandlingContext
+    ) -> DefinitionRecord | CustomEntityDefinitionRecord:
         tenant_id, principal_id = _tenant(ctx)
+        from .module import CreateCustomEntityDefinition
+
+        if (cmd.kind.value == "custom_entity") != isinstance(cmd, CreateCustomEntityDefinition):
+            raise BusinessOSError(
+                "definition_contract_required",
+                "Use the matching versioned definition contract",
+                status_code=409,
+            )
         self._validate_snapshot(cmd.snapshot)
-        if cmd.snapshot.kind is not cmd.kind:
+        if cmd.snapshot.kind.value != cmd.kind.value:
             raise BusinessOSError("kind_mismatch", "Definition kind mismatch", status_code=400)
-        if (cmd.kind is DefinitionKind.CUSTOM_ENTITY) != (
+        if (cmd.kind.value == "custom_entity") != (
             cmd.resource_namespace == CUSTOM_ENTITY_NAMESPACE
-        ) or (cmd.kind is DefinitionKind.CUSTOM_ENTITY and cmd.owner_contract_version != "1"):
+        ) or (cmd.kind.value == "custom_entity" and cmd.owner_contract_version != "1"):
             raise BusinessOSError(
                 "kind_mismatch", "Custom entity kind requires exact Metadata family"
             )
@@ -208,10 +261,15 @@ class MetadataStore:
         assert row is not None
         return _definition(row)
 
-    async def edit(self, cmd: EditDraft, ctx: HandlingContext) -> DraftRecord:
+    async def edit(
+        self, cmd: EditDraft | EditCustomEntityDraft, ctx: HandlingContext
+    ) -> DraftRecord | CustomEntityDraftRecord:
         row = await self._row(cmd.definition_id, ctx, locked=True)
         if row is None:
             raise BusinessOSError("not_found", "Metadata definition not found", status_code=404)
+        from .module import EditCustomEntityDraft
+
+        self._surface(row, isinstance(cmd, EditCustomEntityDraft))
         if row["lifecycle"] == DefinitionLifecycle.RETIRED.value:
             raise BusinessOSError("retired", "Retired definition cannot be edited", status_code=409)
         if row["draft_generation"] != cmd.expected_draft_generation:
@@ -231,24 +289,30 @@ class MetadataStore:
         )
         updated = await self._row(cmd.definition_id, ctx)
         assert updated is not None
-        return DraftRecord(
-            definition=_definition(updated),
-            snapshot=DefinitionSnapshot.model_validate(updated["draft_snapshot"]),
-        )
+        return _draft(updated)
 
-    async def read_draft(self, definition_id: UUID, ctx: HandlingContext) -> DraftRecord | None:
+    async def read_draft(
+        self, definition_id: UUID, ctx: HandlingContext, *, custom: bool = False
+    ) -> DraftRecord | CustomEntityDraftRecord | None:
         row = await self._row(definition_id, ctx)
         if row is None or row["lifecycle"] == DefinitionLifecycle.RETIRED.value:
             return None
-        return DraftRecord(
-            definition=_definition(row),
-            snapshot=DefinitionSnapshot.model_validate(row["draft_snapshot"]),
-        )
+        self._surface(row, custom)
+        return _draft(row)
 
-    async def read_active(self, definition_id: UUID, ctx: HandlingContext) -> RevisionRecord | None:
+    async def read_active(
+        self,
+        definition_id: UUID,
+        ctx: HandlingContext,
+        *,
+        custom: bool = False,
+        internal: bool = False,
+    ) -> RevisionRecord | CustomEntityRevisionRecord | None:
         row = await self._row(definition_id, ctx)
         if row is None or row["lifecycle"] != DefinitionLifecycle.PUBLISHED.value:
             return None
+        if not internal:
+            self._surface(row, custom)
         revision_id = row["active_revision_id"]
         if revision_id is None:
             return None
@@ -257,9 +321,18 @@ class MetadataStore:
             raise BusinessOSError(
                 "active_revision_missing", "Active revision unavailable", status_code=409
             )
-        snapshot = DefinitionSnapshot.model_validate(revision["snapshot"])
+        snapshot = internal_snapshot(revision["snapshot"])
         await self._owner_and_dependencies(row, snapshot, ctx)
         return _revision(revision)
+
+    @staticmethod
+    def _surface(row: Mapping[str, Any], custom: bool) -> None:
+        if (row["kind"] == "custom_entity") != custom:
+            raise BusinessOSError(
+                "definition_contract_required",
+                "Use the matching versioned definition contract",
+                status_code=409,
+            )
 
     async def _bindings(
         self, revision_id: UUID | None, ctx: HandlingContext
@@ -295,7 +368,7 @@ class MetadataStore:
         )
         if target_revision_id is not None and revision is None:
             raise BusinessOSError("not_found", "Historical revision unavailable", status_code=404)
-        snapshot = DefinitionSnapshot.model_validate(
+        snapshot = internal_snapshot(
             revision["snapshot"] if revision is not None else row["draft_snapshot"]
         )
         self._validate_snapshot(snapshot, publishing=True)
@@ -429,7 +502,7 @@ class MetadataStore:
             return error
         assert row is not None
         try:
-            snapshot = DefinitionSnapshot.model_validate(row["draft_snapshot"])
+            snapshot = internal_snapshot(row["draft_snapshot"])
             self._validate_snapshot(snapshot, publishing=True)
         except BusinessOSError:
             return _failure(
@@ -522,7 +595,7 @@ class MetadataStore:
                 preflight, PublicationStatus.INCOMPATIBLE_DEPENDENCY, "revision unavailable"
             )
         try:
-            snapshot = DefinitionSnapshot.model_validate(revision["snapshot"])
+            snapshot = internal_snapshot(revision["snapshot"])
             self._validate_snapshot(snapshot, publishing=True)
         except (ValueError, BusinessOSError):
             return _failure(
@@ -562,17 +635,22 @@ class MetadataStore:
             active_generation=next_generation,
         )
 
-    async def retire(self, cmd: RetireDefinition, ctx: HandlingContext) -> DefinitionRecord:
+    async def retire(
+        self, cmd: RetireDefinition | RetireCustomEntityDefinition, ctx: HandlingContext
+    ) -> DefinitionRecord | CustomEntityDefinitionRecord:
         initial = await self._row(cmd.definition_id, ctx)
         if initial is None:
             raise BusinessOSError("not_found", "Metadata definition not found", status_code=404)
-        if initial["kind"] == DefinitionKind.CUSTOM_ENTITY.value:
+        from .module import RetireCustomEntityDefinition
+
+        self._surface(initial, isinstance(cmd, RetireCustomEntityDefinition))
+        if initial["kind"] == "custom_entity":
             tenant_id, _ = _tenant(ctx)
-            # Same first lock as instance mutation and new references. Publication
-            # intentionally does not use it: resolved immutable pins survive races.
+            # Exclusive type coordination pairs with instance shared type locks.
+            # Publication does not use it: resolved immutable pins survive races.
             await ctx.unit_of_work.persistence.execute(
                 text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                {"key": f"metadata-custom-entity:{tenant_id}"},
+                {"key": f"metadata-custom-type:{tenant_id}:{cmd.definition_id}"},
             )
         old_bindings = await self._bindings(initial["active_revision_id"], ctx)
         if old_bindings:

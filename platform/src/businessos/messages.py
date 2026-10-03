@@ -512,9 +512,7 @@ class MessageDispatcher:
             registered = self.commands.resolve(message)
             async with self.commands.admitted(registered):
                 await self._authorize(context, registered.permission)
-                async with self._command_unit_of_work(
-                    registered, type(message), context
-                ) as unit_of_work:
+                async with self._command_unit_of_work(registered, message, context) as unit_of_work:
                     if self._gate is None:
                         async with unit_of_work:
                             transaction = handler_transaction_view(unit_of_work)
@@ -575,9 +573,7 @@ class MessageDispatcher:
             registered = self.queries.resolve(message)
             async with self.queries.admitted(registered):
                 await self._authorize(context, registered.permission)
-                async with self._command_unit_of_work(
-                    registered, type(message), context
-                ) as unit_of_work:
+                async with self._command_unit_of_work(registered, message, context) as unit_of_work:
                     if self._gate is None:
                         async with unit_of_work:
                             transaction = handler_transaction_view(unit_of_work)
@@ -634,15 +630,20 @@ class MessageDispatcher:
     async def _command_unit_of_work(
         self,
         registered: _OwnedHandler,
-        command_type: type[Command | Query],
+        message: Command | Query,
         context: RequestContext,
     ) -> AsyncGenerator[UnitOfWork]:
         if self._protected_database is None or not self._protected_database.requires_protected(
-            registered, command_type
+            registered, type(message)
         ):
             yield self._unit_of_work(context)
             return
-        async with self._protected_database.for_command(
-            registered, command_type, context.tenant
-        ) as unit_of_work:
-            yield unit_of_work
+        admission = getattr(self._protected_database, "for_message", None)
+        if admission is None:
+            async with self._protected_database.for_command(
+                registered, type(message), context.tenant
+            ) as unit_of_work:
+                yield unit_of_work
+        else:
+            async with admission(registered, message, context.tenant) as unit_of_work:
+                yield unit_of_work

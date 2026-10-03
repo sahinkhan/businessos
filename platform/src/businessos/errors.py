@@ -58,6 +58,18 @@ class ConfigurationError(BusinessOSError):
         super().__init__("configuration_error", message, status_code=500)
 
 
+class ProtectedDatabaseCapacityError(BusinessOSError):
+    """One bounded request may retry; valid protected authority remains active."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "protected_database_capacity",
+            "Protected database capacity temporarily unavailable",
+            status_code=503,
+            public=True,
+        )
+
+
 class NotFoundError(BusinessOSError):
     def __init__(self, message: str = "Resource not found") -> None:
         super().__init__("not_found", message, status_code=404)

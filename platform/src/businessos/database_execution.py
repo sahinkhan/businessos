@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import (
 from businessos.activation import ContributionGate, ContributionGeneration
 from businessos.context import TenantContext
 from businessos.dependency_entitlement import internal_valid_restricted_dependency_entitlement
-from businessos.errors import ConfigurationError, NotFoundError
+from businessos.errors import ConfigurationError, NotFoundError, ProtectedDatabaseCapacityError
 from businessos.persistence.uow import SQLAlchemyUnitOfWork, UnitOfWork
 
 if TYPE_CHECKING:
@@ -165,6 +166,25 @@ class ProtectedDatabaseProfiles:
             raise ConfigurationError("Protected execution profile is missing or ambiguous")
         async with matches[0].for_command(registered, command_type, tenant) as unit:
             yield unit
+
+    @asynccontextmanager
+    async def for_message(
+        self,
+        registered: _ProtectedCommandRegistration,
+        message: Command | Query,
+        tenant: TenantContext | None,
+    ) -> AsyncGenerator[UnitOfWork]:
+        matches = [p for p in self._profiles if p.requires_protected(registered, type(message))]
+        if len(matches) != 1:
+            raise ConfigurationError("Protected execution profile is missing or ambiguous")
+        profile = matches[0]
+        admission = getattr(profile, "for_message", None)
+        if admission is None:
+            async with profile.for_command(registered, type(message), tenant) as unit:
+                yield unit
+        else:
+            async with admission(registered, message, tenant) as unit:
+                yield unit
 
 
 class _GovernancePool:
@@ -642,6 +662,8 @@ class _GovernancePool:
                     raise ConfigurationError(
                         "Indirect ordinary Governance mutation remains available"
                     )
+        except PoolTimeout:
+            raise ProtectedDatabaseCapacityError() from None
         except ConfigurationError:
             raise
         except Exception:
@@ -775,6 +797,8 @@ class ProtectedDatabaseExecutionAuthority:
             # readiness checks are disabled or have not yet been requested.
             try:
                 await pool.validate()
+            except ProtectedDatabaseCapacityError:
+                raise
             except Exception:
                 self._active = None
                 if self._leases.get(pool, 0) == 0:
@@ -793,6 +817,8 @@ class ProtectedDatabaseExecutionAuthority:
             self._leases[pool] = self._leases.get(pool, 0) + 1
         try:
             yield pool.for_tenant(tenant)
+        except PoolTimeout:
+            raise ProtectedDatabaseCapacityError() from None
         finally:
             async with self._lock:
                 self._leases[pool] -= 1
@@ -802,6 +828,16 @@ class ProtectedDatabaseExecutionAuthority:
                 retired = pool is not self._active
             if last and retired:
                 await pool.close()
+
+    @asynccontextmanager
+    async def for_message(
+        self,
+        registered: _ProtectedCommandRegistration,
+        message: Command | Query,
+        tenant: TenantContext | None,
+    ) -> AsyncGenerator[UnitOfWork]:
+        async with self.for_command(registered, type(message), tenant) as unit:
+            yield unit
 
     async def validate(self) -> None:
         pool = self._active

@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from businessos.context import TenantContext
+from businessos.database_admission import (
+    internal_database_admission,  # pyright: ignore[reportPrivateUsage] -- private composition
+)
 from businessos.database_execution import (
     ProtectedDatabaseExecutionAuthority,
     _GovernancePool,  # pyright: ignore[reportPrivateUsage] -- private kernel composition reuse
     _normalized_policy,  # pyright: ignore[reportPrivateUsage] -- identical policy normalization
+    _ProtectedCommandRegistration,  # pyright: ignore[reportPrivateUsage] -- private composition
 )
-from businessos.errors import ConfigurationError
+from businessos.errors import ConfigurationError, ProtectedDatabaseCapacityError
 from businessos.persistence.uow import SQLAlchemyUnitOfWork, UnitOfWork
 
 if TYPE_CHECKING:
@@ -43,6 +49,11 @@ _HANDLERS = frozenset(
         "ReadDraft",
         "ReadActiveRevision",
         "PreflightPublication",
+        "CreateCustomEntityDefinition",
+        "EditCustomEntityDraft",
+        "ReadCustomEntityDraft",
+        "ReadActiveCustomEntityRevision",
+        "RetireCustomEntityDefinition",
         "CreateCustomEntity",
         "UpdateCustomEntity",
         "ArchiveCustomEntity",
@@ -256,6 +267,8 @@ class _MetadataPool(_GovernancePool):
                 )
                 if indirect_mutation.first() is not None:
                     raise ConfigurationError("Indirect Metadata mutation remains available")
+        except PoolTimeout:
+            raise ProtectedDatabaseCapacityError() from None
         except ConfigurationError:
             raise
         except Exception:
@@ -285,6 +298,57 @@ class MetadataDatabaseExecutionAuthority(ProtectedDatabaseExecutionAuthority):
         )
 
     @asynccontextmanager
+    async def for_message(
+        self,
+        registered: _ProtectedCommandRegistration,
+        message: Command | Query,
+        tenant: TenantContext | None,
+    ) -> AsyncGenerator[UnitOfWork]:
+        # Exact enrollment is checked again by for_command before any SQL.
+        if not self.requires_protected(registered, type(message)):
+            raise PermissionError("Handler has no protected database execution profile")
+        if tenant is None:
+            raise PermissionError("Trusted tenant required")
+        admission = getattr(self, "_mutation_admission", None)
+        if admission is None:
+            admission = internal_database_admission(timeout=self._pool_timeout)
+            self._mutation_admission = admission
+        keys: set[str] = set()
+        name = type(message).__name__
+        if name in {"CreateCustomEntity", "UpdateCustomEntity", "ArchiveCustomEntity"}:
+            prefix = f"metadata-instance:{tenant.tenant_id}:"
+            if name == "CreateCustomEntity":
+                keys.add(f"metadata-create-quota:{tenant.tenant_id}")
+            else:
+                identity = getattr(message, "instance_id", None)
+                if type(identity) is UUID:
+                    keys.add(prefix + str(identity))
+            # Bounded values are untrusted scheduling hints only. Runtime schema,
+            # tenant/scope/Policy and full canonical references are revalidated.
+            for value in getattr(message, "values", ()):
+                data = value.value
+                if isinstance(data, dict) and "record_id" in data:
+                    try:
+                        keys.add(
+                            prefix + str(UUID(str(cast(Mapping[str, object], data)["record_id"])))
+                        )
+                    except ValueError:
+                        pass
+        if not keys:
+            async with super().for_message(registered, message, tenant) as unit:
+                yield unit
+            return
+        async with admission.admit(frozenset(keys)):
+            async with super().for_message(registered, message, tenant) as unit:
+                yield unit
+
+    async def close(self) -> None:
+        admission = getattr(self, "_mutation_admission", None)
+        if admission is not None:
+            await admission.close()
+        await super().close()
+
+    @asynccontextmanager
     async def internal_schema_read(self, tenant: TenantContext) -> AsyncGenerator[UnitOfWork]:
         """Private tenant-bound READ ONLY composition; never registered in module DI.
 
@@ -297,6 +361,8 @@ class MetadataDatabaseExecutionAuthority(ProtectedDatabaseExecutionAuthority):
                 raise ConfigurationError("Metadata database profile unavailable")
             try:
                 await pool.validate()
+            except ProtectedDatabaseCapacityError:
+                raise
             except Exception:
                 self._active = None
                 if self._leases.get(pool, 0) == 0:
@@ -311,6 +377,8 @@ class MetadataDatabaseExecutionAuthority(ProtectedDatabaseExecutionAuthority):
                 sessions, tenant, expected_database=pool.database_name, expected_user=METADATA_ROLE
             ) as unit:
                 yield unit
+        except PoolTimeout:
+            raise ProtectedDatabaseCapacityError() from None
         finally:
             async with self._lock:
                 self._leases[pool] -= 1
@@ -329,6 +397,8 @@ class MetadataDatabaseExecutionAuthority(ProtectedDatabaseExecutionAuthority):
                 raise ConfigurationError("Metadata database profile unavailable")
             try:
                 await pool.validate()
+            except ProtectedDatabaseCapacityError:
+                raise
             except Exception:
                 self._active = None
                 if self._leases.get(pool, 0) == 0:
@@ -338,6 +408,8 @@ class MetadataDatabaseExecutionAuthority(ProtectedDatabaseExecutionAuthority):
         try:
             async with pool.installation() as unit:
                 yield unit
+        except PoolTimeout:
+            raise ProtectedDatabaseCapacityError() from None
         finally:
             async with self._lock:
                 self._leases[pool] -= 1

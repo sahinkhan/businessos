@@ -23,8 +23,6 @@ from businessos.sdk import (
 
 from .contracts import (
     CanonicalResourceReference,
-    DefinitionKind,
-    DefinitionSnapshot,
     FieldType,
     MetadataLimits,
     ReferenceResolution,
@@ -39,6 +37,7 @@ from .custom_entities import (
     CustomEntityRecord,
     CustomEntityScopeKind,
 )
+from .custom_entity_definitions import CustomEntityDefinitionSnapshot
 from .custom_schema import (
     _PublishedSchema,  # pyright: ignore[reportPrivateUsage] -- same-owner certified grammar reuse
 )
@@ -78,12 +77,49 @@ class CustomEntityStore:
         await authorizer.require(ctx.request, "foundation.metadata.definition.read")
         return tenant_id
 
-    async def _serialize(self, ctx: HandlingContext) -> None:
+    async def _quota_lock(self, ctx: HandlingContext) -> None:
         tenant_id, _ = _tenant(ctx)
         await ctx.unit_of_work.persistence.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-            {"key": f"metadata-custom-entity:{tenant_id}"},
+            {"key": f"metadata-custom-create:{tenant_id}"},
         )
+
+    async def _locks(
+        self, instance_ids: set[UUID], type_ids: set[UUID], ctx: HandlingContext
+    ) -> None:
+        tenant_id, _ = _tenant(ctx)
+        # Complete source/target row set first, stable UUID order across A->B/B->A.
+        if instance_ids:
+            await ctx.unit_of_work.persistence.execute(
+                select(CUSTOM_ENTITIES.c.id)
+                .where(
+                    CUSTOM_ENTITIES.c.tenant_id == tenant_id, CUSTOM_ENTITIES.c.id.in_(instance_ids)
+                )
+                .order_by(CUSTOM_ENTITIES.c.id)
+                .with_for_update()
+            )
+            rows = await ctx.unit_of_work.persistence.execute(
+                select(CUSTOM_ENTITIES.c.definition_id).where(
+                    CUSTOM_ENTITIES.c.tenant_id == tenant_id, CUSTOM_ENTITIES.c.id.in_(instance_ids)
+                )
+            )
+            type_ids.update(rows.scalars())
+        for identity in sorted(type_ids):
+            await ctx.unit_of_work.persistence.execute(
+                text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:key, 0))"),
+                {"key": f"metadata-custom-type:{tenant_id}:{identity}"},
+            )
+
+    @staticmethod
+    def _reference_ids(values: Mapping[str, object]) -> set[UUID]:
+        ids: set[UUID] = set()
+        for value in values.values():
+            if isinstance(value, dict) and "record_id" in value:
+                try:
+                    ids.add(UUID(str(cast(Mapping[str, object], value)["record_id"])))
+                except ValueError:
+                    pass
+        return ids
 
     def _scope(self, row: Mapping[str, Any], ctx: HandlingContext) -> None:
         tenant = ctx.request.tenant
@@ -101,7 +137,7 @@ class CustomEntityStore:
                     select(DEFINITIONS).where(
                         DEFINITIONS.c.tenant_id == tenant_id,
                         DEFINITIONS.c.id == definition_id,
-                        DEFINITIONS.c.kind == DefinitionKind.CUSTOM_ENTITY.value,
+                        DEFINITIONS.c.kind == "custom_entity",
                         DEFINITIONS.c.resource_namespace == CUSTOM_ENTITY_NAMESPACE,
                         DEFINITIONS.c.owner_module_id == "foundation.metadata",
                         DEFINITIONS.c.owner_contract_version == "1",
@@ -115,9 +151,9 @@ class CustomEntityStore:
             raise BusinessOSError("not_found", "Custom entity type unavailable", status_code=404)
         return cast(Mapping[str, Any], row)
 
-    def _schema(self, snapshot: object, digest: str) -> DefinitionSnapshot:
-        schema = DefinitionSnapshot.model_validate(snapshot)
-        if schema.kind is not DefinitionKind.CUSTOM_ENTITY or schema.digest() != digest:
+    def _schema(self, snapshot: object, digest: str) -> CustomEntityDefinitionSnapshot:
+        schema = CustomEntityDefinitionSnapshot.model_validate(snapshot)
+        if schema.kind.value != "custom_entity" or schema.digest() != digest:
             raise BusinessOSError("custom_schema_invalid", "Immutable custom entity pin invalid")
         schema.validate_limits(self._metadata_limits)
         if any(f.classification_ref is not None for f in schema.fields):
@@ -172,7 +208,7 @@ class CustomEntityStore:
         return await self._revision(definition_id, definition["active_revision_id"], ctx)
 
     def _values(
-        self, schema: DefinitionSnapshot, values: Mapping[str, object], tenant_id: UUID
+        self, schema: CustomEntityDefinitionSnapshot, values: Mapping[str, object], tenant_id: UUID
     ) -> tuple[str, tuple[CanonicalResourceReference, ...]]:
         schema.validate_limits(self._metadata_limits)
         fields = {str(f.field_id): f for f in schema.fields}
@@ -392,7 +428,8 @@ class CustomEntityStore:
         tenant = ctx.request.tenant
         assert tenant is not None
         scope_id = cmd.scope_kind.trusted_id(tenant)
-        await self._serialize(ctx)
+        await self._quota_lock(ctx)
+        await self._locks(self._reference_ids(values), {cmd.entity_type_id}, ctx)
         revision = await self._active(cmd.entity_type_id, ctx)
         document, references = self._values(
             self._schema(revision["snapshot"], revision["digest"]), values, tenant_id
@@ -449,7 +486,7 @@ class CustomEntityStore:
         payload = cmd.model_dump(mode="json")
         values = {str(v["field_id"]): v["value"] for v in payload.get("values", [])}
         await self._admit(cmd.instance_id, ctx, writing=True)
-        await self._serialize(ctx)
+        await self._locks({cmd.instance_id, *self._reference_ids(values)}, set(), ctx)
         row = await self._row(cmd.instance_id, ctx, locked=True)
         if row["lifecycle"] != "current":
             raise BusinessOSError(

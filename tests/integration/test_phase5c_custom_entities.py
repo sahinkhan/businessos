@@ -13,23 +13,23 @@ import pytest_asyncio
 from businessos_metadata import MetadataModule
 from businessos_metadata.contracts import (
     CanonicalResourceReference,
-    DefinitionSnapshot,
     FieldDefinition,
     ReferenceState,
 )
 from businessos_metadata.custom_entities import CUSTOM_ENTITY_NAMESPACE, CustomEntityLimits
+from businessos_metadata.custom_entity_definitions import CustomEntityDefinitionSnapshot
 from businessos_metadata.custom_entity_store import CustomEntityStore
 from businessos_metadata.module import (
     ArchiveCustomEntity,
     CreateCustomEntity,
-    CreateDefinition,
-    EditDraft,
+    CreateCustomEntityDefinition,
+    EditCustomEntityDraft,
     ExportCustomEntity,
     ListCustomEntities,
     PreflightPublication,
     PublishDefinition,
     ReadCustomEntity,
-    RetireDefinition,
+    RetireCustomEntityDefinition,
     UpdateCustomEntity,
 )
 from psycopg import sql
@@ -250,7 +250,9 @@ async def test_type_retirement_preserves_pin_read_export_archive(entity_harness:
     app, context, _, field, identity = entity_harness
     row = await _create(entity_harness)
     await _command(
-        app, RetireDefinition(definition_id=identity, expected_active_generation=1), context
+        app,
+        RetireCustomEntityDefinition(definition_id=identity, expected_active_generation=1),
+        context,
     )
     assert (
         await _query(app, ReadCustomEntity(instance_id=row.identity.instance_id), context)
@@ -302,10 +304,12 @@ async def test_publication_race_commits_resolved_immutable_pin(
         )
         await _command(
             app,
-            EditDraft(
+            EditCustomEntityDraft(
                 definition_id=identity,
                 expected_draft_generation=1,
-                snapshot=DefinitionSnapshot(kind="custom_entity", fields=(replacement,)),
+                snapshot=CustomEntityDefinitionSnapshot(
+                    kind="custom_entity", fields=(replacement,)
+                ),
             ),
             context,
         )
@@ -342,11 +346,11 @@ async def test_publication_race_commits_resolved_immutable_pin(
 async def _type(app: Any, context: RequestContext, field: FieldDefinition) -> UUID:
     created = await _command(
         app,
-        CreateDefinition(
+        CreateCustomEntityDefinition(
             resource_namespace=CUSTOM_ENTITY_NAMESPACE,
             owner_contract_version="1",
             kind="custom_entity",
-            snapshot=DefinitionSnapshot(kind="custom_entity", fields=(field,)),
+            snapshot=CustomEntityDefinitionSnapshot(kind="custom_entity", fields=(field,)),
         ),
         context,
     )
@@ -527,8 +531,8 @@ async def test_same_owner_reference_archive_race_and_retained_diagnostics(
                 update={"record_id": company_target.identity.instance_id}
             ).model_dump(mode="json")
         )
-    validated, release, archive_attempt = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    original_refs, original_serialize = CustomEntityStore._references, CustomEntityStore._serialize
+    validated, release = asyncio.Event(), asyncio.Event()
+    original_refs = CustomEntityStore._references
     paused = False
 
     async def references(self: CustomEntityStore, refs: Any, ctx: Any, *, writing: bool) -> Any:
@@ -540,13 +544,7 @@ async def test_same_owner_reference_archive_race_and_retained_diagnostics(
             await release.wait()
         return result
 
-    async def serialize(self: CustomEntityStore, ctx: Any) -> None:
-        if validated.is_set():
-            archive_attempt.set()
-        await original_serialize(self, ctx)
-
     monkeypatch.setattr(CustomEntityStore, "_references", references)
-    monkeypatch.setattr(CustomEntityStore, "_serialize", serialize)
     writer = asyncio.create_task(create_ref(reference.model_dump(mode="json")))
     archiver: asyncio.Task[Any] | None = None
     try:
@@ -558,12 +556,21 @@ async def test_same_owner_reference_archive_race_and_retained_diagnostics(
                 context,
             )
         )
-        await asyncio.wait_for(archive_attempt.wait(), 10)
+        authority = app.runtime.messages._protected_database._profiles[1]
+        admission = authority._mutation_admission
+        async with admission._condition:
+            await asyncio.wait_for(
+                admission._condition.wait_for(lambda: len(admission._tickets) == 2), 10
+            )
+        # Same target is queued before checkout; only the slow writer owns capacity.
+        assert authority._active.engine.pool.checkedout() == 1
         with psycopg.connect(_url(postgres_database.migration_url)) as db:
-            assert db.execute(
-                "SELECT pg_try_advisory_xact_lock(hashtextextended(%s,0))",
-                (f"metadata-custom-entity:{context.tenant.tenant_id}",),
-            ).fetchone() == (False,)
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                db.execute(
+                    "SELECT id FROM platform_metadata.custom_entities "
+                    "WHERE id=%s FOR UPDATE NOWAIT",
+                    (target.identity.instance_id,),
+                )
         assert not archiver.done()
         release.set()
         source = await asyncio.wait_for(writer, 15)
@@ -780,11 +787,11 @@ async def test_draft_classification_and_definition_quota_fail_closed(
     app, context, _, field, _ = entity_harness
     draft = await _command(
         app,
-        CreateDefinition(
+        CreateCustomEntityDefinition(
             resource_namespace=CUSTOM_ENTITY_NAMESPACE,
             owner_contract_version="1",
             kind="custom_entity",
-            snapshot=DefinitionSnapshot(kind="custom_entity", fields=(field,)),
+            snapshot=CustomEntityDefinitionSnapshot(kind="custom_entity", fields=(field,)),
         ),
         context,
     )
@@ -797,11 +804,11 @@ async def test_draft_classification_and_definition_quota_fail_closed(
     )
     sensitive = await _command(
         app,
-        CreateDefinition(
+        CreateCustomEntityDefinition(
             resource_namespace=CUSTOM_ENTITY_NAMESPACE,
             owner_contract_version="1",
             kind="custom_entity",
-            snapshot=DefinitionSnapshot(kind="custom_entity", fields=(classified,)),
+            snapshot=CustomEntityDefinitionSnapshot(kind="custom_entity", fields=(classified,)),
         ),
         context,
     )
@@ -811,17 +818,17 @@ async def test_draft_classification_and_definition_quota_fail_closed(
         )
     # Publication and retained-use gates independently reject classified schemas.
     module = app.runtime.modules.get("foundation.metadata").module
-    classified_snapshot = DefinitionSnapshot(kind="custom_entity", fields=(classified,))
+    classified_snapshot = CustomEntityDefinitionSnapshot(kind="custom_entity", fields=(classified,))
     with pytest.raises(BusinessOSError, match="classification"):
         module._entities._schema(
             classified_snapshot.model_dump(mode="json"), classified_snapshot.digest()
         )
     monkeypatch.setattr(module._store, "_limits", MetadataLimits(max_definitions_per_tenant=4))
-    command = CreateDefinition(
+    command = CreateCustomEntityDefinition(
         resource_namespace=CUSTOM_ENTITY_NAMESPACE,
         owner_contract_version="1",
         kind="custom_entity",
-        snapshot=DefinitionSnapshot(kind="custom_entity", fields=(field,)),
+        snapshot=CustomEntityDefinitionSnapshot(kind="custom_entity", fields=(field,)),
     )
     results = await asyncio.gather(
         _command(app, command, context), _command(app, command, context), return_exceptions=True
@@ -838,7 +845,7 @@ async def test_retained_classified_pin_never_leaks_or_allows_mutation(
     app, context, _, field, identity = entity_harness
     row = await _create(entity_harness)
     assert context.tenant is not None
-    classified = DefinitionSnapshot(
+    classified = CustomEntityDefinitionSnapshot(
         kind="custom_entity",
         fields=(
             field.model_copy(

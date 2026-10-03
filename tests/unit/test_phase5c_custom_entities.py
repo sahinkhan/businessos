@@ -10,8 +10,6 @@ import pytest
 from businessos_metadata import MetadataModule
 from businessos_metadata.contracts import (
     Comparison,
-    DefinitionKind,
-    DefinitionSnapshot,
     FieldDefinition,
     FieldType,
     MetadataLimits,
@@ -22,6 +20,7 @@ from businessos_metadata.custom_entities import (
     CustomEntityQueryCapabilities,
     CustomEntityScopeKind,
 )
+from businessos_metadata.custom_entity_definitions import CustomEntityDefinitionSnapshot
 from businessos_metadata.custom_entity_store import CustomEntityStore
 from businessos_metadata.module import (
     ArchiveCustomEntity,
@@ -98,7 +97,7 @@ def test_values_reuse_certified_literal_grammar(
         nullable=False,
         **settings,
     )
-    snapshot = DefinitionSnapshot(kind=DefinitionKind.CUSTOM_ENTITY, fields=(field,))
+    snapshot = CustomEntityDefinitionSnapshot(fields=(field,))
     validate = _validator()
     assert validate(snapshot, {str(field.field_id): good}, uuid4())[0]
     with pytest.raises((BusinessOSError, ValueError)):
@@ -253,7 +252,7 @@ def test_document_rejects_non_literals(value: Any) -> None:
     field = FieldDefinition(
         field_id=uuid4(), name="value", value_type=FieldType.TEXT, nullable=False
     )
-    snapshot = DefinitionSnapshot(kind=DefinitionKind.CUSTOM_ENTITY, fields=(field,))
+    snapshot = CustomEntityDefinitionSnapshot(fields=(field,))
     validate = _validator()
     with pytest.raises((BusinessOSError, ValueError)):
         validate(snapshot, {str(field.field_id): value}, uuid4())
@@ -269,8 +268,7 @@ def test_reference_conditional_rule_and_document_reference_budgets() -> None:
         reference_namespace="foundation.metadata.custom_entity",
         reference_contract_version="1",
     )
-    snapshot = DefinitionSnapshot(
-        kind=DefinitionKind.CUSTOM_ENTITY,
+    snapshot = CustomEntityDefinitionSnapshot(
         fields=(label, reference),
         rules=(
             ValidationRule(

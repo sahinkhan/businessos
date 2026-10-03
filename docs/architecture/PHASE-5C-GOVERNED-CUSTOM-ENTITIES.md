@@ -1,8 +1,8 @@
-# Phase 5C — Governed Custom Entities
+# Phase 5C â€” Governed Custom Entities
 
 Status: **Phase 5C implementation candidate**. Independent audit, personal
 exact-SHA owner acceptance, guarded merge and post-merge certification remain
-required. Phase 5 overall is incomplete; Phase 5D–5H are not authorized by this
+required. Phase 5 overall is incomplete; Phase 5Dâ€“5H are not authorized by this
 document.
 
 Certified starting point: `c4e48ca365338f8142d06525f64aec39ac39e554`.
@@ -18,9 +18,21 @@ identified by its immutable Metadata definition UUID, never its label, translati
 route or field names. Customer types do not register modules, wildcard ownership or
 new resource namespaces. Party storage is not used.
 
-The additive `DefinitionKind.CUSTOM_ENTITY` reuses the Phase 5A `DefinitionSnapshot`,
-`FieldDefinition`, `FieldType`, `ValidationRule`, publication lifecycle and digest
-contracts. The definition UUID already supplies the additional type identity.
+The frozen Phase 5A definition v1 contract and its `DefinitionKind` remain
+byte-identical to protected base: only `field_set` and `reference_set` are public
+v1 kinds. Custom types use the independently versioned
+`foundation.metadata.custom-entity-definition.v1` contract (`1.0`), including
+`CustomEntityDefinitionSnapshot`, identity, definition/draft/revision records and
+dedicated create/edit/read/retire commands and queries. Their envelope reuses the
+certified `FieldDefinition`, `FieldType`, `ValidationRule`, consistency validator,
+publication lifecycle and digest algorithm; there is no second field grammar.
+Internal persisted kind remains `custom_entity`. Old create cannot represent that
+kind; old edit/read/retire surfaces reject custom types with an explicit
+`definition_contract_required` result. Shared publish/reactivate/preflight contracts
+carry opaque IDs/generations and no kind/snapshot, so their existing logic remains
+shared. Unsupported new-surface versions are rejected at the boundary. This is an
+additive coexistence implementation under ADR-023 and RELEASES.md; no frozen
+consumer is required to migrate or receive a new enum value. The definition UUID already supplies the additional type identity.
 A partial unique index keeps the existing `(tenant_id, resource_namespace, kind)`
 uniqueness for every ordinary definition. Only `custom_entity` definitions in the
 exact Metadata family are exempt. A database check enforces that family/kind
@@ -126,7 +138,9 @@ cross-owner cascade, restrict or nullify behavior.
 ## Queries, budgets and concurrency
 
 Supported queries are one-by-ID and exact type/scope lists, ordered by immutable
-instance UUID with an exclusive `after` UUID cursor. Pagination is server bounded.
+instance UUID with an exclusive `after` UUID cursor. Pagination is server bounded. Archived rows are included by default, participate
+in pagination and return lifecycle in each record. They remain immutable and
+exportable under Policy. No lifecycle filter is currently supported.
 Indexes cover `(tenant, type, scope kind, scope ID, ID)` and
 `(tenant, type, lifecycle, ID)`. Query capabilities explicitly declare arbitrary
 custom-field filtering/sorting, search, uniqueness and analytics unsupported.
@@ -140,24 +154,36 @@ default to 1,000 definitions per tenant (ordinary and custom combined), 128 fiel
 configuration, not commercial pricing tiers. The database has an independent
 1 MiB physical JSONB ceiling.
 
-All instance mutations first acquire the transaction-scoped tenant advisory lock
-`metadata-custom-entity:<tenant UUID>`, then lock an existing source row, then resolve
-immutable schema and reference facts. Reference UUIDs are sorted before the bounded
-lookup. Custom-type retirement acquires the same tenant lock before the existing
-module-fence and definition locks. Definition creation retains the certified
-definition-quota serialization. Publication keeps its existing fence locks and
-does not take the instance advisory lock or silently reinterpret resolved pins.
-No instance path takes a definition row lock, avoiding an inverted lock order.
+Create/quota admission is serialized per tenant before protected DB checkout.
+The database create-only tenant advisory lock independently preserves quota safety
+across processes; archived instances continue to count. Updates and archives have
+no tenant-global mutation lock. Private bounded keyed admission queues overlapping
+source/target UUID sets before checkout, while unrelated records/types and tenants
+progress independently. A maximum of 4,096 active/waiting tickets and the configured
+bounded admission timeout limit memory/waiting. Tickets are removed on success,
+failure and cancellation; shutdown closes admission and wakes queued requests.
+Overlapping key sets use FIFO ordering; no claim of global mathematical fairness
+is made. Admission is only a scheduling hint and grants no tenant/Policy authority.
 
-Tenant serialization makes instance quotas atomic and orders reference creation
-against target archive/type retirement. A new reference cannot commit after a
-target ceased being referenceable before its commit. PostgreSQL race probes verify
-the contested advisory lock. Version conflicts have one winner and one typed
-loser, followed by an explicit retry; values, Audit and outbox commit once.
+The transaction locks the complete source/target instance set in stable UUID order
+before taking sorted type-specific shared advisory locks. Custom-type retirement
+takes the matching exclusive type lock before the existing module/definition locks.
+This coordinates instance writes/references with target archive and type retirement
+without blocking unrelated types. Publication deliberately does not take those
+locks: a resolved immutable revision R remains the write pin while publication
+advances to R+1. Deterministic race tests cover both outcomes and explicit retries.
+
+Protected pool checkout capacity timeout returns typed
+`protected_database_capacity` (503), affecting only the bounded request. It never
+revokes the healthy active profile or closes its pool. Later requests automatically
+recover when capacity returns. Cancellation similarly releases queue/lease state.
+Actual identity, credential, role, grant, RLS or generation validation failures still
+fail closed with existing profile invalidation semantics; no checks are waived.
+The common runtime correction applies to Governance and Metadata.
 
 ## Protected execution, RLS and evidence
 
-Only six exact Metadata command/query classes are added to the existing private
+Six instance and five custom-definition command/query classes are added to the existing private
 protected execution allowlist. The protected table inventory adds only
 `platform_metadata.custom_entities` with SELECT/INSERT/UPDATE. The role retains
 NOSUPERUSER/NOCREATEDB/NOCREATEROLE/NOINHERIT/NOBYPASSRLS, nonownership and exact
@@ -199,4 +225,4 @@ Per-record export preserves stable identity, owner, lifecycle, provenance and
 schema facts. Phase 5C does not implement full `retention-policy.v2`,
 `purge-authority.v2`, bulk tenant export, anonymization, legal-hold orchestration,
 runtime customer DDL, global EAV, cross-owner destructive semantics, dynamic UI,
-Studio, executable metadata, workflow/rules, search/analytics or Phase 5D–5H.
+Studio, executable metadata, workflow/rules, search/analytics or Phase 5Dâ€“5H.

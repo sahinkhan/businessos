@@ -1,8 +1,39 @@
 # Phase 5B Party custom fields
 
-Status: **Phase 5B implementation candidate**. Independent certification and owner
-acceptance remain required. Phase 5A remains certified, closed and frozen; Phase 5
-remains incomplete. Phase 5C–5H are not implemented or authorized by this candidate.
+Status: **Phase 5B CERTIFIED / CLOSED / FROZEN**. Phase 5A remains
+CERTIFIED / CLOSED / FROZEN; Phase 4.5 remains FINAL PASS / CERTIFIED / FROZEN.
+Phase 5C is AUTHORIZED TO BEGIN for governed custom entities only, subject to the
+[reconciliation certification gate](../roadmap/PHASE-5-METADATA-STUDIO-DYNAMIC-UI.md#phase-5c-authorization-boundary).
+Phase 5 overall is INCOMPLETE; Phase 5D–5H remain unauthorized and uncertified.
+
+## Phase 5B certification provenance
+
+Phase 5B is **CERTIFIED / CLOSED / FROZEN** on protected `main` at
+`b93c227a95adc683e0880d5ddc4bc710594683d0`, following [PR #63](https://github.com/sahinkhan/businessos/pull/63).
+The certification sequence distinguishes the original candidate and failed audit
+from the accepted remediation and completed post-merge certification:
+
+| Stage | Exact evidence |
+| --- | --- |
+| Original implementation candidate | `e02a427bce8df3627d340e84cc9ea362aa16eba3`, based on `64889d369dd5f3796d13f43260f87a74d37fbb5e` |
+| Original exact-head CI | [36980442434](https://github.com/sahinkhan/businessos/actions/runs/36980442434) — SUCCESS |
+| Original independent implementation audit | FAIL — Critical 0 / High 2 / Medium 0 / Low 0 |
+| Original H1 blocker | Raw-handler Party custom-value authority bypass |
+| Original H2 blocker | SDK-reachable Metadata protected execution authority exposure |
+| Remediation candidate | `0db5a10e82e712f93abcde6253e79cb1f2300e96` |
+| Remediation parent | `e02a427bce8df3627d340e84cc9ea362aa16eba3` |
+| Remediation tree | `fed2ddfa6b2d4dd88cbcaefb1945a15725a36f64` |
+| Fresh remediation exact-head CI | [37051035889](https://github.com/sahinkhan/businessos/actions/runs/37051035889) — SUCCESS |
+| Fresh independent remediation re-audit | PHASE 5B REMEDIATION INDEPENDENT RE-AUDIT — PASS; Critical 0 / High 0 / Medium 0 / Low 0; H1 and H2 resolved |
+| Personal Solo Maintainer owner attestation | [@sahinkhan, PR #63 comment 5966216066](https://github.com/sahinkhan/businessos/pull/63#issuecomment-5966216066), approving the exact remediation SHA and recording the independent re-audit |
+| Guarded merge / certified checkpoint | `b93c227a95adc683e0880d5ddc4bc710594683d0`; direct parents `64889d369dd5f3796d13f43260f87a74d37fbb5e` and `0db5a10e82e712f93abcde6253e79cb1f2300e96`; tree equals the remediation tree |
+| Post-merge certification CI | [37102510942](https://github.com/sahinkhan/businessos/actions/runs/37102510942) — SUCCESS on the guarded merge SHA |
+
+The fresh exact-head and post-merge CI each passed `web-quality`, `python-quality`,
+and `windows-typing`. The owner attestation states independent human review was
+NOT PERFORMED and independent technical audit was PERFORMED. The original green
+CI did not approve the failed original candidate; certification applies to the
+remediation preserved by the guarded merge. No historical migration was rewritten.
 
 ## Ownership and compatibility
 
@@ -120,7 +151,11 @@ one typed owner document, not a general tenant export implementation. Physical
 purge remains governed separately by ADR-017.
 
 No custom entities, dynamic UI, Studio, arbitrary owner enrollment, workflow,
-menus/actions, analytics or later-phase runtime is introduced. This candidate
-requires repository quality gates, PostgreSQL adversarial/concurrency tests,
-migration/source-wheel/image verification, exact-head CI, a fresh independent
-audit, personal exact-SHA owner acceptance and a separate guarded merge.
+menus/actions, analytics or later-phase runtime was introduced by Phase 5B. Its
+historical implementation-candidate gates are completed: repository quality,
+PostgreSQL adversarial/concurrency tests, migration/source-wheel/image verification,
+fresh exact-head CI, independent remediation re-audit, personal exact-SHA owner
+acceptance, guarded merge and successful post-merge CI. The certified runtime
+architecture above remains frozen. Phase 5C authorization does not expand these
+Party capabilities or authorize use of Party ordinary-value tables for custom
+entities; Phase 5C coding remains gated on reconciliation certification.

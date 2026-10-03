@@ -1,6 +1,6 @@
 # Metadata, Studio and Dynamic UI Architecture
 
-Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) ACCEPTED / authoritative Phase 5 architecture; Phase 5A CERTIFIED / CLOSED / FROZEN; Phase 5B AUTHORIZED TO BEGIN; Phase 5 overall INCOMPLETE.
+Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) ACCEPTED / authoritative Phase 5 architecture; Phase 5A CERTIFIED / CLOSED / FROZEN; Phase 5B CERTIFIED / CLOSED / FROZEN; Phase 5C AUTHORIZED TO BEGIN subject to the [reconciliation certification gate](../roadmap/PHASE-5-METADATA-STUDIO-DYNAMIC-UI.md#phase-5c-authorization-boundary); Phase 5 overall INCOMPLETE. Phase 5D–5H remain unauthorized and uncertified.
 
 ## Boundary map
 
@@ -12,7 +12,7 @@ Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-
 | Policy / Identity / Organization / Data Governance / Audit | Their accepted authority and evidence contracts | Authority delegated to metadata or browser presentation |
 | Phase 4.5 frontend | Shell, routes/navigation contributions, design system, form/table primitives, scope and permission presentation | Metadata persistence or backend authorization |
 
-Phase 5A now provides the certified Metadata definition foundation, including persistent definitions/revisions, publication lifecycle, protected execution, compatibility fencing, tenant isolation, Audit/outbox integration and bounded public contracts. Phase 5B–5H remain separate future batches; ordinary-record custom values, custom entities, dynamic rendering and Studio are not certified by Phase 5A. This architecture preserves [kernel responsibilities](KERNEL-RESPONSIBILITIES.md), [module ownership](MODULES.md), [database rules](DATABASE.md), [upgrades](UPGRADES.md), [frontend contracts](FRONTEND.md) and the [Phase 4.5 browser adapter](PHASE-4.5-BROWSER-ADAPTER.md). The kernel `MetadataRegistry` remains generic registration infrastructure and is not the database-backed customer store.
+Phase 5A now provides the certified Metadata definition foundation, including persistent definitions/revisions, publication lifecycle, protected execution, compatibility fencing, tenant isolation, Audit/outbox integration and bounded public contracts. Phase 5B now certifies the bounded Party ordinary-record custom-value adapter described in its [certification provenance](PHASE-5B-PARTY-CUSTOM-FIELDS.md#phase-5b-certification-provenance). Phase 5C–5H remain separate uncertified batches; custom entities, dynamic rendering and Studio are not implemented or certified by Phase 5A/5B. Phase 5C has only the bounded authorization and reconciliation certification gate recorded in the roadmap. This architecture preserves [kernel responsibilities](KERNEL-RESPONSIBILITIES.md), [module ownership](MODULES.md), [database rules](DATABASE.md), [upgrades](UPGRADES.md), [frontend contracts](FRONTEND.md) and the [Phase 4.5 browser adapter](PHASE-4.5-BROWSER-ADAPTER.md). The kernel `MetadataRegistry` remains generic registration infrastructure and is not the database-backed customer store.
 
 ## Write and read paths
 

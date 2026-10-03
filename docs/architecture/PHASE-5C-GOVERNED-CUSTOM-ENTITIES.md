@@ -1,8 +1,8 @@
-# Phase 5C â€” Governed Custom Entities
+# Phase 5C — Governed Custom Entities
 
 Status: **Phase 5C implementation candidate**. Independent audit, personal
 exact-SHA owner acceptance, guarded merge and post-merge certification remain
-required. Phase 5 overall is incomplete; Phase 5Dâ€“5H are not authorized by this
+required. Phase 5 overall is incomplete; Phase 5D–5H are not authorized by this
 document.
 
 Certified starting point: `c4e48ca365338f8142d06525f64aec39ac39e554`.
@@ -225,4 +225,4 @@ Per-record export preserves stable identity, owner, lifecycle, provenance and
 schema facts. Phase 5C does not implement full `retention-policy.v2`,
 `purge-authority.v2`, bulk tenant export, anonymization, legal-hold orchestration,
 runtime customer DDL, global EAV, cross-owner destructive semantics, dynamic UI,
-Studio, executable metadata, workflow/rules, search/analytics or Phase 5Dâ€“5H.
+Studio, executable metadata, workflow/rules, search/analytics or Phase 5D–5H.

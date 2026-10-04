@@ -20,6 +20,7 @@ from businessos.dependencies import (
     EVENT_PUBLISHER,
     INSTALLATION_ID,
     MESSAGE_DISPATCHER,
+    METADATA_CATALOG,
     OBJECT_STORAGE,
     OBJECT_STORAGE_DELETE,
     OBJECT_STORAGE_FENCED,
@@ -37,7 +38,7 @@ from businessos.http.middleware import MiddlewareRegistry
 from businessos.jobs import JobHandlerRegistry
 from businessos.logging import configure_logging
 from businessos.messages import EventBus, MessageDispatcher
-from businessos.metadata import MetadataRegistry
+from businessos.metadata import MetadataCatalog, MetadataRegistry
 from businessos.metadata_execution import MetadataDatabaseExecutionAuthority
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import (
@@ -186,6 +187,10 @@ def create_application(
     )
     contracts = ContractRegistry(contributions)
     metadata = MetadataRegistry(contributions)
+    metadata_catalog = MetadataCatalog(metadata)
+    container.register(
+        METADATA_CATALOG, lambda _: metadata_catalog, scope=DependencyScope.SINGLETON
+    )
     permissions = PermissionRegistry(contributions)
     providers = ProviderRegistry(contributions)
     provider_dependencies = {

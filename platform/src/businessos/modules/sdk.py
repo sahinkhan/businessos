@@ -243,7 +243,15 @@ class ModuleRegistration:
 
     def metadata(self, declaration: MetadataDeclaration) -> None:
         self._ensure_open()
-        self._metadata.add(self.owner, declaration, generation=self.generation)
+        self._metadata.add(
+            self.owner,
+            declaration,
+            generation=self.generation,
+            module_version=self._manifest.version if self._manifest is not None else "",
+            dependencies=tuple((d.module_id, d.version) for d in self._manifest.dependencies)
+            if self._manifest is not None
+            else (),
+        )
 
     def permission(self, declaration: PermissionDeclaration) -> None:
         self._ensure_open()

@@ -71,6 +71,13 @@ class ContributionGate:
     def state(self, generation: ContributionGeneration) -> ContributionState:
         return self._state(generation).lifecycle
 
+    def active_generation(self, owner: str) -> ContributionGeneration:
+        """Resolve exactly one currently admitted generation, never a first match."""
+        matches = tuple(g for g in self._states if g.owner == owner and self.is_active(g))
+        if len(matches) != 1:
+            raise NotFoundError("Module dependency is not uniquely active")
+        return matches[0]
+
     @asynccontextmanager
     async def admit(self, generation: ContributionGeneration | None) -> AsyncGenerator[None]:
         if generation is None:

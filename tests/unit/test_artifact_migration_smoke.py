@@ -69,7 +69,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert plan.heads == (
         "geography_0003",
         "identity_0005",
-        "metadata_0002_custom_entities",
+        "metadata_0003_ui_overlays",
         "organization_0003",
         "party_0003_custom_fields",
         "policy_0005",
@@ -119,6 +119,7 @@ def test_artifact_graph_preserves_all_certified_branches() -> None:
     assert parents["gov_0005"] == ("gov_0004",)
     assert parents["metadata_0001"] == ("gov_0005", "0007_metadata_outbox", "audit_0006")
     assert parents["metadata_0002_custom_entities"] == ("metadata_0001",)
+    assert parents["metadata_0003_ui_overlays"] == ("metadata_0002_custom_entities",)
     assert parents["audit_0006"] == ("audit_0005",)
     assert parents["0007_metadata_outbox"] == ("0006_governance_outbox",)
     assert parents["0006_governance_outbox"] == ("0005_durable_event_subscribers",)
@@ -301,7 +302,7 @@ def test_database_heads_must_equal_all_expected_heads(change: str) -> None:
     plan = smoke._expected_plan()
     heads = set(plan.heads)
     if change == "missing":
-        heads.remove("metadata_0002_custom_entities")
+        heads.remove("metadata_0003_ui_overlays")
     elif change == "rogue":
         heads.add("rogue_0001")
     else:

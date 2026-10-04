@@ -53,6 +53,7 @@ from .models import (
     PARTY_RELATIONSHIPS,
     PERSON_PROFILES,
 )
+from .ui_declarations import published_ui_declarations
 
 
 class CreatePersonParty(Command):
@@ -246,6 +247,8 @@ class PartyModule:
         self.duplicate_match_contract = PartyDuplicateMatchContract()
 
     async def register(self, registration: ModuleRegistration) -> None:
+        for declaration in published_ui_declarations():
+            registration.metadata(declaration)
         registration.contract("foundation.party.sensitive-read.v1", self.sensitive_read_contract)
         registration.contract("foundation.party.full-read.v2", self.full_read_v2_contract)
         registration.contract("foundation.party.duplicate-match.v1", self.duplicate_match_contract)

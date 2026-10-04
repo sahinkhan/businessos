@@ -22,7 +22,9 @@ BASE_HEADS = {
     "proof_0004",
     "tenant_0002",
 }
-CANDIDATE_HEADS = (BASE_HEADS - {"metadata_0002_custom_entities"}) | {"metadata_0004_ui_bindings"}
+CANDIDATE_HEADS = (BASE_HEADS - {"metadata_0002_custom_entities"}) | {
+    "metadata_0005_ui_binding_seals"
+}
 
 
 def test_certified_base_retained_upgrade_replay_and_empty_downgrade(
@@ -47,11 +49,13 @@ def test_certified_base_retained_upgrade_replay_and_empty_downgrade(
         ).fetchone() == (None,)
         connection.execute(
             "UPDATE platform_module.installed_module_migrations SET "
-            "revision_ids=revision_ids-'metadata_0003_ui_overlays'-'metadata_0004_ui_bindings', "
+            "revision_ids=revision_ids-'metadata_0003_ui_overlays'"
+            "-'metadata_0004_ui_bindings'-'metadata_0005_ui_binding_seals', "
             "revision_manifest=(SELECT jsonb_agg(value) FROM "
             "jsonb_array_elements(revision_manifest) WHERE "
             "value->>'revision' NOT IN "
-            "('metadata_0003_ui_overlays','metadata_0004_ui_bindings')) WHERE "
+            "('metadata_0003_ui_overlays','metadata_0004_ui_bindings',"
+            "'metadata_0005_ui_binding_seals')) WHERE "
             "module_id='foundation.metadata'"
         )
         assert connection.execute(
@@ -85,7 +89,12 @@ def test_certified_base_retained_upgrade_replay_and_empty_downgrade(
             ).fetchall()
             == retained
         )
-        for table in ("ui_overlays", "ui_overlay_revisions", "ui_revision_module_bindings"):
+        for table in (
+            "ui_overlays",
+            "ui_overlay_revisions",
+            "ui_revision_module_bindings",
+            "ui_revision_binding_seals",
+        ):
             assert connection.execute(
                 ("SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid=%s::regclass"),
                 ("platform_metadata." + table,),
@@ -123,7 +132,7 @@ async def test_retained_overlay_refuses_downgrade_before_any_schema_change(
         ).fetchall()
         assert before[0][0]["active_revision_id"] == str(row.active_revision_id)
     assert h.app.runtime is not None
-    with pytest.raises(RuntimeError, match="metadata_0004 downgrade refused"):
+    with pytest.raises(RuntimeError, match="metadata_0005 downgrade refused"):
         h.app.runtime.migrations.downgrade(
             h.database.migration_url, "metadata_0002_custom_entities"
         )
@@ -188,7 +197,9 @@ def test_forward_binding_upgrade_refuses_unbound_active_history_without_mutation
         retained = connection.execute(
             "SELECT to_jsonb(r) FROM platform_metadata.ui_overlay_revisions r"
         ).fetchall()
-    migrations.upgrade(postgres_database.migration_url)
+    migrations.upgrade(postgres_database.migration_url, "metadata_0004_ui_bindings")
+    with pytest.raises(RuntimeError, match="unsealed UI revision history"):
+        migrations.upgrade(postgres_database.migration_url)
     with psycopg.connect(_url(postgres_database.migration_url)) as connection:
         assert (
             connection.execute(
@@ -199,3 +210,43 @@ def test_forward_binding_upgrade_refuses_unbound_active_history_without_mutation
         assert connection.execute(
             "SELECT count(*) FROM platform_metadata.ui_revision_module_bindings"
         ).fetchone() == (0,)
+
+
+def test_first_remediation_draft_upgrade_retains_data_and_replays(
+    postgres_database: PostgreSQLTestDatabase,
+) -> None:
+    app = _app(postgres_database, _Policy())
+    migrations = app.runtime.migrations
+    migrations.upgrade(postgres_database.migration_url, "metadata_0004_ui_bindings")
+    tenant, overlay, actor = uuid4(), uuid4(), uuid4()
+    with psycopg.connect(_url(postgres_database.migration_url)) as connection:
+        connection.execute(
+            "INSERT INTO platform_metadata.ui_overlays "
+            "(id,tenant_id,view_id,scope_kind,scope_id,draft_document,"
+            "draft_compatibility_digest,created_by) "
+            "VALUES (%s,%s,%s,'tenant',%s,'{\"patches\":[]}'::jsonb,%s,%s)",
+            (overlay, tenant, uuid4(), tenant, "a" * 64, actor),
+        )
+        before = connection.execute(
+            "SELECT to_jsonb(o) FROM platform_metadata.ui_overlays o"
+        ).fetchall()
+        connection.execute(
+            "UPDATE platform_module.installed_module_migrations SET "
+            "revision_ids=revision_ids-'metadata_0005_ui_binding_seals', "
+            "revision_manifest=(SELECT jsonb_agg(value) FROM "
+            "jsonb_array_elements(revision_manifest) WHERE "
+            "value->>'revision'<>'metadata_0005_ui_binding_seals') "
+            "WHERE module_id='foundation.metadata'"
+        )
+    migrations.upgrade(postgres_database.migration_url)
+    migrations.upgrade(postgres_database.migration_url)
+    with psycopg.connect(_url(postgres_database.migration_url)) as connection:
+        assert (
+            connection.execute("SELECT to_jsonb(o) FROM platform_metadata.ui_overlays o").fetchall()
+            == before
+        )
+        assert connection.execute(
+            "SELECT count(*) FROM platform_metadata.ui_revision_binding_seals"
+        ).fetchone() == (0,)
+    with pytest.raises(RuntimeError, match="metadata_0005 downgrade refused"):
+        migrations.downgrade(postgres_database.migration_url, "metadata_0004_ui_bindings")

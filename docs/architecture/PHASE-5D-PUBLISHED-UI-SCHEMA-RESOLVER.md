@@ -138,8 +138,24 @@ unbound active revisions from the failed, uncertified 0003 candidate: the operat
 must retire those overlays first; missing historical pins are never invented.
 It refuses downgrade when UI history remains. Certified Phase 5C upgrade is additive.
 
-All three UI tenant tables enable FORCE RLS. Only `businessos_metadata` has narrowly scoped
-runtime grants (overlay SELECT/INSERT/UPDATE, revision/binding SELECT/INSERT); ordinary app,
+`metadata_0005_ui_binding_seals` preserves committed 0003/0004 and adds immutable
+binding seals. Publication creates a revision, inserts its complete bounded binding
+set, validates identities, inserts the seal, then activates the pointer and adjusts
+counters in one transaction. A deferred constraint requires every new revision to
+be sealed before commit. Active pointers require a seal immediately. Binding INSERT
+and seal INSERT serialize on the owning overlay row; after sealing, INSERT is
+rejected and existing UPDATE/DELETE protections remain. A seal cannot be updated,
+deleted or reopened, including after retirement. Rollback removes all new state.
+
+Upgrade from certified Phase 5C and retained 0004 drafts is additive and replayable.
+Upgrade refuses any retained unsealed revision history from the uncertified candidate
+before changing schema: neither old counters nor current module identities prove
+the original binding set was complete. No historical bindings or seals are invented.
+Such an uncertified database requires a separately reviewed recovery plan; retirement
+alone does not establish completeness. Downgrade refuses any retained UI overlays.
+
+All four UI tenant tables enable FORCE RLS. Only `businessos_metadata` has narrowly scoped
+runtime grants (overlay SELECT/INSERT/UPDATE, revision/binding/seal SELECT/INSERT); ordinary app,
 worker, operations and PUBLIC receive none. Migrator owns DDL. Composite same-tenant
 foreign keys bind revisions and active pointers. Triggers preserve identity/history,
 generations, bounded sequences and quotas. Downgrade refuses retained overlays before
@@ -157,8 +173,16 @@ and reuse across login/logout, tenant/company/site/locale and permission changes
 Lock order: shared contract fence → sorted module fences → tenant creation
 quota fence if creating → tenant/view advisory fence → overlay row. Resolution
 uses the shared view fence; publication/reactivation/retirement/creation use its
-exclusive form. Module rows are shared for reads/drafts and exclusive for active
-pointer changes, avoiding shared-to-exclusive lock upgrades while adjusting counters.
+exclusive form. Module rows use `FOR KEY SHARE` for reads/drafts and
+`FOR NO KEY UPDATE` for active pointer changes. These modes coexist: counter writes
+do not block unrelated tenant resolvers during awaited evidence, outbox, Policy or
+outer commit work. Active-pointer writers still serialize globally for shared module
+counters, without a lock upgrade. Artifact activation explicitly uses `FOR UPDATE`,
+which conflicts with both modes and preserves generation stability through completion.
+The forward migration also makes `(module_id, artifact_identity, generation)` a
+unique database key. PostgreSQL therefore uses the conflicting key-update lock even
+for direct SQL identity changes; safety does not depend on callers remembering an
+explicit `FOR UPDATE`. Counter-only writes leave that key unchanged.
 Retirement also locks the retained revision's module identities, so a disabled
 extension's bindings can be released without admitting disabled code. Current
 provenance is bounded to 128 modules; the sorted union with retained pins is
@@ -167,6 +191,16 @@ Module activation's existing exclusive artifact fence waits for
 readers. Overlay edits preserve active snapshots. Locks are transaction-scoped with
 a five-second lock bound; cancellation rolls back and releases locks/admission.
 There is no installation-global UI lock; unrelated tenants/views resolve concurrently.
+
+Admissions precede database compatibility locks. After sorted module fences, the
+tenant/view and overlay locks precede revision/binding/seal creation. Final Policy
+authority follows evidence staging and is retained through the outer transaction.
+Activation takes its exclusive module fence before lifecycle drain; an inversion
+with previously admitted work is bounded by the five-second database lock timeout
+and the existing lifecycle drain deadline. Cancellation releases database locks and
+admissions. Policy providers must bound authority waits and isolate unrelated subjects;
+readiness cannot certify a provider's synchronization implementation. No generic
+dispatcher changes are required by this second remediation.
 
 The additive neutral SDK completion boundary lets handlers retain admissions and
 register final guards; it gives them no commit/rollback authority. The dispatcher
@@ -189,6 +223,15 @@ there is no permissive fallback, invented epoch or browser authority. The origin
 owns authority synchronization; Metadata does not duplicate Policy rules or read
 Policy/Identity private tables. Unrelated subjects/tenants must not use a global
 process mutex. No shared schema cache was introduced.
+
+Production composition that installs the `foundation.metadata.published-ui.v1`
+contract registers `published-ui-authority-fence` in the existing readiness checks.
+A sequential-only evaluator returns not-ready (HTTP 503); a runtime-checkable
+`FencedPolicyEvaluator` satisfies this capability check. Deployments without that
+contract and development/test composition retain their existing behavior. This is
+interface validation, not proof of provider locking semantics: provider certification
+remains an operator obligation. Request-time `authority_fence_required` still denies
+an evaluator that lacks the capability; readiness creates no fallback.
 
 Final checks reject replaced request/Identity bindings, expired credentials,
 revoked Policy and mutated declarations. Browser scope/session transitions
@@ -234,3 +277,11 @@ The audit of `d1e17bab90b6dfbd3dbf429b674e91e6b40876df` failed with
 Critical 0 / High 3 / Medium 3 / Low 0. Its green CI remains historical evidence,
 not acceptance. This remediation remains an IMPLEMENTATION CANDIDATE and requires
 a fresh independent exact-commit remediation re-audit.
+
+The first remediation `a9f69ad334f944fa42b4e04ff4f1218131d98c82` also failed
+independent re-audit: Critical 0 / High 0 / Medium 3 / Low 0. Run `37202792639`
+passed for that candidate but is historical evidence only. R1 binding sealing, R2
+cross-tenant reader availability and R3 production capability readiness are the
+scope of this second remediation. Both failures remain historical evidence.
+Phase 5D remains an IMPLEMENTATION CANDIDATE / NOT CERTIFIED. A fresh independent
+second-remediation re-audit of the exact new candidate is required.

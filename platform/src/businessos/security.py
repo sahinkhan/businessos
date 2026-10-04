@@ -94,6 +94,11 @@ class Authorizer:
     def __init__(self, evaluator: PolicyEvaluator) -> None:
         self._evaluator = evaluator
 
+    @property
+    def supports_permission_fence(self) -> bool:
+        """Composition capability check; provider synchronization needs certification."""
+        return isinstance(self._evaluator, FencedPolicyEvaluator)
+
     async def require(self, context: RequestContext, permission: str) -> None:
         if context.tenant is None:
             raise BusinessOSError("unauthenticated", "Authentication required", status_code=401)

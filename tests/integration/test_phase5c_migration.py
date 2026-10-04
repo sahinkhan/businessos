@@ -33,7 +33,7 @@ BASE_HEADS = {
     "proof_0004",
     "tenant_0002",
 }
-CANDIDATE_HEADS = (BASE_HEADS - {"metadata_0001"}) | {"metadata_0004_ui_bindings"}
+CANDIDATE_HEADS = (BASE_HEADS - {"metadata_0001"}) | {"metadata_0005_ui_binding_seals"}
 
 
 def _migrations() -> MigrationCoordinator:
@@ -74,12 +74,13 @@ def test_exact_certified_heads_retained_upgrade_replay_and_empty_downgrade(
         db.execute(
             "UPDATE platform_module.installed_module_migrations "
             "SET revision_ids=revision_ids-'metadata_0002_custom_entities'"
-            "-'metadata_0003_ui_overlays'-'metadata_0004_ui_bindings', "
+            "-'metadata_0003_ui_overlays'-'metadata_0004_ui_bindings'"
+            "-'metadata_0005_ui_binding_seals', "
             "revision_manifest=(SELECT jsonb_agg(value) "
             "FROM jsonb_array_elements(revision_manifest) "
             "WHERE value->>'revision' NOT IN "
             "('metadata_0002_custom_entities','metadata_0003_ui_overlays',"
-            "'metadata_0004_ui_bindings')) "
+            "'metadata_0004_ui_bindings','metadata_0005_ui_binding_seals')) "
             "WHERE module_id='foundation.metadata'"
         )
         assert db.execute(

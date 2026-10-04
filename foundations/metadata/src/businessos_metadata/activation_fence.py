@@ -3,7 +3,7 @@
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from businessos.sdk import ConfigurationError, UnitOfWork
@@ -31,6 +31,7 @@ class MetadataActivationFence:
             raise ConfigurationError("Module activation identity is required")
         async with self._factory() as uow:
             persistence = uow.persistence
+            await persistence.execute(text("SET LOCAL lock_timeout = '5s'"))
             await persistence.execute(
                 insert(MODULE_FENCE)
                 .values(

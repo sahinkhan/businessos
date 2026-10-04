@@ -172,7 +172,7 @@ def test_audit_policy_targeted_and_base_refuse_atomically(
         )
         connection.commit()
     before = _snapshot(postgres_database.migration_url)
-    audit_head = "metadata_0004_ui_bindings" if include_metadata else "audit_0006"
+    audit_head = "metadata_0005_ui_binding_seals" if include_metadata else "audit_0006"
     assert {str(row[0]) for row in before[0]} >= {"proof_0004", "policy_0005", audit_head}
     audit_refusal = "metadata_0001" if include_metadata else "audit_0005"
     for target, reason in (

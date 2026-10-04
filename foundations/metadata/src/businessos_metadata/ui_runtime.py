@@ -53,7 +53,12 @@ from .ui_contracts import (
 from .ui_contracts import (
     UIDiagnosticCode as Code,
 )
-from .ui_models import UI_OVERLAYS, UI_REVISION_MODULE_BINDINGS, UI_REVISIONS
+from .ui_models import (
+    UI_OVERLAYS,
+    UI_REVISION_BINDING_SEALS,
+    UI_REVISION_MODULE_BINDINGS,
+    UI_REVISIONS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +257,9 @@ async def _snapshot(
                         select(MODULE_FENCE)
                         .where(MODULE_FENCE.c.module_id.in_(locked_ids))
                         .order_by(MODULE_FENCE.c.module_id)
-                        .with_for_update(read=not changing_active)
+                        # Counters use NO KEY UPDATE, compatible with resolver KEY SHARE.
+                        # Artifact activation explicitly takes UPDATE and conflicts with both.
+                        .with_for_update(read=not changing_active, key_share=True)
                     )
                 )
                 .mappings()
@@ -759,6 +766,13 @@ class PublishedUIRuntime:
                                 generation=module.generation,
                             )
                         )
+                    await session.execute(
+                        insert(UI_REVISION_BINDING_SEALS).values(
+                            tenant_id=row["tenant_id"],
+                            overlay_id=overlay_id,
+                            revision_id=revision_id,
+                        )
+                    )
                 values = dict(
                     lifecycle="published",
                     active_revision_id=revision_id,

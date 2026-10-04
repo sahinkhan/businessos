@@ -39,6 +39,7 @@ _TABLES = {
     "platform_metadata.ui_overlays": {"SELECT", "INSERT", "UPDATE"},
     "platform_metadata.ui_overlay_revisions": {"SELECT", "INSERT"},
     "platform_metadata.ui_revision_module_bindings": {"SELECT", "INSERT"},
+    "platform_metadata.ui_revision_binding_seals": {"SELECT", "INSERT"},
     "platform_audit.audit_logs": {"SELECT", "INSERT"},
     "eventing.outbox_messages": {"SELECT", "INSERT"},
 }

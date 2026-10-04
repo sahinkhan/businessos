@@ -704,6 +704,7 @@ async def test_revision_and_tenant_quotas_retain_history(ui_harness: Harness) ->
     assert h.context.tenant is not None
     with psycopg.connect(_url(h.database.migration_url)) as connection:
         for sequence in range(2, 65):
+            retained_revision = uuid4()
             connection.execute(
                 (
                     "INSERT INTO platform_metadata.ui_overlay_revisions "
@@ -712,7 +713,19 @@ async def test_revision_and_tenant_quotas_retain_history(ui_harness: Harness) ->
                     "%s,tenant_id,overlay_id,%s,document,digest,compatibility_digest,publishe"
                     "d_by FROM platform_metadata.ui_overlay_revisions WHERE id=%s"
                 ),
-                (uuid4(), sequence, row.active_revision_id),
+                (retained_revision, sequence, row.active_revision_id),
+            )
+            connection.execute(
+                "INSERT INTO platform_metadata.ui_revision_module_bindings "
+                "(tenant_id,overlay_id,revision_id,module_id,artifact_identity,generation) "
+                "SELECT tenant_id,overlay_id,%s,module_id,artifact_identity,generation "
+                "FROM platform_metadata.ui_revision_module_bindings WHERE revision_id=%s",
+                (retained_revision, row.active_revision_id),
+            )
+            connection.execute(
+                "INSERT INTO platform_metadata.ui_revision_binding_seals "
+                "(tenant_id,overlay_id,revision_id) VALUES (%s,%s,%s)",
+                (h.context.tenant.tenant_id, row.overlay_id, retained_revision),
             )
         for _ in range(1023):
             connection.execute(
@@ -734,6 +747,9 @@ async def test_revision_and_tenant_quotas_retain_history(ui_harness: Harness) ->
     with psycopg.connect(_url(h.database.migration_url)) as connection:
         assert connection.execute(
             "SELECT count(*) FROM platform_metadata.ui_overlay_revisions"
+        ).fetchone() == (64,)
+        assert connection.execute(
+            "SELECT count(*) FROM platform_metadata.ui_revision_binding_seals"
         ).fetchone() == (64,)
         assert connection.execute(
             "SELECT count(*) FROM platform_metadata.ui_overlays"

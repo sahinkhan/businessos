@@ -48,3 +48,12 @@ UI_REVISION_MODULE_BINDINGS = Table(
     Column("generation", BigInteger, nullable=False),
     schema=SCHEMA,
 )
+
+UI_REVISION_BINDING_SEALS = Table(
+    "ui_revision_binding_seals",
+    metadata,
+    Column("tenant_id", Uuid(as_uuid=True), primary_key=True),
+    Column("revision_id", Uuid(as_uuid=True), primary_key=True),
+    Column("overlay_id", Uuid(as_uuid=True), nullable=False),
+    schema=SCHEMA,
+)

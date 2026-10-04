@@ -102,6 +102,9 @@ assert files('businessos_metadata').joinpath(
 assert files('businessos_metadata').joinpath(
     'migrations', 'versions', 'metadata_0004_ui_bindings.py'
 ).is_file()
+assert files('businessos_metadata').joinpath(
+    'migrations', 'versions', 'metadata_0005_ui_binding_seals.py'
+).is_file()
 assert 'draft_document' not in UIOverlayMutationResult.model_fields
 assert 'draft_document' in UIOverlayRecord.model_fields
 from businessos.sdk import defer_handler_completion, retain_handler_resource

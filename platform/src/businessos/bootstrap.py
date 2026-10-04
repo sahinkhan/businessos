@@ -338,6 +338,19 @@ def create_application(
             for registered in module_registry.entries()
         ),
     )
+    if resolved_settings.environment == "production" and any(
+        contract.contract_id == "foundation.metadata.published-ui.v1"
+        for module in loaded_modules
+        for contract in module.manifest.public_contracts
+    ):
+
+        async def published_ui_authority_readiness() -> None:
+            if not resolved_authorizer.supports_permission_fence:
+                raise ConfigurationError("Published UI requires fenced Policy authority")
+
+        diagnostics.add_readiness_check(
+            "published-ui-authority-fence", published_ui_authority_readiness
+        )
     if resolved_settings.database_readiness_enabled:
         diagnostics.add_readiness_check("postgresql", database.readiness)
         if any(

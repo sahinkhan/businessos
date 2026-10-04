@@ -66,7 +66,8 @@ from businessos_metadata import (
     CustomEntityDefinitionSnapshot, CustomEntityDefinitionRecord,
     CreateUIOverlay, EditUIOverlay, PublishUIOverlay, ReactivateUIOverlay,
     ReadUIOverlay, ResolvePublishedUI, RetireUIOverlay, ResolvedUISchema,
-    UIOverlayDocument, UIOverlayRecord, UIOverlayScope, UIResolution, UIViewSchema,
+    UIOverlayDocument, UIOverlayMutationResult, UIOverlayRecord, UIOverlayScope,
+    UIResolution, UIViewSchema,
 )
 from businessos_metadata.contracts import DefinitionKind
 from businessos_metadata.custom_entity_store import CustomEntityStore
@@ -98,6 +99,14 @@ from businessos_party.ui_declarations import published_ui_declarations, ui_id
 assert files('businessos_metadata').joinpath(
     'migrations', 'versions', 'metadata_0003_ui_overlays.py'
 ).is_file()
+assert files('businessos_metadata').joinpath(
+    'migrations', 'versions', 'metadata_0004_ui_bindings.py'
+).is_file()
+assert 'draft_document' not in UIOverlayMutationResult.model_fields
+assert 'draft_document' in UIOverlayRecord.model_fields
+from businessos.sdk import defer_handler_completion, retain_handler_resource
+from businessos.security import FencedPolicyEvaluator
+assert callable(defer_handler_completion) and callable(retain_handler_resource)
 assert ('foundation.metadata.published-ui.v1', '1.0') in contracts
 assert PublishedUIRuntime.version == MetadataCatalog.version == '1.0'
 assert ResolvePublishedUI(view_id=ui_id('detail.v1'), locale='ar').contract_version == '1.0'

@@ -109,6 +109,7 @@ def test_localization_precedes_overlays_without_mutating_authority_or_translatio
                 }
             ),
             kind,
+            result.capabilities,
         )
         assert view.presentation.order == order
     assert view.resource_namespace == result.view.resource_namespace
@@ -258,6 +259,7 @@ def test_user_preferences_are_narrower_and_unknown_targets_and_budget_reject() -
                 {"patches": [{"target_id": str(view.view_id), "label_key": "replacement.label"}]}
             ),
             UIOverlayScope.USER,
+            compose(sources()).capabilities,
         )
     with pytest.raises(UIConflict, match="stable_id_conflict"):
         apply_overlay(

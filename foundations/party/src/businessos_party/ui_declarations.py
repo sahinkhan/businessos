@@ -72,6 +72,19 @@ def published_ui_declarations() -> tuple[MetadataDeclaration, ...]:
             },
         ],
         "actions": [],
+        "extension_slots": [
+            {
+                "slot_id": str(ui_id("detail.extension_slot")),
+                "primitives": ["Card", "FormSection", "Grid"],
+            },
+        ],
+        "customization": [
+            {
+                "target_id": view,
+                "scopes": ["tenant", "company", "site", "user"],
+                "properties": ["order", "density", "label_key"],
+            },
+        ],
     }
     values = [
         MetadataDeclaration(key="foundation.party.ui.detail.base", kind="ui.base.v1", value=base),

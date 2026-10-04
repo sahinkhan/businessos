@@ -152,10 +152,29 @@ def compose(sources: tuple[AdmittedMetadataDeclaration, ...]) -> UIComposition:
     ]
     if len(set(contribution_ids)) != len(contribution_ids):
         raise UIConflict(Code.STABLE_ID_CONFLICT)
+    base_nodes = {n.node_id: n for n in view.nodes}
+    slots = {x.slot_id: x for x in caps.extension_slots}
+    if any(identity not in base_nodes or base_nodes[identity].kind != "slot" for identity in slots):
+        raise UIConflict(Code.CAPABILITY_UNAVAILABLE)
+    if any(x.target_id not in {view.view_id, *base_nodes} for x in caps.customization):
+        raise UIConflict(Code.CAPABILITY_UNAVAILABLE)
     nodes = list(view.nodes)
-    for _, extension in sorted(
+    for source, extension in sorted(
         extensions, key=lambda pair: (pair[1].priority, pair[0].owner, str(pair[1].contribution_id))
     ):
+        own_nodes = {n.node_id: n for n in extension.nodes}
+        if source.owner != base_source.owner:
+            for node in extension.nodes:
+                ancestor = node
+                visited = {node.node_id}
+                while ancestor.parent_id in own_nodes:
+                    if ancestor.parent_id in visited:
+                        raise UIConflict(Code.STABLE_ID_CONFLICT)
+                    visited.add(ancestor.parent_id)
+                    ancestor = own_nodes[ancestor.parent_id]
+                slot = slots.get(ancestor.parent_id)
+                if slot is None or node.primitive not in slot.primitives:
+                    raise UIConflict(Code.CAPABILITY_UNAVAILABLE)
         nodes.extend(extension.nodes)
     if len(nodes) > 256:
         raise UIConflict(Code.LIMIT_EXCEEDED)
@@ -213,7 +232,10 @@ def _ordered(nodes: tuple[UINode, ...]) -> tuple[UINode, ...]:
 
 
 def apply_overlay(
-    view: UIViewSchema, document: UIOverlayDocument, scope: UIOverlayScope
+    view: UIViewSchema,
+    document: UIOverlayDocument,
+    scope: UIOverlayScope,
+    capabilities: UIOwnerCapabilities | None = None,
 ) -> UIViewSchema:
     presentations = {
         view.view_id: view.presentation,
@@ -224,6 +246,20 @@ def apply_overlay(
         if current is None:
             raise UIConflict(Code.STABLE_ID_CONFLICT)
         properties = patch.properties()
+        opt_in = (
+            next(
+                (x for x in capabilities.customization if x.target_id == patch.target_id),
+                None,
+            )
+            if capabilities is not None
+            else None
+        )
+        if (
+            opt_in is None
+            or scope.value not in opt_in.scopes
+            or set(properties) - set(opt_in.properties)
+        ):
+            raise UIConflict(Code.CAPABILITY_UNAVAILABLE)
         if scope is UIOverlayScope.USER and set(properties) - {"visible", "density", "order"}:
             raise UIConflict(Code.INVALID_DOCUMENT)
         presentations[patch.target_id] = UIPresentation.model_validate(

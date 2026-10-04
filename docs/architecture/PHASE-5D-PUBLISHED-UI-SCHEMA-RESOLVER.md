@@ -63,8 +63,18 @@ All contributions pin the base revision and a compatible module version range.
 External extensions/localizations require the real manifest dependency on that
 owner. The module lifecycle validates dependency versions; the catalog re-admits
 their current generations. Database module artifact/generation fences and contract
-generations are included in overlay compatibility. An upgrade can render an overlay
-incompatible; resolution then refuses rather than discarding it or choosing a winner.
+generations are included in overlay compatibility. Active UI revisions now pin
+module/base, capability and direct dependency artifacts in the existing Metadata
+activation fence. Incompatible activation is rejected before authority changes;
+same-artifact reactivation remains supported. Retired overlays release their active
+bindings without rewriting history. A privileged operator bypass/corruption is
+still refused at resolution and publication rather than silently repaired.
+
+External roots enter only slots explicitly exposed by the canonical owner's
+`extension_slots` capabilities. Every contributed descendant must remain in its
+own subtree and use a primitive allowed by that slot. Protected roots, arbitrary
+sections/fields, another contribution's private nodes and foreign/missing slots
+are denied. A slot-shaped node alone is not an admission grant.
 
 ## Allowlist and authorization
 
@@ -73,10 +83,16 @@ Presentation mutations allow only `label_key`, `help_key`, `order`, `visible`,
 There is no generic property setter. IDs, resource/owner/bindings, tenant/scope,
 permissions, Policy, classification, lifecycle, security, audit, capabilities,
 required/editable business facts and technical identities are not patchable.
+The effective customization grant is the intersection of that platform allowlist,
+owner `customization` opt-in for the exact target/scope/properties, and backend
+Policy/current scope. An omitted owner grant denies customization. Party permits
+only view-level order/density/label customization (with the narrower user allowlist);
+its public display-name field is not customizable. These capability declarations
+participate in the compatibility digest and artifact activation bindings.
 
 Every query/command requires its own backend Policy permission. Resolution also
 requires the base and every disclosed owner capability's permissions, rechecks
-them before release, and validates the current Identity-issued principal binding
+them as one fenced set at operation completion, and validates the current Identity-issued principal binding
 and exact framework invocation/request/UOW. Hidden controls remain presentation
 only; executing a business operation still requires its own independent backend
 handler and Policy enforcement. There is no action executor or method-name dispatch.
@@ -109,9 +125,21 @@ that retained revision's digest and compatibility before changing the pointer;
 history is never rewritten. Retirement removes eligibility and retains history.
 Every mutation writes AuditAppenderV2 evidence and an outbox event in the same
 protected Metadata PostgreSQL UOW; failed evidence rolls back data and pointer changes.
+Mutation results are `UIOverlayMutationResult`, containing identity/generation and
+publication status only. They never contain editable draft JSON, including rollback,
+publication and retirement. `ReadUIOverlay` alone returns `UIOverlayRecord` and
+requires the distinct draft-disclosure permission. Audit/outbox values contain no draft.
 
-Both tenant tables enable FORCE RLS. Only `businessos_metadata` has narrowly scoped
-runtime grants (overlay SELECT/INSERT/UPDATE, revision SELECT/INSERT); ordinary app,
+`metadata_0004_ui_bindings` is a forward remediation migration; committed 0003 and
+every earlier migration retain their original bytes. Its immutable, FORCE-RLS
+`ui_revision_module_bindings` rows feed the existing `module_fence.active_bindings`
+counter in the same transaction as pointer changes. It refuses an upgrade over
+unbound active revisions from the failed, uncertified 0003 candidate: the operator
+must retire those overlays first; missing historical pins are never invented.
+It refuses downgrade when UI history remains. Certified Phase 5C upgrade is additive.
+
+All three UI tenant tables enable FORCE RLS. Only `businessos_metadata` has narrowly scoped
+runtime grants (overlay SELECT/INSERT/UPDATE, revision/binding SELECT/INSERT); ordinary app,
 worker, operations and PUBLIC receive none. Migrator owns DDL. Composite same-tenant
 foreign keys bind revisions and active pointers. Triggers preserve identity/history,
 generations, bounded sequences and quotas. Downgrade refuses retained overlays before
@@ -126,16 +154,44 @@ Every resolution recomposes current admitted sources, current scope and active
 published overlays, and evaluates live Policy. This prevents stale cache population
 and reuse across login/logout, tenant/company/site/locale and permission changes.
 
-Lock order: shared contract fence → sorted shared module fences → tenant creation
+Lock order: shared contract fence → sorted module fences → tenant creation
 quota fence if creating → tenant/view advisory fence → overlay row. Resolution
 uses the shared view fence; publication/reactivation/retirement/creation use its
-exclusive form. Module activation's existing exclusive artifact fence waits for
+exclusive form. Module rows are shared for reads/drafts and exclusive for active
+pointer changes, avoiding shared-to-exclusive lock upgrades while adjusting counters.
+Retirement also locks the retained revision's module identities, so a disabled
+extension's bindings can be released without admitting disabled code. Current
+provenance is bounded to 128 modules; the sorted union with retained pins is
+bounded to 256 locks. Retained pins must still match the existing database fence.
+Module activation's existing exclusive artifact fence waits for
 readers. Overlay edits preserve active snapshots. Locks are transaction-scoped with
 a five-second lock bound; cancellation rolls back and releases locks/admission.
 There is no installation-global UI lock; unrelated tenants/views resolve concurrently.
 
+The additive neutral SDK completion boundary lets handlers retain admissions and
+register final guards; it gives them no commit/rollback authority. The dispatcher
+enters guards after handler evidence/outbox work, while its issued invocation is
+valid, and retains them across the outer commit/rollback and result cleanup.
+Cleanup revokes every issued completion registration and clears guard closures
+on success, failure and cancellation; completed handler contexts are not retained.
+Catalog source/dependency leases are retained through that boundary and validated
+before completion. A drain already observed at validation rejects the operation;
+a later drain waits for already admitted work to complete or roll back.
+
+Phase 5D requires an operator-configured, backend-owned `FencedPolicyEvaluator`
+behind the existing `Authorizer`. Its `permission_fence` must evaluate the complete
+UI/owner permission set from one current authoritative snapshot and fence all
+applicable revocation writers through operation completion. It must also validate
+current Identity/membership/scope/validity using their existing authority contracts.
+A legacy sequential-only evaluator is denied with `authority_fence_required`;
+there is no permissive fallback, invented epoch or browser authority. The original
+`Authorizer.require` and frozen Policy V2 contracts remain unchanged. The provider
+owns authority synchronization; Metadata does not duplicate Policy rules or read
+Policy/Identity private tables. Unrelated subjects/tenants must not use a global
+process mutex. No shared schema cache was introduced.
+
 Final checks reject replaced request/Identity bindings, expired credentials,
-revoked Policy and draining/mutated declarations. Browser scope/session transitions
+revoked Policy and mutated declarations. Browser scope/session transitions
 retain Phase 4.5's cancellation and security-context cache isolation. Results remain
 bound to that issued request; they cannot authenticate a later browser context or
 authorize a business operation. The Phase 5E renderer must preserve those existing
@@ -173,3 +229,8 @@ was introduced. This document does not certify Phase 5D or authorize Phase 5E.
 Next required gate: independent Phase 5D security/architecture/compatibility audit
 of the exact candidate SHA, then personal owner acceptance, guarded merge and
 protected-main post-merge CI before certification.
+
+The audit of `d1e17bab90b6dfbd3dbf429b674e91e6b40876df` failed with
+Critical 0 / High 3 / Medium 3 / Low 0. Its green CI remains historical evidence,
+not acceptance. This remediation remains an IMPLEMENTATION CANDIDATE and requires
+a fresh independent exact-commit remediation re-audit.

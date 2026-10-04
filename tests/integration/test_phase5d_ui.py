@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import cast
 from uuid import UUID, uuid4
@@ -22,6 +23,7 @@ from businessos_metadata.module import (
 )
 from businessos_metadata.ui_contracts import (
     UIOverlayDocument,
+    UIOverlayMutationResult,
     UIOverlayRecord,
     UIOverlayScope,
     UIResolution,
@@ -36,6 +38,7 @@ from businessos.sdk import (
     Query,
     RequestContext,
     TenantContext,
+    TransactionalPersistence,
 )
 from tests.conftest import PostgreSQLTestDatabase
 from tests.integration.test_phase5a_metadata import (
@@ -52,19 +55,52 @@ pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.asyncio
 VIEW = ui_id("detail.v1")
 
 
+class UIPolicy(_Policy):
+    """Atomic backend test authority; revocation writers use the same keyed fence."""
+
+    def __init__(self) -> None:
+        self.denied: set[str] = set()
+        self.locks: dict[tuple[UUID, UUID], asyncio.Lock] = {}
+
+    def lock(self, context: RequestContext) -> asyncio.Lock:
+        assert context.tenant is not None
+        key = (context.tenant.tenant_id, context.tenant.principal_id)
+        return self.locks.setdefault(key, asyncio.Lock())
+
+    @asynccontextmanager
+    async def permission_fence(
+        self,
+        context: RequestContext,
+        permissions: frozenset[str],
+        persistence: TransactionalPersistence,
+    ) -> AsyncIterator[None]:
+        async with self.lock(context):
+            # One atomic snapshot; no sequential awaits between permissions.
+            if not self.allowed or self.denied & permissions:
+                raise BusinessOSError("forbidden", "Permission denied", status_code=403)
+            yield
+
+    async def revoke(self, context: RequestContext, permission: str) -> None:
+        async with self.lock(context):
+            self.denied.add(permission)
+
+    async def is_allowed(self, principal_id: UUID, tenant: TenantContext, permission: str) -> bool:
+        return self.allowed and permission not in self.denied
+
+
 @dataclass
 class Harness:
     app: BusinessOSApplication
     database: PostgreSQLTestDatabase
     context: RequestContext
-    policy: _Policy
+    policy: UIPolicy
 
     async def command(
         self, value: Command, context: RequestContext | None = None
-    ) -> UIOverlayRecord:
+    ) -> UIOverlayMutationResult:
         context = context or self.context
         _bind(context)
-        return cast(UIOverlayRecord, await _command(self.app, value, context))
+        return cast(UIOverlayMutationResult, await _command(self.app, value, context))
 
     async def resolve(
         self, context: RequestContext | None = None, locale: str = "en"
@@ -84,7 +120,7 @@ class Harness:
 
 @pytest_asyncio.fixture
 async def ui_harness(postgres_database: PostgreSQLTestDatabase) -> AsyncIterator[Harness]:
-    policy = _Policy()
+    policy = UIPolicy()
     app = _app(postgres_database, policy)
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
@@ -113,15 +149,15 @@ async def create(
     kind: UIOverlayScope = UIOverlayScope.TENANT,
     order: int = 10,
     context: RequestContext | None = None,
-) -> UIOverlayRecord:
+) -> UIOverlayMutationResult:
     return await h.command(
         CreateUIOverlay(view_id=VIEW, scope_kind=kind, document=document(order)), context
     )
 
 
 async def publish(
-    h: Harness, row: UIOverlayRecord, context: RequestContext | None = None
-) -> UIOverlayRecord:
+    h: Harness, row: UIOverlayMutationResult, context: RequestContext | None = None
+) -> UIOverlayMutationResult:
     return await h.command(
         PublishUIOverlay(
             overlay_id=row.overlay_id,
@@ -139,7 +175,7 @@ async def test_published_only_overlay_precedence_localization_draft_and_immutabl
     base = await h.resolve()
     assert base.resolved is not None
     assert base.resolved.view.presentation.order == 0
-    rows: list[UIOverlayRecord] = []
+    rows: list[UIOverlayMutationResult] = []
     for kind, order in zip(UIOverlayScope, (10, 20, 30, 40), strict=True):
         row = await create(h, kind, order)
         unpublished = await h.resolve()
@@ -252,6 +288,10 @@ async def test_stale_generations_and_dependency_artifacts_refuse_publication_and
     with pytest.raises(BusinessOSError, match="UI overlay rejected"):
         await publish(h, row)
     with psycopg.connect(_url(h.database.migration_url)) as connection:
+        prior = connection.execute(
+            "SELECT artifact_identity,generation FROM platform_metadata.module_fence "
+            "WHERE module_id='foundation.party'"
+        ).fetchone()
         connection.execute(
             "UPDATE platform_metadata.module_fence SET artifact_identity='upgraded', "
             "generation=generation+1 WHERE module_id='foundation.party'"
@@ -273,6 +313,24 @@ async def test_stale_generations_and_dependency_artifacts_refuse_publication_and
             overlay_id=published.overlay_id,
             expected_draft_generation=published.draft_generation,
             expected_active_generation=published.active_generation,
+            document=document(20),
+        )
+    )
+    with pytest.raises(BusinessOSError, match="UI overlay rejected"):
+        await publish(h, edited)
+    # A migrator bypass was deliberate corruption, not a supported activation.
+    # Restore its original authority before applying any further publication.
+    with psycopg.connect(_url(h.database.migration_url)) as connection:
+        connection.execute(
+            "UPDATE platform_metadata.module_fence SET artifact_identity=%s,generation=%s "
+            "WHERE module_id='foundation.party'",
+            prior,
+        )
+    edited = await h.command(
+        EditUIOverlay(
+            overlay_id=published.overlay_id,
+            expected_draft_generation=edited.draft_generation,
+            expected_active_generation=edited.active_generation,
             document=document(20),
         )
     )
@@ -342,25 +400,34 @@ async def test_rls_grants_cross_tenant_writes_and_retained_identity_history(
         ).fetchone() == (True, True)
 
 
-class PausingPolicy(_Policy):
+class PausingPolicy(UIPolicy):
     def __init__(self) -> None:
+        super().__init__()
         self.entered, self.release = asyncio.Event(), asyncio.Event()
         self.owner_calls = 0
         self.pause = False
-        self.revoke = False
+        self.revoke_on_resume = False
         self.logout = False
 
     async def is_allowed(self, principal_id: UUID, tenant: TenantContext, permission: str) -> bool:
-        if self.pause and permission == "foundation.party.read":
-            self.owner_calls += 1
-            if self.owner_calls == 2:
-                self.entered.set()
-                await self.release.wait()
-                if self.logout:
-                    clear_authenticated_principal()
-                if self.revoke:
-                    return False
-        return self.allowed
+        return await super().is_allowed(principal_id, tenant, permission)
+
+    @asynccontextmanager
+    async def permission_fence(
+        self,
+        context: RequestContext,
+        permissions: frozenset[str],
+        persistence: TransactionalPersistence,
+    ) -> AsyncIterator[None]:
+        if self.pause:
+            self.entered.set()
+            await self.release.wait()
+            if self.logout:
+                clear_authenticated_principal()
+            if self.revoke_on_resume:
+                self.denied.add("foundation.party.read")
+        async with super().permission_fence(context, permissions, persistence):
+            yield
 
 
 async def paused_harness(database: PostgreSQLTestDatabase) -> Harness:
@@ -381,7 +448,7 @@ async def test_revocation_and_logout_reject_inflight_schema_and_never_reuse_cach
         for logout in (False, True):
             policy.owner_calls = 0
             policy.pause = True
-            policy.revoke = not logout
+            policy.revoke_on_resume = not logout
             policy.logout = logout
             policy.entered.clear()
             policy.release.clear()
@@ -391,6 +458,7 @@ async def test_revocation_and_logout_reject_inflight_schema_and_never_reuse_cach
             with pytest.raises(BusinessOSError):
                 await task
             policy.pause = False
+            policy.denied.clear()
         policy.allowed = False
         with pytest.raises(BusinessOSError):
             await h.resolve()
@@ -400,7 +468,7 @@ async def test_revocation_and_logout_reject_inflight_schema_and_never_reuse_cach
         await h.app.shutdown()
 
 
-async def _wait_for_advisory(database: PostgreSQLTestDatabase) -> None:
+async def _wait_for_publication_lock(database: PostgreSQLTestDatabase) -> None:
     async with asyncio.timeout(5):
         async with await psycopg.AsyncConnection.connect(
             _url(database.administrator_url), autocommit=True
@@ -408,7 +476,7 @@ async def _wait_for_advisory(database: PostgreSQLTestDatabase) -> None:
             while True:
                 result = await connection.execute(
                     "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND "
-                    "wait_event='advisory'"
+                    "wait_event IN ('advisory','transactionid','tuple')"
                 )
                 if await result.fetchone():
                     return
@@ -453,7 +521,7 @@ async def test_resolve_publish_and_rollback_are_serialized_and_cancellation_clea
                 )
             )
             publishing = asyncio.create_task(h.command(command))
-            await _wait_for_advisory(postgres_database)
+            await _wait_for_publication_lock(postgres_database)
             assert not publishing.done()
             policy.release.set()
             result = await resolving
@@ -537,9 +605,12 @@ async def test_module_drain_refuses_inflight_and_upgrade_waits_for_resolution(
         draining = asyncio.create_task(gate.close_and_drain(generation, timeout_seconds=5))
         await asyncio.sleep(0)
         assert not gate.is_active(generation)
+        assert not draining.done()
         policy.release.set()
         result = await resolving
-        assert result.resolved is None and result.diagnostics[0].code == "incompatible"
+        # Previously admitted reads retain their generation until result release;
+        # drain may close admission but cannot finish before this boundary.
+        assert result.resolved is not None
         await draining
         gate.publish(generation)
         policy.owner_calls = 0
@@ -602,7 +673,7 @@ async def test_scope_transition_unknown_and_errored_policy_refuse(
         nonlocal calls
         await original(ctx, permissions)
         calls += 1
-        if calls == 3:
+        if calls == 2:
             assert ctx.request.tenant is not None
             ctx.request = replace(
                 ctx.request, tenant=replace(ctx.request.tenant, active_company_id=uuid4())
@@ -610,8 +681,8 @@ async def test_scope_transition_unknown_and_errored_policy_refuse(
 
     with monkeypatch.context() as patch:
         patch.setattr(runtime, "_policy", switching)
-        result = await h.resolve()
-        assert result.resolved is None and result.diagnostics[0].code == "stale_context"
+        with pytest.raises(BusinessOSError):
+            await h.resolve()
 
     async def unknown(principal_id: UUID, tenant: TenantContext, permission: str) -> bool:
         return cast(bool, None)
@@ -694,6 +765,7 @@ async def test_identical_edit_revalidates_security_before_success(
                 return False
             if permission == "foundation.party.read":
                 revoked = True
+                h.policy.denied.add(target_permission)
             return True
 
         with monkeypatch.context() as patch:
@@ -704,9 +776,10 @@ async def test_identical_edit_revalidates_security_before_success(
                         overlay_id=row.overlay_id,
                         expected_draft_generation=row.draft_generation,
                         expected_active_generation=row.active_generation,
-                        document=row.draft_document,
+                        document=document(10),
                     )
                 )
+        h.policy.denied.clear()
     with psycopg.connect(_url(h.database.migration_url)) as connection:
         assert (
             connection.execute("SELECT to_jsonb(o) FROM platform_metadata.ui_overlays o").fetchall()
@@ -732,10 +805,12 @@ async def test_resolver_rechecks_its_own_permission_after_owner_admission(
             return False
         if permission == "foundation.party.read":
             revoked = True
+            h.policy.denied.add("foundation.metadata.ui.read")
         return True
 
     with monkeypatch.context() as patch:
         patch.setattr(h.policy, "is_allowed", revoke_read_after_admission)
         with pytest.raises(BusinessOSError):
             await h.resolve()
+    h.policy.denied.clear()
     assert (await h.resolve()).resolved is not None

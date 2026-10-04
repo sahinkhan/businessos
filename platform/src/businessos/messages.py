@@ -27,6 +27,7 @@ from businessos.handler_invocation import (
     internal_trusted_handler_dependencies,
     internal_without_handler_invocation,
 )
+from businessos.operation_boundary import OperationBoundary, bind_handler_boundary
 from businessos.persistence import (
     PendingOutboxMessage,
     TransactionalPersistence,
@@ -116,7 +117,7 @@ class _HandlerPersistence:
         await self._delegate.flush()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class _RestrictedHandlerTransaction:
     """Runtime adapter that never exposes the owning Unit of Work to a handler."""
 
@@ -127,10 +128,15 @@ class _RestrictedHandlerTransaction:
         self._add_outbox(message)
 
 
-def handler_transaction_view(unit_of_work: UnitOfWork) -> HandlerTransaction:
-    return _RestrictedHandlerTransaction(
+def handler_transaction_view(
+    unit_of_work: UnitOfWork, boundary: OperationBoundary | None = None
+) -> HandlerTransaction:
+    transaction = _RestrictedHandlerTransaction(
         _HandlerPersistence(unit_of_work.persistence), unit_of_work.add_outbox
     )
+    if boundary is not None:
+        bind_handler_boundary(transaction, boundary)
+    return transaction
 
 
 @dataclass(slots=True)
@@ -510,17 +516,18 @@ class MessageDispatcher:
             dispatch_span("command", type(message).__name__),
         ):
             registered = self.commands.resolve(message)
-            async with self.commands.admitted(registered):
+            async with OperationBoundary() as boundary, self.commands.admitted(registered):
                 await self._authorize(context, registered.permission)
                 async with self._command_unit_of_work(registered, message, context) as unit_of_work:
                     if self._gate is None:
                         async with unit_of_work:
-                            transaction = handler_transaction_view(unit_of_work)
+                            transaction = handler_transaction_view(unit_of_work, boundary)
                             handling = HandlingContext(context, dependencies, transaction)
                             with internal_without_handler_invocation():
                                 result = await self.commands.invoke_registered(
                                     registered, message, handling
                                 )
+                            await boundary.complete()
                             await unit_of_work.commit()
                     else:
                         async with ResourceTransactionScope(
@@ -531,7 +538,7 @@ class MessageDispatcher:
                             registered.coordinator_token,
                         ) as resource_scope:
                             async with unit_of_work:
-                                transaction = handler_transaction_view(unit_of_work)
+                                transaction = handler_transaction_view(unit_of_work, boundary)
                                 resource_scope.bind_transaction(transaction)
                                 handling = HandlingContext(context, dependencies, transaction)
                                 if (
@@ -542,6 +549,8 @@ class MessageDispatcher:
                                         result = await self.commands.invoke_registered(
                                             registered, message, handling
                                         )
+                                    await boundary.complete()
+                                    await unit_of_work.commit()
                                 else:
                                     with internal_issue_handler_invocation(
                                         owner_module_id=registered.owner,
@@ -555,7 +564,8 @@ class MessageDispatcher:
                                         result = await self.commands.invoke_registered(
                                             registered, message, handling
                                         )
-                                await unit_of_work.commit()
+                                        await boundary.complete()
+                                        await unit_of_work.commit()
                     return result
 
     async def query(
@@ -571,16 +581,16 @@ class MessageDispatcher:
             dispatch_span("query", type(message).__name__),
         ):
             registered = self.queries.resolve(message)
-            async with self.queries.admitted(registered):
+            async with OperationBoundary() as boundary, self.queries.admitted(registered):
                 await self._authorize(context, registered.permission)
                 async with self._command_unit_of_work(registered, message, context) as unit_of_work:
                     if self._gate is None:
                         async with unit_of_work:
-                            transaction = handler_transaction_view(unit_of_work)
+                            transaction = handler_transaction_view(unit_of_work, boundary)
                             handling = HandlingContext(context, dependencies, transaction)
                             with internal_without_handler_invocation():
-                                return await self.queries.invoke_registered(
-                                    registered, message, handling
+                                return await self._complete_query(
+                                    registered, message, handling, boundary
                                 )
                     async with ResourceTransactionScope(
                         self._gate,
@@ -590,7 +600,7 @@ class MessageDispatcher:
                         registered.coordinator_token,
                     ) as resource_scope:
                         async with unit_of_work:
-                            transaction = handler_transaction_view(unit_of_work)
+                            transaction = handler_transaction_view(unit_of_work, boundary)
                             resource_scope.bind_transaction(transaction)
                             handling = HandlingContext(context, dependencies, transaction)
                             if (
@@ -598,8 +608,8 @@ class MessageDispatcher:
                                 or registered.generation is None
                             ):
                                 with internal_without_handler_invocation():
-                                    return await self.queries.invoke_registered(
-                                        registered, message, handling
+                                    return await self._complete_query(
+                                        registered, message, handling, boundary
                                     )
                             with internal_issue_handler_invocation(
                                 owner_module_id=registered.owner,
@@ -610,9 +620,20 @@ class MessageDispatcher:
                                 transaction=transaction,
                             ) as invocation:
                                 handling.invocation = invocation
-                                return await self.queries.invoke_registered(
-                                    registered, message, handling
+                                return await self._complete_query(
+                                    registered, message, handling, boundary
                                 )
+
+    async def _complete_query(
+        self,
+        registered: _OwnedHandler,
+        message: Query,
+        handling: HandlingContext,
+        boundary: OperationBoundary,
+    ) -> object:
+        result = await self.queries.invoke_registered(registered, message, handling)
+        await boundary.complete()
+        return result
 
     async def _authorize(self, context: RequestContext, permission: str | None) -> None:
         if permission is None:

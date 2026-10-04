@@ -52,6 +52,7 @@ from businessos.modules import (
     ModuleRegistration,
     ResourceOwnership,
 )
+from businessos.operation_boundary import defer_handler_completion, retain_handler_resource
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.uow import (
@@ -142,5 +143,7 @@ __all__ = [
     "UnitOfWorkFactory",
     "WorkloadAdmissionDenied",
     "assert_resource_owner_invocation",
+    "defer_handler_completion",
+    "retain_handler_resource",
     "validate_handler_invocation",
 ]

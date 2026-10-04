@@ -42,6 +42,7 @@ from .module import (
 from .ui_contracts import (
     ResolvedUISchema,
     UIOverlayDocument,
+    UIOverlayMutationResult,
     UIOverlayRecord,
     UIOverlayScope,
     UIResolution,
@@ -83,6 +84,7 @@ __all__ = [
     "RetireCustomEntityDefinition",
     "RetireUIOverlay",
     "UIOverlayDocument",
+    "UIOverlayMutationResult",
     "UIOverlayRecord",
     "UIOverlayScope",
     "UIResolution",

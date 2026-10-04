@@ -36,3 +36,15 @@ UI_REVISIONS = Table(
     Column("published_at", DateTime(timezone=True)),
     schema=SCHEMA,
 )
+
+UI_REVISION_MODULE_BINDINGS = Table(
+    "ui_revision_module_bindings",
+    metadata,
+    Column("tenant_id", Uuid(as_uuid=True), primary_key=True),
+    Column("revision_id", Uuid(as_uuid=True), primary_key=True),
+    Column("module_id", String(120), primary_key=True),
+    Column("overlay_id", Uuid(as_uuid=True), nullable=False),
+    Column("artifact_identity", String, nullable=False),
+    Column("generation", BigInteger, nullable=False),
+    schema=SCHEMA,
+)

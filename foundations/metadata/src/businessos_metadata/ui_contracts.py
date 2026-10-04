@@ -82,6 +82,19 @@ class UIActionCapability(_Value):
     permission: Key
 
 
+class UIExtensionSlot(_Value):
+    slot_id: UUID
+    primitives: tuple[UIPrimitive, ...] = Field(min_length=1, max_length=12)
+
+
+class UICustomization(_Value):
+    target_id: UUID
+    scopes: tuple[Literal["tenant", "company", "site", "user"], ...] = Field(min_length=1)
+    properties: tuple[
+        Literal["label_key", "help_key", "order", "visible", "density", "columns"], ...
+    ] = Field(min_length=1)
+
+
 class UIOwnerCapabilities(_Value):
     contract_version: Literal["1.0"] = "1.0"
     view_id: UUID
@@ -89,12 +102,20 @@ class UIOwnerCapabilities(_Value):
     owner_contract_version: Annotated[str, Field(pattern=r"^[0-9]+(?:\.[0-9]+){0,2}$")]
     fields: tuple[UIFieldCapability, ...] = Field(default=(), max_length=128)
     actions: tuple[UIActionCapability, ...] = Field(default=(), max_length=32)
+    extension_slots: tuple[UIExtensionSlot, ...] = Field(default=(), max_length=64)
+    customization: tuple[UICustomization, ...] = Field(default=(), max_length=256)
 
     @model_validator(mode="after")
     def unique(self) -> Self:
         ids = [x.field_id for x in self.fields] + [x.action_id for x in self.actions]
         if len(ids) != len(set(ids)) or len({x.binding for x in self.fields}) != len(self.fields):
             raise ValueError("Conflicting owner capability IDs")
+        for values in (
+            [x.slot_id for x in self.extension_slots],
+            [x.target_id for x in self.customization],
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError("Conflicting owner presentation capability IDs")
         return self
 
 
@@ -203,7 +224,7 @@ class UIOverlayDocument(_Value):
         return self
 
 
-class UIOverlayRecord(_Value):
+class UIOverlayMutationResult(_Value):
     contract_version: Literal["1.0"] = "1.0"
     resource_namespace: Literal["foundation.metadata.ui_overlay"] = "foundation.metadata.ui_overlay"
     overlay_id: UUID
@@ -213,9 +234,14 @@ class UIOverlayRecord(_Value):
     draft_generation: int
     active_generation: int
     active_revision_id: UUID | None
+    current_compatibility_digest: Digest
+
+
+class UIOverlayRecord(UIOverlayMutationResult):
+    """Draft disclosure is restricted to the separately authorized draft query."""
+
     draft_document: UIOverlayDocument
     draft_compatibility_digest: Digest
-    current_compatibility_digest: Digest
 
 
 class UIModuleProvenance(_Value):

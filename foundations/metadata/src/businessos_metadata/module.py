@@ -43,7 +43,13 @@ from .custom_schema import (
     internal_stop_schema_reader,
 )
 from .store import MetadataStore
-from .ui_contracts import Locale, UIConflict, UIOverlayDocument, UIOverlayRecord, UIOverlayScope
+from .ui_contracts import (
+    Locale,
+    UIConflict,
+    UIOverlayDocument,
+    UIOverlayMutationResult,
+    UIOverlayScope,
+)
 from .ui_runtime import PublishedUIRuntime
 
 
@@ -474,7 +480,7 @@ class MetadataModule:
         return record
 
     async def _ui_evidence(
-        self, record: UIOverlayRecord, action: str, ctx: HandlingContext
+        self, record: UIOverlayMutationResult, action: str, ctx: HandlingContext
     ) -> None:
         assert ctx.request.tenant is not None
         appender = await ctx.dependencies.resolve(AUDIT_APPENDER_V2)

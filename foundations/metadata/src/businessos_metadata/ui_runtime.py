@@ -21,10 +21,12 @@ from businessos.sdk import (
     AUTHORIZER,
     METADATA_CATALOG,
     RESOURCE_OWNER_RESOLVER,
+    AdmittedMetadataDeclaration,
     BusinessOSError,
     HandlerInvocationKind,
     HandlingContext,
     NotFoundError,
+    defer_handler_completion,
     validate_handler_invocation,
 )
 
@@ -39,6 +41,7 @@ from .ui_contracts import (
     UIDiagnostic,
     UIModuleProvenance,
     UIOverlayDocument,
+    UIOverlayMutationResult,
     UIOverlayProvenance,
     UIOverlayRecord,
     UIOverlayScope,
@@ -50,7 +53,7 @@ from .ui_contracts import (
 from .ui_contracts import (
     UIDiagnosticCode as Code,
 )
-from .ui_models import UI_OVERLAYS, UI_REVISIONS
+from .ui_models import UI_OVERLAYS, UI_REVISION_MODULE_BINDINGS, UI_REVISIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +64,7 @@ class _Snapshot:
     declarations: tuple[UIDeclarationProvenance, ...]
     schema_generation: int
     ui_generation: int
+    locked_modules: tuple[tuple[str, str, int], ...]
 
 
 class _UIReadAuthority(BaseModel):
@@ -131,6 +135,40 @@ async def _policy(ctx: HandlingContext, permissions: tuple[str, ...]) -> None:
         await authorizer.require(ctx.request, permission)
 
 
+def _complete_authority(
+    ctx: HandlingContext,
+    permissions: tuple[str, ...],
+    principal: AuthenticatedPrincipalBinding,
+    kind: HandlerInvocationKind,
+) -> None:
+    request = ctx.request
+
+    @asynccontextmanager
+    async def fence() -> AsyncGenerator[None]:
+        authorizer = await ctx.dependencies.resolve(AUTHORIZER)
+        async with authorizer.permission_fence(
+            request, frozenset(permissions), ctx.unit_of_work.persistence
+        ):
+            if ctx.request is not request or await _guard(ctx, kind) is not principal:
+                raise BusinessOSError(
+                    "ui_context_invalid", "Current context required", status_code=403
+                )
+            yield
+
+    defer_handler_completion(ctx.unit_of_work, fence)
+
+
+@asynccontextmanager
+async def _admitted_sources(
+    ctx: HandlingContext, view_id: UUID
+) -> AsyncGenerator[tuple[AdmittedMetadataDeclaration, ...]]:
+    catalog = await ctx.dependencies.resolve(METADATA_CATALOG)
+    sources = await catalog.retain_for_operation(
+        ctx.unit_of_work, kind_prefix="ui.", discriminator="view_id", value=str(view_id)
+    )
+    yield sources
+
+
 async def _view_fence(ctx: HandlingContext, view_id: UUID, *, shared: bool) -> None:
     tenant = ctx.request.tenant
     assert tenant is not None
@@ -145,12 +183,15 @@ async def _view_fence(ctx: HandlingContext, view_id: UUID, *, shared: bool) -> N
 
 
 @asynccontextmanager
-async def _snapshot(ctx: HandlingContext, view_id: UUID) -> AsyncGenerator[_Snapshot]:
-    catalog = await ctx.dependencies.resolve(METADATA_CATALOG)
+async def _snapshot(
+    ctx: HandlingContext,
+    view_id: UUID,
+    *,
+    changing_active: bool = False,
+    lock_modules: tuple[str, ...] = (),
+) -> AsyncGenerator[_Snapshot]:
     try:
-        async with catalog.admitted(
-            kind_prefix="ui.", discriminator="view_id", value=str(view_id)
-        ) as sources:
+        async with _admitted_sources(ctx, view_id) as sources:
             bases = [s for s in sources if s.kind == "ui.base.v1"]
             capabilities = [s for s in sources if s.kind == "ui.capabilities.v1"]
             if len(bases) != 1 or len(capabilities) != 1:
@@ -202,19 +243,22 @@ async def _snapshot(ctx: HandlingContext, view_id: UUID) -> AsyncGenerator[_Snap
             module_ids = sorted(generations)
             if len(module_ids) > 128:
                 raise UIConflict(Code.LIMIT_EXCEEDED)
+            locked_ids = sorted(set(module_ids) | set(lock_modules))
+            if len(locked_ids) > 256:
+                raise UIConflict(Code.LIMIT_EXCEEDED)
             module_rows = (
                 (
                     await session.execute(
                         select(MODULE_FENCE)
-                        .where(MODULE_FENCE.c.module_id.in_(module_ids))
+                        .where(MODULE_FENCE.c.module_id.in_(locked_ids))
                         .order_by(MODULE_FENCE.c.module_id)
-                        .with_for_update(read=True)
+                        .with_for_update(read=not changing_active)
                     )
                 )
                 .mappings()
                 .all()
             )
-            if len(module_rows) != len(module_ids):
+            if len(module_rows) != len(locked_ids):
                 raise UIConflict(Code.INCOMPATIBLE)
             modules = tuple(
                 UIModuleProvenance(
@@ -227,6 +271,7 @@ async def _snapshot(ctx: HandlingContext, view_id: UUID) -> AsyncGenerator[_Snap
                     admission_generation=generations[row["module_id"]],
                 )
                 for row in module_rows
+                if row["module_id"] in generations
             )
             declarations = tuple(
                 UIDeclarationProvenance(
@@ -254,6 +299,9 @@ async def _snapshot(ctx: HandlingContext, view_id: UUID) -> AsyncGenerator[_Snap
                 declarations,
                 fence["schema_generation"],
                 fence["ui_generation"],
+                tuple(
+                    (r["module_id"], r["artifact_identity"], r["generation"]) for r in module_rows
+                ),
             )
     except NotFoundError:
         raise UIConflict(Code.INCOMPATIBLE) from None
@@ -273,6 +321,19 @@ def _record(row: RowMapping, snapshot: _Snapshot) -> UIOverlayRecord:
         active_revision_id=row["active_revision_id"],
         draft_document=UIOverlayDocument.model_validate(row["draft_document"]),
         draft_compatibility_digest=row["draft_compatibility_digest"],
+        current_compatibility_digest=snapshot.compatibility_digest,
+    )
+
+
+def _outcome(row: RowMapping, snapshot: _Snapshot) -> UIOverlayMutationResult:
+    return UIOverlayMutationResult(
+        overlay_id=row["id"],
+        view_id=row["view_id"],
+        scope_kind=row["scope_kind"],
+        lifecycle=row["lifecycle"],
+        draft_generation=row["draft_generation"],
+        active_generation=row["active_generation"],
+        active_revision_id=row["active_revision_id"],
         current_compatibility_digest=snapshot.compatibility_digest,
     )
 
@@ -357,7 +418,7 @@ class PublishedUIRuntime:
                     ):
                         raise UIConflict(Code.STALE_OVERLAY)
                     document = UIOverlayDocument.model_validate(revision["document"])
-                    view = apply_overlay(view, document, kind)
+                    view = apply_overlay(view, document, kind, snapshot.composition.capabilities)
                     provenance.append(
                         UIOverlayProvenance(
                             overlay_id=row["id"],
@@ -398,14 +459,12 @@ class PublishedUIRuntime:
                 )
                 if len(result.model_dump_json().encode("utf-8")) > 131072:
                     raise UIConflict(Code.LIMIT_EXCEEDED)
-                await _policy(
-                    ctx, ("foundation.metadata.ui.read", *snapshot.composition.permissions)
+                _complete_authority(
+                    ctx,
+                    ("foundation.metadata.ui.read", *snapshot.composition.permissions),
+                    principal,
+                    HandlerInvocationKind.QUERY,
                 )
-                if (
-                    ctx.request is not request
-                    or await _guard(ctx, HandlerInvocationKind.QUERY) is not principal
-                ):
-                    raise UIConflict(Code.STALE_CONTEXT)
                 response = UIResolution(resolved=result)
             return response
         except UIConflict as error:
@@ -419,13 +478,15 @@ class PublishedUIRuntime:
         scope: UIOverlayScope,
         document: UIOverlayDocument,
         ctx: HandlingContext,
-    ) -> UIOverlayRecord:
+    ) -> UIOverlayMutationResult:
         principal = await _guard(ctx, HandlerInvocationKind.COMMAND)
         await _policy(ctx, ("foundation.metadata.ui.draft",))
         scope_id = _scope(ctx, scope, principal)
         assert ctx.request.tenant is not None
         async with _snapshot(ctx, view_id) as snapshot:
-            apply_overlay(snapshot.composition.view, document, scope)
+            apply_overlay(
+                snapshot.composition.view, document, scope, snapshot.composition.capabilities
+            )
             session = ctx.unit_of_work.persistence
             await session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtextextended('ui-quota:' || :tenant,0))"),
@@ -476,10 +537,13 @@ class PublishedUIRuntime:
                 .mappings()
                 .one()
             )
-            await _policy(ctx, ("foundation.metadata.ui.draft", *snapshot.composition.permissions))
-            if await _guard(ctx, HandlerInvocationKind.COMMAND) is not principal:
-                raise UIConflict(Code.STALE_CONTEXT)
-            return _record(row, snapshot)
+            _complete_authority(
+                ctx,
+                ("foundation.metadata.ui.draft", *snapshot.composition.permissions),
+                principal,
+                HandlerInvocationKind.COMMAND,
+            )
+            return _outcome(row, snapshot)
 
     async def _row(
         self,
@@ -512,9 +576,12 @@ class PublishedUIRuntime:
         async with _snapshot(ctx, row["view_id"]) as snapshot:
             await _view_fence(ctx, row["view_id"], shared=True)
             row = await self._row(overlay_id, ctx, principal)
-            await _policy(ctx, ("foundation.metadata.ui.draft", *snapshot.composition.permissions))
-            if await _guard(ctx, HandlerInvocationKind.QUERY) is not principal:
-                raise UIConflict(Code.STALE_CONTEXT)
+            _complete_authority(
+                ctx,
+                ("foundation.metadata.ui.draft", *snapshot.composition.permissions),
+                principal,
+                HandlerInvocationKind.QUERY,
+            )
             return _record(row, snapshot)
 
     async def mutate(
@@ -527,7 +594,7 @@ class PublishedUIRuntime:
         document: UIOverlayDocument | None = None,
         revision_id: UUID | None = None,
         retire: bool = False,
-    ) -> UIOverlayRecord:
+    ) -> UIOverlayMutationResult:
         principal = await _guard(ctx, HandlerInvocationKind.COMMAND)
         permission = (
             "draft"
@@ -540,7 +607,26 @@ class PublishedUIRuntime:
         )
         await _policy(ctx, ("foundation.metadata.ui." + permission,))
         initial = await self._row(overlay_id, ctx, principal)
-        async with _snapshot(ctx, initial["view_id"]) as snapshot:
+        previous_modules: tuple[str, ...] = ()
+        if document is None and initial["active_revision_id"] is not None:
+            previous_modules = tuple(
+                (
+                    await ctx.unit_of_work.persistence.execute(
+                        select(UI_REVISION_MODULE_BINDINGS.c.module_id)
+                        .where(
+                            UI_REVISION_MODULE_BINDINGS.c.tenant_id == initial["tenant_id"],
+                            UI_REVISION_MODULE_BINDINGS.c.revision_id
+                            == initial["active_revision_id"],
+                        )
+                        .limit(129)
+                    )
+                ).scalars()
+            )
+            if len(previous_modules) > 128:
+                raise UIConflict(Code.LIMIT_EXCEEDED)
+        async with _snapshot(
+            ctx, initial["view_id"], changing_active=document is None, lock_modules=previous_modules
+        ) as snapshot:
             await _view_fence(ctx, initial["view_id"], shared=False)
             row = await self._row(overlay_id, ctx, principal, lock=True)
             if (
@@ -550,9 +636,35 @@ class PublishedUIRuntime:
             ):
                 raise UIConflict(Code.STALE_OVERLAY)
             session = ctx.unit_of_work.persistence
+            if document is None and row["active_revision_id"] is not None:
+                active_pins = (
+                    (
+                        await session.execute(
+                            select(UI_REVISION_MODULE_BINDINGS).where(
+                                UI_REVISION_MODULE_BINDINGS.c.tenant_id == row["tenant_id"],
+                                UI_REVISION_MODULE_BINDINGS.c.revision_id
+                                == row["active_revision_id"],
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                current = {
+                    module: (artifact, generation)
+                    for module, artifact, generation in snapshot.locked_modules
+                }
+                if not active_pins or any(
+                    current.get(p["module_id"]) != (p["artifact_identity"], p["generation"])
+                    for p in active_pins
+                ):
+                    raise UIConflict(Code.STALE_OVERLAY)
             if document is not None:
                 apply_overlay(
-                    snapshot.composition.view, document, UIOverlayScope(row["scope_kind"])
+                    snapshot.composition.view,
+                    document,
+                    UIOverlayScope(row["scope_kind"]),
+                    snapshot.composition.capabilities,
                 )
                 values = dict(
                     draft_document=document.model_dump(mode="json"),
@@ -564,13 +676,13 @@ class PublishedUIRuntime:
                     row["draft_document"] == values["draft_document"]
                     and row["draft_compatibility_digest"] == snapshot.compatibility_digest
                 ):
-                    await _policy(
+                    _complete_authority(
                         ctx,
                         ("foundation.metadata.ui." + permission, *snapshot.composition.permissions),
+                        principal,
+                        HandlerInvocationKind.COMMAND,
                     )
-                    if await _guard(ctx, HandlerInvocationKind.COMMAND) is not principal:
-                        raise UIConflict(Code.STALE_CONTEXT)
-                    return _record(row, snapshot)
+                    return _outcome(row, snapshot)
             elif retire:
                 values = dict(
                     lifecycle="retired",
@@ -604,7 +716,12 @@ class PublishedUIRuntime:
                 if compatibility != snapshot.compatibility_digest:
                     raise UIConflict(Code.STALE_OVERLAY)
                 patch = UIOverlayDocument.model_validate(raw)
-                apply_overlay(snapshot.composition.view, patch, UIOverlayScope(row["scope_kind"]))
+                apply_overlay(
+                    snapshot.composition.view,
+                    patch,
+                    UIOverlayScope(row["scope_kind"]),
+                    snapshot.composition.capabilities,
+                )
                 if revision_id is None:
                     count = (
                         await session.execute(
@@ -631,6 +748,17 @@ class PublishedUIRuntime:
                             published_by=principal.principal.principal_id,
                         )
                     )
+                    for module in snapshot.modules:
+                        await session.execute(
+                            insert(UI_REVISION_MODULE_BINDINGS).values(
+                                tenant_id=row["tenant_id"],
+                                overlay_id=overlay_id,
+                                revision_id=revision_id,
+                                module_id=module.module_id,
+                                artifact_identity=module.artifact_identity,
+                                generation=module.generation,
+                            )
+                        )
                 values = dict(
                     lifecycle="published",
                     active_revision_id=revision_id,
@@ -651,9 +779,10 @@ class PublishedUIRuntime:
                 .mappings()
                 .one()
             )
-            await _policy(
-                ctx, ("foundation.metadata.ui." + permission, *snapshot.composition.permissions)
+            _complete_authority(
+                ctx,
+                ("foundation.metadata.ui." + permission, *snapshot.composition.permissions),
+                principal,
+                HandlerInvocationKind.COMMAND,
             )
-            if await _guard(ctx, HandlerInvocationKind.COMMAND) is not principal:
-                raise UIConflict(Code.STALE_CONTEXT)
-            return _record(updated, snapshot)
+            return _outcome(updated, snapshot)

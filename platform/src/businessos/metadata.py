@@ -11,6 +11,7 @@ from weakref import WeakKeyDictionary
 from pydantic import BaseModel, ConfigDict, Field
 
 from businessos.activation import ContributionGate, ContributionGeneration
+from businessos.operation_boundary import defer_handler_completion, retain_handler_resource
 from businessos.registry import OwnedRegistry
 
 
@@ -48,7 +49,13 @@ class MetadataRegistry(OwnedRegistry[MetadataDeclaration]):
 
     @asynccontextmanager
     async def admitted_declarations(
-        self, *, kind_prefix: str, discriminator: str, value: str, limit: int = 128
+        self,
+        *,
+        kind_prefix: str,
+        discriminator: str,
+        value: str,
+        limit: int = 128,
+        _validate_on_exit: bool = True,
     ) -> AsyncGenerator[tuple[AdmittedMetadataDeclaration, ...]]:
         if not 1 <= limit <= 128 or not kind_prefix or len(discriminator) > 100:
             raise ValueError("Invalid bounded metadata selection")
@@ -104,23 +111,29 @@ class MetadataRegistry(OwnedRegistry[MetadataDeclaration]):
                     )
                 )
             yield tuple(snapshots)
+            if _validate_on_exit:
+                self.validate_admitted(tuple(snapshots))
+
+    def validate_admitted(self, snapshots: tuple[AdmittedMetadataDeclaration, ...]) -> None:
+        for snapshot in snapshots:
+            entry = self.resolve(snapshot.key)
             if self._gate is not None and any(
-                not self._gate.is_active(g) for g in dependency_generations.values()
+                not self._gate.is_active(g) for g in snapshot.dependency_generations
             ):
                 raise ValueError("Metadata dependency changed during admission")
-            for entry, snapshot in zip(entries, snapshots, strict=True):
-                if (
-                    self.resolve(entry.name) is not entry
-                    or json.dumps(
-                        entry.value.value,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                        allow_nan=False,
-                    )
-                    != snapshot.document_json
-                ):
-                    raise ValueError("Metadata declaration changed during admission")
+            if (
+                (entry.owner, entry.generation) != (snapshot.owner, snapshot.generation)
+                or json.dumps(
+                    entry.value.value,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+                != snapshot.document_json
+                or self._profiles[entry.name] != (snapshot.module_version, snapshot.dependencies)
+            ):
+                raise ValueError("Metadata declaration changed during admission")
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,3 +175,37 @@ class MetadataCatalog:
             kind_prefix=kind_prefix, discriminator=discriminator, value=value, limit=limit
         ) as declarations:
             yield declarations
+
+    async def retain_for_operation(
+        self,
+        transaction: object,
+        *,
+        kind_prefix: str,
+        discriminator: str,
+        value: str,
+        limit: int = 128,
+    ) -> tuple[AdmittedMetadataDeclaration, ...]:
+        """Keep source/dependency leases until framework completion and cleanup.
+
+        Validation runs before commit/result release, never after committed writes.
+        The original context-manager API retains its existing exit validation.
+        """
+        registry = _catalogs[self]
+        declarations = await retain_handler_resource(
+            transaction,
+            registry.admitted_declarations(
+                kind_prefix=kind_prefix,
+                discriminator=discriminator,
+                value=value,
+                limit=limit,
+                _validate_on_exit=False,
+            ),
+        )
+
+        @asynccontextmanager
+        async def validate() -> AsyncGenerator[None]:
+            registry.validate_admitted(declarations)
+            yield
+
+        defer_handler_completion(transaction, validate)
+        return declarations

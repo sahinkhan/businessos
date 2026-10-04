@@ -1,14 +1,16 @@
 """Identity, authorization, secret and audit boundaries for later foundation modules."""
 
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from businessos.context import RequestContext, TenantContext
 from businessos.errors import BusinessOSError
 from businessos.persistence import UnitOfWorkFactory
+from businessos.persistence.contracts import TransactionalPersistence
 
 
 class PrincipalType(StrEnum):
@@ -69,6 +71,25 @@ class PolicyEvaluator(Protocol):
     ) -> bool: ...
 
 
+@runtime_checkable
+class FencedPolicyEvaluator(PolicyEvaluator, Protocol):
+    """Backend Policy authority, not sequential client-visible permission checks.
+
+    Implementations must evaluate the entire set against one current snapshot,
+    fence all applicable revocation writers until exit (including outer commit),
+    and reject stale/expired Identity, scope and Policy evidence. The persistence
+    is the framework-owned operation; it must never be committed by an evaluator.
+    Unrelated tenants/principals must not share a global process mutex.
+    """
+
+    def permission_fence(
+        self,
+        context: RequestContext,
+        permissions: frozenset[str],
+        persistence: TransactionalPersistence,
+    ) -> AbstractAsyncContextManager[None]: ...
+
+
 class Authorizer:
     def __init__(self, evaluator: PolicyEvaluator) -> None:
         self._evaluator = evaluator
@@ -80,6 +101,20 @@ class Authorizer:
             context.tenant.principal_id, context.tenant, permission
         ):
             raise BusinessOSError("forbidden", "Permission denied", status_code=403)
+
+    @asynccontextmanager
+    async def permission_fence(
+        self,
+        context: RequestContext,
+        permissions: frozenset[str],
+        persistence: TransactionalPersistence,
+    ) -> AsyncGenerator[None]:
+        if context.tenant is None or not isinstance(self._evaluator, FencedPolicyEvaluator):
+            raise BusinessOSError(
+                "authority_fence_required", "Coherent Policy authority required", status_code=403
+            )
+        async with self._evaluator.permission_fence(context, permissions, persistence):
+            yield
 
 
 class DenyAllPolicyEvaluator:

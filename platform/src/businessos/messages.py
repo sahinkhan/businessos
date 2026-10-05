@@ -1,11 +1,13 @@
 """Framework-owned command, query and event contracts and dispatch."""
 
+from __future__ import annotations
+
 import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, ClassVar, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,6 +39,9 @@ from businessos.persistence import (
 from businessos.resources import ResourceOwnershipRegistry, ResourceTransactionScope
 from businessos.security import Authorizer
 from businessos.telemetry import dispatch_span
+
+if TYPE_CHECKING:
+    from businessos.publication_execution import PrivatePublicationExecutor
 
 
 class Message(BaseModel):
@@ -193,6 +198,7 @@ class HandlerRegistry:
         self.kind = kind
         self._gate = gate
         self._protected_database = protected_database
+        self._publication: PrivatePublicationExecutor | None = None
         self._handlers: dict[type[Message], _OwnedHandler] = {}
 
     def register[M: Message](
@@ -222,6 +228,12 @@ class HandlerRegistry:
         )
         if self._protected_database is not None:
             self._protected_database.record_registration(
+                self._handlers[message_type],
+                cast(type[Command | Query], message_type),
+                _database_entitlement,
+            )
+        if self._publication is not None:
+            self._publication.authority.record_registration(
                 self._handlers[message_type],
                 cast(type[Command | Query], message_type),
                 _database_entitlement,
@@ -272,6 +284,8 @@ class HandlerRegistry:
         }
         if self._protected_database is not None:
             self._protected_database.remove_generation(generation)
+        if self._publication is not None:
+            self._publication.authority.remove_generation(generation)
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,6 +516,14 @@ class MessageDispatcher:
         self._gate = gate
         self._protected_database = protected_database
         self.resources = resources
+        self._publication: PrivatePublicationExecutor | None = None
+
+    def _configure_publication(self, executor: PrivatePublicationExecutor) -> None:
+        if self._publication is not None:
+            raise RuntimeError("Private publication composition is already configured")
+        self._publication = executor
+        # Registry enrollment and dispatcher selection share kernel-private composition.
+        self.commands._publication = executor  # pyright: ignore[reportPrivateUsage]
 
     async def command(
         self,
@@ -518,6 +540,12 @@ class MessageDispatcher:
             registered = self.commands.resolve(message)
             async with OperationBoundary() as boundary, self.commands.admitted(registered):
                 await self._authorize(context, registered.permission)
+                if self._publication is not None and self._publication.authority.requires_protected(
+                    registered, type(message)
+                ):
+                    return await self._publication.execute(
+                        registered, message, context, dependencies, boundary
+                    )
                 async with self._command_unit_of_work(registered, message, context) as unit_of_work:
                     if self._gate is None:
                         async with unit_of_work:

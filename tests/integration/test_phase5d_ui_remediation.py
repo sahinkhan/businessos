@@ -22,9 +22,9 @@ from businessos_party import module as party_module
 from businessos_party.ui_declarations import published_ui_declarations
 
 from businessos.activation import ContributionGeneration
-from businessos.metadata_execution import MetadataDatabaseExecutionAuthority
 from businessos.modules.manifest import ModuleDependency
 from businessos.persistence.uow import SQLAlchemyUnitOfWork
+from businessos.publication_database import PublicationDatabaseAuthority
 from businessos.sdk import (
     BusinessOSError,
     ConfigurationError,
@@ -312,9 +312,9 @@ async def test_active_overlay_pins_activation_until_retired(
     h = ui_harness
     assert h.app.runtime is not None
     row = await publish(h, await create(h))
-    authority = MetadataDatabaseExecutionAuthority(
-        governance_url=h.database.metadata_url,
-        database_name=h.database.metadata_url.rsplit("/", 1)[1],
+    authority = PublicationDatabaseAuthority(
+        governance_url=h.database.ui_publication_url,
+        database_name=h.database.ui_publication_url.rsplit("/", 1)[1],
         pool_size=2,
         pool_timeout=10,
         gate=h.app.runtime.contributions,
@@ -361,9 +361,9 @@ async def test_activation_counts_all_tenants_until_last_overlay_is_retired(
     )
     rows = [(await publish(h, await create(h)), h.context)]
     rows.append((await publish(h, await create(h, context=second), second), second))
-    authority = MetadataDatabaseExecutionAuthority(
-        governance_url=h.database.metadata_url,
-        database_name=h.database.metadata_url.rsplit("/", 1)[1],
+    authority = PublicationDatabaseAuthority(
+        governance_url=h.database.ui_publication_url,
+        database_name=h.database.ui_publication_url.rsplit("/", 1)[1],
         pool_size=2,
         pool_timeout=10,
         gate=h.app.runtime.contributions,

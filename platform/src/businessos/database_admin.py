@@ -14,6 +14,8 @@ OPERATIONS_ROLE = "businessos_ops"
 WORKER_ROLE = "businessos_worker"
 GOVERNANCE_ROLE = "businessos_governance"
 METADATA_ROLE = "businessos_metadata"
+UI_PUBLICATION_ROLE = "businessos_ui_publication"
+METADATA_FENCE_OWNER = "businessos_metadata_fence_owner"
 TRANSITION_LOCK = "businessos.database-role-transition.v1"
 
 
@@ -29,6 +31,7 @@ class DatabaseRolePasswords:
     worker: str
     governance: str
     metadata: str
+    ui_publication: str
 
 
 def _role_exists(connection: psycopg.Connection[tuple[object, ...]], role: str) -> bool:
@@ -276,12 +279,21 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
             _ensure_role(connection, WORKER_ROLE, passwords.worker, bypass_rls=False, inherit=True)
             _ensure_role(connection, GOVERNANCE_ROLE, passwords.governance, bypass_rls=False)
             _ensure_role(connection, METADATA_ROLE, passwords.metadata, bypass_rls=False)
+            _ensure_role(
+                connection, UI_PUBLICATION_ROLE, passwords.ui_publication, bypass_rls=False
+            )
+            if not _role_exists(connection, METADATA_FENCE_OWNER):
+                connection.execute("CREATE ROLE businessos_metadata_fence_owner NOLOGIN")
+            connection.execute(
+                "ALTER ROLE businessos_metadata_fence_owner WITH NOLOGIN NOSUPERUSER "
+                "NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS NOREPLICATION"
+            )
             memberships = connection.execute(
                 "SELECT granted.rolname, member.rolname FROM pg_auth_members AS link "
                 "JOIN pg_roles AS granted ON granted.oid = link.roleid "
                 "JOIN pg_roles AS member ON member.oid = link.member "
-                "WHERE granted.rolname IN (%s, %s) OR member.rolname IN (%s, %s)",
-                (GOVERNANCE_ROLE, METADATA_ROLE, GOVERNANCE_ROLE, METADATA_ROLE),
+                "WHERE granted.rolname = ANY(%s) OR member.rolname = ANY(%s)",
+                ([GOVERNANCE_ROLE, METADATA_ROLE, UI_PUBLICATION_ROLE, METADATA_FENCE_OWNER],) * 2,
             ).fetchall()
             for granted, member in memberships:
                 connection.execute(
@@ -289,6 +301,10 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
                         sql.Identifier(str(granted)), sql.Identifier(str(member))
                     )
                 )
+            connection.execute(
+                "GRANT businessos_metadata_fence_owner TO businessos_migrator "
+                "WITH INHERIT TRUE, SET TRUE"
+            )
             connection.execute(
                 sql.SQL("REVOKE {}, {} FROM {}").format(
                     sql.Identifier(MIGRATOR_ROLE),
@@ -314,7 +330,7 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
                 )
             )
             connection.execute(
-                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}, {}, {}, {}").format(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}, {}, {}, {}, {}, {}, {}").format(
                     sql.Identifier(database_name),
                     sql.Identifier(MIGRATOR_ROLE),
                     sql.Identifier(APPLICATION_ROLE),
@@ -322,6 +338,7 @@ def transition_database_roles(admin_url: str, passwords: DatabaseRolePasswords) 
                     sql.Identifier(WORKER_ROLE),
                     sql.Identifier(GOVERNANCE_ROLE),
                     sql.Identifier(METADATA_ROLE),
+                    sql.Identifier(UI_PUBLICATION_ROLE),
                 )
             )
             role_state = connection.execute(

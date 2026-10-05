@@ -22,12 +22,10 @@ BASE_HEADS = {
     "proof_0004",
     "tenant_0002",
 }
-CANDIDATE_HEADS = (BASE_HEADS - {"metadata_0002_custom_entities"}) | {
-    "metadata_0005_ui_binding_seals"
-}
+CANDIDATE_HEADS = (BASE_HEADS - {"metadata_0002_custom_entities"}) | {"metadata_0006_ui_provenance"}
 
 
-def test_certified_base_retained_upgrade_replay_and_empty_downgrade(
+def test_certified_base_retained_upgrade_replay_and_safe_downgrade_refusal(
     postgres_database: PostgreSQLTestDatabase,
 ) -> None:
     app = _app(postgres_database, _Policy())
@@ -50,12 +48,13 @@ def test_certified_base_retained_upgrade_replay_and_empty_downgrade(
         connection.execute(
             "UPDATE platform_module.installed_module_migrations SET "
             "revision_ids=revision_ids-'metadata_0003_ui_overlays'"
-            "-'metadata_0004_ui_bindings'-'metadata_0005_ui_binding_seals', "
+            "-'metadata_0004_ui_bindings'-'metadata_0005_ui_binding_seals'"
+            "-'metadata_0006_ui_provenance', "
             "revision_manifest=(SELECT jsonb_agg(value) FROM "
             "jsonb_array_elements(revision_manifest) WHERE "
             "value->>'revision' NOT IN "
             "('metadata_0003_ui_overlays','metadata_0004_ui_bindings',"
-            "'metadata_0005_ui_binding_seals')) WHERE "
+            "'metadata_0005_ui_binding_seals','metadata_0006_ui_provenance')) WHERE "
             "module_id='foundation.metadata'"
         )
         assert connection.execute(
@@ -103,11 +102,12 @@ def test_certified_base_retained_upgrade_replay_and_empty_downgrade(
                 "SELECT has_table_privilege('businessos_app',%s,'SELECT,INSERT,UPDATE,DELETE')",
                 ("platform_metadata." + table,),
             ).fetchone() == (False,)
-    migrations.downgrade(postgres_database.migration_url, "metadata_0002_custom_entities")
+    with pytest.raises(RuntimeError, match="metadata_0006 downgrade refused"):
+        migrations.downgrade(postgres_database.migration_url, "metadata_0002_custom_entities")
     with psycopg.connect(_url(postgres_database.migration_url)) as connection:
-        assert {
-            r[0] for r in connection.execute("SELECT version_num FROM alembic_version")
-        } == baseline
+        assert {r[0] for r in connection.execute("SELECT version_num FROM alembic_version")} == set(
+            plan.heads
+        )
         assert (
             connection.execute(
                 "SELECT to_jsonb(d) FROM platform_metadata.definitions d ORDER BY id"
@@ -132,7 +132,7 @@ async def test_retained_overlay_refuses_downgrade_before_any_schema_change(
         ).fetchall()
         assert before[0][0]["active_revision_id"] == str(row.active_revision_id)
     assert h.app.runtime is not None
-    with pytest.raises(RuntimeError, match="metadata_0005 downgrade refused"):
+    with pytest.raises(RuntimeError, match="metadata_0006 downgrade refused"):
         h.app.runtime.migrations.downgrade(
             h.database.migration_url, "metadata_0002_custom_entities"
         )
@@ -232,10 +232,12 @@ def test_first_remediation_draft_upgrade_retains_data_and_replays(
         ).fetchall()
         connection.execute(
             "UPDATE platform_module.installed_module_migrations SET "
-            "revision_ids=revision_ids-'metadata_0005_ui_binding_seals', "
+            "revision_ids=revision_ids-'metadata_0005_ui_binding_seals'"
+            "-'metadata_0006_ui_provenance', "
             "revision_manifest=(SELECT jsonb_agg(value) FROM "
             "jsonb_array_elements(revision_manifest) WHERE "
-            "value->>'revision'<>'metadata_0005_ui_binding_seals') "
+            "value->>'revision' NOT IN "
+            "('metadata_0005_ui_binding_seals','metadata_0006_ui_provenance')) "
             "WHERE module_id='foundation.metadata'"
         )
     migrations.upgrade(postgres_database.migration_url)
@@ -248,5 +250,5 @@ def test_first_remediation_draft_upgrade_retains_data_and_replays(
         assert connection.execute(
             "SELECT count(*) FROM platform_metadata.ui_revision_binding_seals"
         ).fetchone() == (0,)
-    with pytest.raises(RuntimeError, match="metadata_0005 downgrade refused"):
+    with pytest.raises(RuntimeError, match="metadata_0006 downgrade refused"):
         migrations.downgrade(postgres_database.migration_url, "metadata_0004_ui_bindings")

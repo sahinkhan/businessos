@@ -188,6 +188,10 @@ class ProtectedDatabaseProfiles:
 
 
 class _GovernancePool:
+    @staticmethod
+    def _connect_options(timeout: float) -> dict[str, object]:
+        return {}
+
     def __init__(self, url: str, *, size: int, timeout: float, database_name: str) -> None:
         if not url.startswith("postgresql+psycopg://"):
             raise ConfigurationError("Protected database URL must use psycopg")
@@ -202,6 +206,7 @@ class _GovernancePool:
             pool_timeout=timeout,
             pool_pre_ping=True,
             pool_recycle=0,
+            connect_args=self._connect_options(timeout),
         )
         self.sessions = async_sessionmaker(
             bind=self.engine, class_=AsyncSession, autoflush=False, expire_on_commit=False

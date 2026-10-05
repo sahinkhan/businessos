@@ -33,7 +33,7 @@ BASE_HEADS = {
     "proof_0004",
     "tenant_0002",
 }
-CANDIDATE_HEADS = (BASE_HEADS - {"metadata_0001"}) | {"metadata_0005_ui_binding_seals"}
+CANDIDATE_HEADS = (BASE_HEADS - {"metadata_0001"}) | {"metadata_0006_ui_provenance"}
 
 
 def _migrations() -> MigrationCoordinator:
@@ -75,12 +75,13 @@ def test_exact_certified_heads_retained_upgrade_replay_and_empty_downgrade(
             "UPDATE platform_module.installed_module_migrations "
             "SET revision_ids=revision_ids-'metadata_0002_custom_entities'"
             "-'metadata_0003_ui_overlays'-'metadata_0004_ui_bindings'"
-            "-'metadata_0005_ui_binding_seals', "
+            "-'metadata_0005_ui_binding_seals'-'metadata_0006_ui_provenance', "
             "revision_manifest=(SELECT jsonb_agg(value) "
             "FROM jsonb_array_elements(revision_manifest) "
             "WHERE value->>'revision' NOT IN "
             "('metadata_0002_custom_entities','metadata_0003_ui_overlays',"
-            "'metadata_0004_ui_bindings','metadata_0005_ui_binding_seals')) "
+            "'metadata_0004_ui_bindings','metadata_0005_ui_binding_seals',"
+            "'metadata_0006_ui_provenance')) "
             "WHERE module_id='foundation.metadata'"
         )
         assert db.execute(
@@ -95,6 +96,11 @@ def test_exact_certified_heads_retained_upgrade_replay_and_empty_downgrade(
             (identity, tenant, json.dumps(snapshot), actor),
         )
         retained = db.execute("SELECT to_jsonb(d) FROM platform_metadata.definitions d").fetchall()
+    # Preserve the historical empty Phase 5C downgrade witness before crossing
+    # the new forward-only ADR-024 security boundary.
+    migrations.upgrade(postgres_database.migration_url, "metadata_0002_custom_entities")
+    migrations.downgrade(postgres_database.migration_url, "metadata_0001")
+    assert _heads(postgres_database) == BASE_HEADS
     migrations.upgrade(postgres_database.migration_url)
     migrations.upgrade(postgres_database.migration_url)
     assert _heads(postgres_database) == CANDIDATE_HEADS
@@ -112,11 +118,12 @@ def test_exact_certified_heads_retained_upgrade_replay_and_empty_downgrade(
                 (uuid4(), identity),
             )
         db.rollback()
-    migrations.downgrade(postgres_database.migration_url, "metadata_0001")
-    assert _heads(postgres_database) == BASE_HEADS
+    with pytest.raises(RuntimeError, match="metadata_0006 downgrade refused"):
+        migrations.downgrade(postgres_database.migration_url, "metadata_0001")
+    assert _heads(postgres_database) == CANDIDATE_HEADS
     with psycopg.connect(_url(postgres_database.migration_url)) as db:
-        assert db.execute("SELECT to_regclass('platform_metadata.custom_entities')").fetchone() == (
-            None,
+        assert db.execute("SELECT count(*) FROM platform_metadata.custom_entities").fetchone() == (
+            0,
         )
         assert (
             db.execute("SELECT to_jsonb(d) FROM platform_metadata.definitions d").fetchall()
@@ -152,7 +159,7 @@ async def test_downgrade_refuses_before_any_destructive_statement(
         types = db.execute(
             "SELECT to_jsonb(d) FROM platform_metadata.definitions d ORDER BY id"
         ).fetchall()
-    with pytest.raises(RuntimeError, match="metadata_0002 downgrade refused"):
+    with pytest.raises(RuntimeError, match="metadata_0006 downgrade refused"):
         app.runtime.migrations.downgrade(postgres_database.migration_url, "metadata_0001")
     with psycopg.connect(_url(postgres_database.migration_url)) as db:
         assert (

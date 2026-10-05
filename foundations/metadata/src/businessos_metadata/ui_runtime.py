@@ -26,6 +26,7 @@ from businessos.sdk import (
     HandlerInvocationKind,
     HandlingContext,
     NotFoundError,
+    TransactionalPersistence,
     defer_handler_completion,
     validate_handler_invocation,
 )
@@ -54,11 +55,14 @@ from .ui_contracts import (
     UIDiagnosticCode as Code,
 )
 from .ui_models import (
+    UI_EXPECTED_MEMBERS,
+    UI_EXPECTED_PROVENANCE,
     UI_OVERLAYS,
     UI_REVISION_BINDING_SEALS,
     UI_REVISION_MODULE_BINDINGS,
     UI_REVISIONS,
 )
+from .ui_provenance import CompatibilityMember, capture_members
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,8 +169,13 @@ def _complete_authority(
 
 @asynccontextmanager
 async def _admitted_sources(
-    ctx: HandlingContext, view_id: UUID
+    ctx: HandlingContext,
+    view_id: UUID,
+    retained: tuple[AdmittedMetadataDeclaration, ...] | None = None,
 ) -> AsyncGenerator[tuple[AdmittedMetadataDeclaration, ...]]:
+    if retained is not None:
+        yield retained
+        return
     catalog = await ctx.dependencies.resolve(METADATA_CATALOG)
     sources = await catalog.retain_for_operation(
         ctx.unit_of_work, kind_prefix="ui.", discriminator="view_id", value=str(view_id)
@@ -174,14 +183,21 @@ async def _admitted_sources(
     yield sources
 
 
-async def _view_fence(ctx: HandlingContext, view_id: UUID, *, shared: bool) -> None:
+async def _view_fence(
+    ctx: HandlingContext,
+    view_id: UUID,
+    *,
+    shared: bool,
+    persistence: TransactionalPersistence | None = None,
+) -> None:
     tenant = ctx.request.tenant
     assert tenant is not None
+    persistence = persistence or ctx.unit_of_work.persistence
     # Both modes use the same transaction-scoped key. Normal operations acquire
     # contract -> sorted modules -> creation quota (if any) -> tenant/view -> row.
-    await ctx.unit_of_work.persistence.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await persistence.execute(text("SET LOCAL lock_timeout = '5s'"))
     function = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
-    await ctx.unit_of_work.persistence.execute(
+    await persistence.execute(
         text(f"SELECT {function}(hashtextextended('ui:' || :tenant || ':' || :view,0))"),
         {"tenant": str(tenant.tenant_id), "view": str(view_id)},
     )
@@ -194,9 +210,11 @@ async def _snapshot(
     *,
     changing_active: bool = False,
     lock_modules: tuple[str, ...] = (),
+    persistence: TransactionalPersistence | None = None,
+    retained: tuple[AdmittedMetadataDeclaration, ...] | None = None,
 ) -> AsyncGenerator[_Snapshot]:
     try:
-        async with _admitted_sources(ctx, view_id) as sources:
+        async with _admitted_sources(ctx, view_id, retained) as sources:
             bases = [s for s in sources if s.kind == "ui.base.v1"]
             capabilities = [s for s in sources if s.kind == "ui.capabilities.v1"]
             if len(bases) != 1 or len(capabilities) != 1:
@@ -225,7 +243,7 @@ async def _snapshot(
                 raise UIConflict(Code.CAPABILITY_UNAVAILABLE)
             await _policy(ctx, permissions)
             composition = compose(sources)
-            session = ctx.unit_of_work.persistence
+            session = persistence or ctx.unit_of_work.persistence
             await session.execute(text("SET LOCAL lock_timeout = '5s'"))
             fence = (
                 (
@@ -256,7 +274,7 @@ async def _snapshot(
                     await session.execute(
                         select(MODULE_FENCE)
                         .where(MODULE_FENCE.c.module_id.in_(locked_ids))
-                        .order_by(MODULE_FENCE.c.module_id)
+                        .order_by(MODULE_FENCE.c.module_id.collate("C"))
                         # Counters use NO KEY UPDATE, compatible with resolver KEY SHARE.
                         # Artifact activation explicitly takes UPDATE and conflicts with both.
                         .with_for_update(read=not changing_active, key_share=True)
@@ -345,8 +363,93 @@ def _outcome(row: RowMapping, snapshot: _Snapshot) -> UIOverlayMutationResult:
     )
 
 
+async def _verified_provenance(
+    session: TransactionalPersistence,
+    overlay: RowMapping,
+    revision: RowMapping,
+) -> None:
+    """Read durable authenticated association; never check out the issuer profile."""
+    expected = (
+        (
+            await session.execute(
+                select(UI_EXPECTED_PROVENANCE)
+                .join(
+                    UI_REVISION_BINDING_SEALS,
+                    and_(
+                        UI_REVISION_BINDING_SEALS.c.tenant_id == UI_EXPECTED_PROVENANCE.c.tenant_id,
+                        UI_REVISION_BINDING_SEALS.c.overlay_id
+                        == UI_EXPECTED_PROVENANCE.c.overlay_id,
+                        UI_REVISION_BINDING_SEALS.c.revision_id
+                        == UI_EXPECTED_PROVENANCE.c.revision_id,
+                    ),
+                )
+                .where(
+                    UI_EXPECTED_PROVENANCE.c.tenant_id == overlay["tenant_id"],
+                    UI_EXPECTED_PROVENANCE.c.overlay_id == overlay["id"],
+                    UI_EXPECTED_PROVENANCE.c.revision_id == revision["id"],
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if expected is None or (
+        expected["model_version"],
+        expected["issuer_version"],
+        expected["purpose"],
+    ) != (1, 1, "published-ui-completeness"):
+        raise UIConflict(Code.STALE_OVERLAY)
+    lineage = (
+        await session.execute(
+            text(
+                "SELECT lineage_id FROM platform_metadata.ui_installation_lineage WHERE singleton=1"
+            )
+        )
+    ).scalar_one_or_none()
+    if (
+        lineage != expected["lineage_id"]
+        or any(overlay[key] != expected[key] for key in ("view_id", "scope_kind", "scope_id"))
+        or any(
+            revision[key] != expected[key]
+            for key in (
+                "document",
+                "compatibility_digest",
+                "declaration_provenance",
+                "schema_generation",
+                "ui_generation",
+                "draft_generation",
+                "prior_active_generation",
+            )
+        )
+        or revision["digest"] != expected["document_digest"]
+    ):
+        raise UIConflict(Code.STALE_OVERLAY)
+    members: list[set[tuple[str, str, int]]] = []
+    for table in (UI_EXPECTED_MEMBERS, UI_REVISION_MODULE_BINDINGS):
+        result = await session.execute(
+            select(table.c.module_id, table.c.artifact_identity, table.c.generation)
+            .where(table.c.tenant_id == overlay["tenant_id"], table.c.revision_id == revision["id"])
+            .limit(129)
+        )
+        members.append({(row[0], row[1], row[2]) for row in result})
+    if not 1 <= len(members[0]) <= 128 or members[0] != members[1]:
+        raise UIConflict(Code.STALE_OVERLAY)
+
+
 class PublishedUIRuntime:
     version = "1.0"
+
+    def __init__(
+        self,
+        *,
+        _private_persistence: TransactionalPersistence | None = None,
+        _private_sources: tuple[AdmittedMetadataDeclaration, ...] | None = None,
+    ) -> None:
+        self._private_persistence = _private_persistence
+        self._private_sources = _private_sources
+
+    def _session(self, ctx: HandlingContext) -> TransactionalPersistence:
+        return self._private_persistence or ctx.unit_of_work.persistence
 
     async def resolve(self, view_id: UUID, locale: str, ctx: HandlingContext) -> UIResolution:
         principal = await _guard(ctx, HandlerInvocationKind.QUERY)
@@ -373,7 +476,7 @@ class PublishedUIRuntime:
                 ]
                 rows = (
                     (
-                        await ctx.unit_of_work.persistence.execute(
+                        await self._session(ctx).execute(
                             select(UI_OVERLAYS)
                             .where(
                                 UI_OVERLAYS.c.tenant_id == request.tenant.tenant_id,
@@ -408,7 +511,7 @@ class PublishedUIRuntime:
                         continue
                     revision = (
                         (
-                            await ctx.unit_of_work.persistence.execute(
+                            await self._session(ctx).execute(
                                 select(UI_REVISIONS).where(
                                     UI_REVISIONS.c.tenant_id == request.tenant.tenant_id,
                                     UI_REVISIONS.c.overlay_id == row["id"],
@@ -424,6 +527,7 @@ class PublishedUIRuntime:
                         or digest(revision["document"]) != revision["digest"]
                     ):
                         raise UIConflict(Code.STALE_OVERLAY)
+                    await _verified_provenance(self._session(ctx), row, revision)
                     document = UIOverlayDocument.model_validate(revision["document"])
                     view = apply_overlay(view, document, kind, snapshot.composition.capabilities)
                     provenance.append(
@@ -494,7 +598,7 @@ class PublishedUIRuntime:
             apply_overlay(
                 snapshot.composition.view, document, scope, snapshot.composition.capabilities
             )
-            session = ctx.unit_of_work.persistence
+            session = self._session(ctx)
             await session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtextextended('ui-quota:' || :tenant,0))"),
                 {"tenant": str(ctx.request.tenant.tenant_id)},
@@ -566,7 +670,7 @@ class PublishedUIRuntime:
         )
         if lock:
             statement = statement.with_for_update()
-        row = (await ctx.unit_of_work.persistence.execute(statement)).mappings().one_or_none()
+        row = (await self._session(ctx).execute(statement)).mappings().one_or_none()
         if (
             row is None
             or _scope(ctx, UIOverlayScope(row["scope_kind"]), principal) != row["scope_id"]
@@ -602,6 +706,8 @@ class PublishedUIRuntime:
         revision_id: UUID | None = None,
         retire: bool = False,
     ) -> UIOverlayMutationResult:
+        if document is None and self._private_persistence is None:
+            raise PermissionError("Publication requires the kernel-private executor")
         principal = await _guard(ctx, HandlerInvocationKind.COMMAND)
         permission = (
             "draft"
@@ -618,7 +724,7 @@ class PublishedUIRuntime:
         if document is None and initial["active_revision_id"] is not None:
             previous_modules = tuple(
                 (
-                    await ctx.unit_of_work.persistence.execute(
+                    await self._session(ctx).execute(
                         select(UI_REVISION_MODULE_BINDINGS.c.module_id)
                         .where(
                             UI_REVISION_MODULE_BINDINGS.c.tenant_id == initial["tenant_id"],
@@ -632,9 +738,16 @@ class PublishedUIRuntime:
             if len(previous_modules) > 128:
                 raise UIConflict(Code.LIMIT_EXCEEDED)
         async with _snapshot(
-            ctx, initial["view_id"], changing_active=document is None, lock_modules=previous_modules
+            ctx,
+            initial["view_id"],
+            changing_active=document is None,
+            lock_modules=previous_modules,
+            persistence=self._private_persistence,
+            retained=self._private_sources,
         ) as snapshot:
-            await _view_fence(ctx, initial["view_id"], shared=False)
+            await _view_fence(
+                ctx, initial["view_id"], shared=False, persistence=self._private_persistence
+            )
             row = await self._row(overlay_id, ctx, principal, lock=True)
             if (
                 row["draft_generation"] != expected_draft
@@ -642,7 +755,7 @@ class PublishedUIRuntime:
                 or row["lifecycle"] == "retired"
             ):
                 raise UIConflict(Code.STALE_OVERLAY)
-            session = ctx.unit_of_work.persistence
+            session = self._session(ctx)
             if document is None and row["active_revision_id"] is not None:
                 active_pins = (
                     (
@@ -713,6 +826,7 @@ class PublishedUIRuntime:
                     )
                     if revision is None:
                         raise UIConflict(Code.STALE_OVERLAY)
+                    await _verified_provenance(session, row, revision)
                     raw = revision["document"]
                     compatibility = revision["compatibility_digest"]
                     if digest(raw) != revision["digest"]:
@@ -743,6 +857,60 @@ class PublishedUIRuntime:
                     if count >= 64:
                         raise UIConflict(Code.LIMIT_EXCEEDED)
                     revision_id = uuid4()
+                    if self._private_sources is None:
+                        raise PermissionError("Trusted retained publication composition required")
+                    # Derive expected members independently of the actual binding loop.
+                    # Sources were retained by the kernel executor, never command input.
+                    expected = capture_members(
+                        self._private_sources,
+                        tuple(CompatibilityMember(*item) for item in snapshot.locked_modules),
+                    )
+                    lineage = (
+                        await session.execute(
+                            text(
+                                "SELECT lineage_id FROM platform_metadata.ui_installation_lineage "
+                                "WHERE singleton=1"
+                            )
+                        )
+                    ).scalar_one()
+                    context_values = dict(
+                        declaration_provenance=[
+                            item.model_dump() for item in snapshot.declarations
+                        ],
+                        schema_generation=snapshot.schema_generation,
+                        ui_generation=snapshot.ui_generation,
+                        draft_generation=row["draft_generation"],
+                        prior_active_generation=row["active_generation"],
+                    )
+                    await session.execute(
+                        insert(UI_EXPECTED_PROVENANCE).values(
+                            tenant_id=row["tenant_id"],
+                            overlay_id=overlay_id,
+                            revision_id=revision_id,
+                            view_id=row["view_id"],
+                            scope_kind=row["scope_kind"],
+                            scope_id=row["scope_id"],
+                            lineage_id=lineage,
+                            model_version=1,
+                            issuer_version=1,
+                            purpose="published-ui-completeness",
+                            document=raw,
+                            document_digest=digest(raw),
+                            compatibility_digest=compatibility,
+                            **context_values,
+                        )
+                    )
+                    for member in expected:
+                        await session.execute(
+                            insert(UI_EXPECTED_MEMBERS).values(
+                                tenant_id=row["tenant_id"],
+                                overlay_id=overlay_id,
+                                revision_id=revision_id,
+                                module_id=member.module_id,
+                                artifact_identity=member.artifact_identity,
+                                generation=member.generation,
+                            )
+                        )
                     await session.execute(
                         insert(UI_REVISIONS).values(
                             id=revision_id,
@@ -753,6 +921,7 @@ class PublishedUIRuntime:
                             digest=digest(raw),
                             compatibility_digest=compatibility,
                             published_by=principal.principal.principal_id,
+                            **context_values,
                         )
                     )
                     for module in snapshot.modules:

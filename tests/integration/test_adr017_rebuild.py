@@ -256,6 +256,7 @@ async def test_adr017_out_of_order_projection_keeps_latest_surviving_shared_valu
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -337,7 +338,7 @@ def test_adr017_fresh_forward_migrations(postgres_database: PostgreSQLTestDataba
             row[0]
             for row in connection.execute("SELECT version_num FROM alembic_version").fetchall()
         }
-        assert "metadata_0005_ui_binding_seals" in revisions
+        assert "metadata_0006_ui_provenance" in revisions
         assert "proof_0004" in revisions
         for table in (
             "platform_gov.retention_policies_v2",
@@ -480,6 +481,7 @@ async def _running_app(database: PostgreSQLTestDatabase) -> Any:
             database_url=database.runtime_url,
             governance_database_url=database.governance_url,
             metadata_database_url=database.metadata_url,
+            ui_publication_database_url=database.ui_publication_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -1175,6 +1177,7 @@ async def test_adr017_real_protected_proof_owner_commit(
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -1337,6 +1340,7 @@ async def test_adr017_concurrent_cleanup_cannot_restore_purged_shared_plaintext(
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),
@@ -1608,6 +1612,7 @@ async def test_adr017_owner_relation_rejects_ordinary_indirect_writers(
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),

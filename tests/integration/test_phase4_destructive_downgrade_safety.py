@@ -172,9 +172,9 @@ def test_audit_policy_targeted_and_base_refuse_atomically(
         )
         connection.commit()
     before = _snapshot(postgres_database.migration_url)
-    audit_head = "metadata_0005_ui_binding_seals" if include_metadata else "audit_0006"
+    audit_head = "metadata_0006_ui_provenance" if include_metadata else "audit_0006"
     assert {str(row[0]) for row in before[0]} >= {"proof_0004", "policy_0005", audit_head}
-    audit_refusal = "metadata_0001" if include_metadata else "audit_0005"
+    audit_refusal = "metadata_0006" if include_metadata else "audit_0005"
     for target, reason in (
         ("audit_0004", f"{audit_refusal} downgrade refused"),
         ("audit_0002", f"{audit_refusal} downgrade refused"),
@@ -224,7 +224,7 @@ def test_existing_prebarrier_data_survives_forward_upgrade(
     migrations.upgrade(postgres_database.migration_url)
     before = _snapshot(postgres_database.migration_url)
     assert any(str(evidence) in str(row[0]) for row in before[2])
-    audit_refusal = "metadata_0001" if include_metadata else "audit_0005"
+    audit_refusal = "metadata_0006" if include_metadata else "audit_0005"
     with pytest.raises(Exception, match=f"{audit_refusal} downgrade refused"):
         migrations.downgrade(postgres_database.migration_url, "audit_0004")
     assert _snapshot(postgres_database.migration_url) == before

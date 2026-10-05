@@ -52,6 +52,7 @@ async def test_precision_29_creation_persistence_and_public_conversion(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=(
             module
@@ -137,6 +138,7 @@ def test_uom_precision_preflight_rejects_dirty_legacy_rows_atomically(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=(
             module

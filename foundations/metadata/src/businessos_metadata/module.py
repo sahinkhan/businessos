@@ -21,6 +21,7 @@ from businessos.sdk import (
     ModuleRegistration,
     PermissionDeclaration,
     Query,
+    TransactionalPersistence,
 )
 
 from .activation_fence import InstallationTransaction, MetadataActivationFence
@@ -50,6 +51,7 @@ from .ui_contracts import (
     UIOverlayMutationResult,
     UIOverlayScope,
 )
+from .ui_publication import PrivateUIWriter
 from .ui_runtime import PublishedUIRuntime
 
 
@@ -284,8 +286,15 @@ class MetadataModule:
         """Private trusted bootstrap composition, not an SDK credential surface."""
         internal_configure_schema_reader(self, factory)
 
-    def _activation_fence(self, factory: InstallationTransaction) -> MetadataActivationFence:
-        return MetadataActivationFence(factory)
+    def _publication_writer(self, persistence: TransactionalPersistence) -> PrivateUIWriter:
+        return PrivateUIWriter(self, persistence)
+
+    def _activation_fence(
+        self,
+        factory: InstallationTransaction,
+        read_factory: InstallationTransaction | None = None,
+    ) -> MetadataActivationFence:
+        return MetadataActivationFence(factory, read_factory)
 
     async def register(self, registration: ModuleRegistration) -> None:
         self._schema_reader = internal_register_schema_reader(

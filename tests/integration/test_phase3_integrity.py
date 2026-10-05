@@ -81,6 +81,7 @@ async def test_currency_public_dispatch_and_permissions(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_AllowAll()),
@@ -123,6 +124,7 @@ async def test_currency_public_dispatch_and_permissions(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_DenyCurrency()),
@@ -145,6 +147,7 @@ def test_uom_base_move_and_rounding_database_integrity(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
     )
@@ -217,6 +220,7 @@ def test_uom_invalid_rounding_preflight_preserves_rows(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
     )
@@ -277,6 +281,7 @@ async def test_phase3_commands_enforce_parent_and_tenant_integrity(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_AllowAll()),
@@ -522,6 +527,7 @@ def test_runtime_role_cannot_mutate_global_geography_or_currency(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
     )
@@ -558,6 +564,7 @@ def test_trusted_geography_change_sees_all_tenant_dependents(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
     )
@@ -616,6 +623,7 @@ def test_trusted_city_change_waits_for_concurrent_address_write(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
     )
@@ -694,6 +702,7 @@ async def test_party_sensitive_projection_matching_and_bounded_search(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_AllowAll()),
@@ -833,6 +842,7 @@ async def test_party_sensitive_projection_matching_and_bounded_search(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
         authorizer=Authorizer(_DenySensitive()),
@@ -862,6 +872,7 @@ def test_phase3_database_constraints_reject_cross_tenant_and_orphans(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
     )
@@ -1034,6 +1045,7 @@ def test_phase3_dirty_data_preflight_preserves_and_retries(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=_foundation_modules(),
     )

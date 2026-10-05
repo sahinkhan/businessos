@@ -35,9 +35,9 @@ from businessos_metadata.module import (
 from businessos.bootstrap import create_application
 from businessos.config import Settings
 from businessos.context import RequestContext, TenantContext
-from businessos.metadata_execution import MetadataDatabaseExecutionAuthority
 from businessos.modules import discover_modules
 from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
+from businessos.publication_database import PublicationDatabaseAuthority
 from businessos.sdk import BusinessOSError
 from businessos.security import Authorizer
 from tests.conftest import PostgreSQLTestDatabase
@@ -101,6 +101,7 @@ def _app(database: PostgreSQLTestDatabase, policy: _Policy) -> Any:
             environment="test",
             database_url=database.runtime_url,
             metadata_database_url=database.metadata_url,
+            ui_publication_database_url=database.ui_publication_url,
         ),
         modules=modules,
         authorizer=Authorizer(policy),
@@ -163,9 +164,9 @@ async def test_phase5a_publish_rollback_fence_rls_and_evidence(
             app, PreflightPublication(definition_id=definition_id), context
         )
         assert first_preflight.expected_active_revision_id is None
-        authority = MetadataDatabaseExecutionAuthority(
-            governance_url=postgres_database.metadata_url,
-            database_name=postgres_database.metadata_url.rsplit("/", 1)[1],
+        authority = PublicationDatabaseAuthority(
+            governance_url=postgres_database.ui_publication_url,
+            database_name=postgres_database.ui_publication_url.rsplit("/", 1)[1],
             pool_size=2,
             pool_timeout=10,
             gate=app.runtime.contributions,
@@ -639,9 +640,9 @@ async def test_publication_wins_activation_race_at_real_postgresql_lock(
     app = _app(postgres_database, _Policy())
     app.runtime.migrations.upgrade(postgres_database.migration_url)
     await app.startup()
-    authority = MetadataDatabaseExecutionAuthority(
-        governance_url=postgres_database.metadata_url,
-        database_name=postgres_database.metadata_url.rsplit("/", 1)[1],
+    authority = PublicationDatabaseAuthority(
+        governance_url=postgres_database.ui_publication_url,
+        database_name=postgres_database.ui_publication_url.rsplit("/", 1)[1],
         pool_size=2,
         pool_timeout=10,
         gate=app.runtime.contributions,
@@ -683,7 +684,7 @@ async def test_publication_wins_activation_race_at_real_postgresql_lock(
                 while True:
                     cursor = await connection.execute(
                         "SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() "
-                        "AND usename='businessos_metadata' AND wait_event_type='Lock' "
+                        "AND usename='businessos_ui_publication' AND wait_event_type='Lock' "
                         "AND query LIKE '%%module_fence%%' AND cardinality(pg_blocking_pids(pid))>0"
                     )
                     row = await cursor.fetchone()

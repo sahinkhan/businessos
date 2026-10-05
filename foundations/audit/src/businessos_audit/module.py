@@ -42,7 +42,7 @@ from .models import (
     compute_audit_checksum_v3,
 )
 from .v2_contracts import AUDIT_APPENDER_V2, AuditAppenderV2, AuditEvidenceV2, RecordAuditLogV2
-from .v2_runtime import AuditAppenderProvider, trusted_interactive_actor
+from .v2_runtime import AuditAppenderProvider, PublicationAuditBridge, trusted_interactive_actor
 
 
 class RecordAuditLogCommand(Command):
@@ -82,10 +82,17 @@ class AuditModule:
     version: str = "1"
 
     def __init__(self) -> None:
+        self._publication_bridge: PublicationAuditBridge | None = None
         data = json.loads(
             files("businessos_audit").joinpath("manifest.json").read_text(encoding="utf-8")
         )
         self.manifest = ModuleManifest.model_validate(data)
+
+    def _configure_publication_appender(self, bridge: PublicationAuditBridge) -> None:
+        """Trusted composition supplies only a fixed append bridge, never SQL."""
+        if self._publication_bridge is not None and self._publication_bridge is not bridge:
+            raise RuntimeError("Private Audit bridge is already configured")
+        self._publication_bridge = bridge
 
     async def register(self, registration: ModuleRegistration) -> None:
         registration.contract("foundation.audit.write-facade.v1", self)
@@ -253,6 +260,24 @@ class AuditModule:
             trace_id=_committed_trace_id(event),
             source_event_id=event.event_id,
             projection_kind="policy-decision-v2",
+        )
+
+    async def _publication_append(
+        self,
+        request: RequestContext,
+        transaction: HandlerTransaction,
+        evidence: object,
+        provenance: dict[str, Any],
+    ) -> object:
+        """Fixed private owner operation, composed by the ADR-024 executor only."""
+        if not isinstance(evidence, AuditEvidenceV2):
+            raise PermissionError("Private publication requires AuditEvidenceV2")
+        return await self._append_v3(
+            request,
+            transaction,
+            evidence,
+            provenance=provenance,
+            trace_id=request.trace_id,
         )
 
     async def _append_v3(

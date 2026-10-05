@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     metadata_database_url: str | None = Field(default=None, repr=False, exclude=True)
     metadata_database_pool_size: int = Field(default=2, ge=1, le=20)
     metadata_database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
+    ui_publication_database_url: str | None = Field(default=None, repr=False, exclude=True)
+    ui_publication_database_pool_size: int = Field(default=2, ge=1, le=20)
+    ui_publication_database_pool_timeout_seconds: float = Field(default=10.0, gt=0)
     database_connection_budget: int = Field(default=100, ge=1)
     database_app_processes: int = Field(default=1, ge=1)
     database_worker_pool_reservation: int = Field(default=5, ge=0)
@@ -72,6 +75,11 @@ class Settings(BaseSettings):
                 else 0
             )
             + self.database_ops_pool_reservation
+            + (
+                self.ui_publication_database_pool_size * self.database_app_processes
+                if self.ui_publication_database_url is not None
+                else 0
+            )
             + self.database_other_connection_reservation
         )
         if required_connections > self.database_connection_budget:
@@ -126,6 +134,28 @@ class Settings(BaseSettings):
 
     @field_serializer("database_url")
     def serialize_database_url(self, _: str) -> str:
+        return "**********"
+
+    @model_validator(mode="after")
+    def validate_ui_publication_profile(self) -> Self:
+        if self.ui_publication_database_url is not None:
+            ordinary = make_url(self.database_url)
+            private = make_url(self.ui_publication_database_url)
+            if (
+                private.drivername != "postgresql+psycopg"
+                or private.username != "businessos_ui_publication"
+                or (private.host, private.port, private.database)
+                != (ordinary.host, ordinary.port, ordinary.database)
+                or any(
+                    key in private.query
+                    for key in ("host", "hostaddr", "port", "service", "options")
+                )
+            ):
+                raise ValueError("UI publication requires its dedicated same-database profile")
+        return self
+
+    @field_serializer("ui_publication_database_url")
+    def serialize_ui_publication_database_url(self, _: str | None) -> str:
         return "**********"
 
     @field_serializer("governance_database_url")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 from uuid import UUID
 
 from sqlalchemy import text
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 METADATA_ROLE = "businessos_metadata"
 _TENANT = "tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid"
 _TABLES = {
-    "platform_metadata.module_fence": {"SELECT", "INSERT", "UPDATE"},
+    "platform_metadata.module_fence": {"SELECT"},
     "platform_metadata.contract_fence": {"SELECT"},
     "platform_metadata.definitions": {"SELECT", "INSERT", "UPDATE"},
     "platform_metadata.revisions": {"SELECT", "INSERT"},
@@ -40,6 +40,9 @@ _TABLES = {
     "platform_metadata.ui_overlay_revisions": {"SELECT", "INSERT"},
     "platform_metadata.ui_revision_module_bindings": {"SELECT", "INSERT"},
     "platform_metadata.ui_revision_binding_seals": {"SELECT", "INSERT"},
+    "platform_metadata.ui_installation_lineage": {"SELECT"},
+    "platform_metadata.ui_expected_provenance": {"SELECT"},
+    "platform_metadata.ui_expected_members": {"SELECT"},
     "platform_audit.audit_logs": {"SELECT", "INSERT"},
     "eventing.outbox_messages": {"SELECT", "INSERT"},
 }
@@ -76,28 +79,36 @@ _HANDLERS = frozenset(
 
 
 class _MetadataPool(_GovernancePool):
+    _role = METADATA_ROLE
+    _tables: ClassVar[dict[str, set[str]]] = _TABLES
+    _column_grants: ClassVar[dict[str, dict[str, set[str]]]] = {
+        "platform_metadata.contract_fence": {"UPDATE": {"id"}},
+        "platform_metadata.module_fence": {"UPDATE": {"module_id"}},
+    }
+
     async def validate(self) -> None:
         try:
             async with self.engine.connect() as connection:
                 identity = await connection.execute(
                     text("SELECT current_database(), current_user, session_user")
                 )
-                if identity.one() != (self.database_name, METADATA_ROLE, METADATA_ROLE):
+                if identity.one() != (self.database_name, self._role, self._role):
                     raise ConfigurationError("Metadata database identity mismatch")
                 role = await connection.execute(
                     text(
                         "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit, "
                         "rolbypassrls, rolreplication FROM pg_roles WHERE "
-                        "rolname = 'businessos_metadata'"
-                    )
+                        "rolname = :role"
+                    ),
+                    {"role": self._role},
                 )
                 if role.one_or_none() != (True, False, False, False, False, False, False):
                     raise ConfigurationError("Metadata database role is unsafe")
                 unsafe = await connection.execute(
                     text(
                         "SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid "
-                        "JOIN pg_roles u ON u.oid=m.member WHERE r.rolname='businessos_metadata' "
-                        "OR u.rolname='businessos_metadata' OR "
+                        "JOIN pg_roles u ON u.oid=m.member WHERE r.rolname=:role "
+                        "OR u.rolname=:role OR "
                         "(u.rolname IN ('businessos_app','businessos_worker') AND NOT "
                         "(u.rolname='businessos_worker' AND r.rolname='businessos_app')) "
                         "UNION ALL SELECT 1 FROM pg_class WHERE relowner=current_user::regrole "
@@ -105,7 +116,8 @@ class _MetadataPool(_GovernancePool):
                         "UNION ALL SELECT 1 FROM pg_proc WHERE proowner=current_user::regrole "
                         "UNION ALL SELECT 1 FROM pg_database WHERE "
                         "datdba=current_user::regrole LIMIT 1"
-                    )
+                    ),
+                    {"role": self._role},
                 )
                 if unsafe.first() is not None:
                     raise ConfigurationError("Metadata database ownership or membership is unsafe")
@@ -130,9 +142,9 @@ class _MetadataPool(_GovernancePool):
                         "has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES'))"
                     )
                 )
-                if set(inventory.scalars()) != set(_TABLES):
+                if set(inventory.scalars()) != set(self._tables):
                     raise ConfigurationError("Metadata database grant inventory is unsafe")
-                for qualified, allowed in _TABLES.items():
+                for qualified, allowed in self._tables.items():
                     for privilege in (
                         "SELECT",
                         "INSERT",
@@ -152,10 +164,7 @@ class _MetadataPool(_GovernancePool):
                             privilege in {"SELECT", "INSERT", "UPDATE", "REFERENCES"}
                             and privilege not in allowed
                         ):
-                            if (
-                                qualified == "platform_metadata.contract_fence"
-                                and privilege == "UPDATE"
-                            ):
+                            if privilege in self._column_grants.get(qualified, {}):
                                 continue
                             columns_allowed = await connection.execute(
                                 text(
@@ -182,7 +191,7 @@ class _MetadataPool(_GovernancePool):
                                     "Ordinary Metadata access remains available"
                                 )
                     schema, table = qualified.split(".")
-                    if table in {"module_fence", "contract_fence"}:
+                    if table in {"module_fence", "contract_fence", "ui_installation_lineage"}:
                         continue
                     state = await connection.execute(
                         text(
@@ -198,30 +207,33 @@ class _MetadataPool(_GovernancePool):
                             "SELECT roles,cmd,qual,with_check FROM pg_policies "
                             "WHERE schemaname=:schema AND tablename=:table "
                             "AND (roles @> ARRAY['public']::name[] "
-                            "OR roles @> ARRAY['businessos_metadata']::name[])"
+                            "OR roles @> ARRAY[:role]::name[])"
                         ),
-                        {"schema": schema, "table": table},
+                        {"schema": schema, "table": table, "role": self._role},
                     )
                     rows = policies.all()
                     if (
                         len(rows) != 1
-                        or rows[0][:2] != ([METADATA_ROLE], "ALL")
+                        or rows[0][:2] != ([self._role], "ALL")
                         or any(
                             _normalized_policy(value) != _normalized_policy(_TENANT)
                             for value in rows[0][2:]
                         )
                     ):
                         raise ConfigurationError("Metadata tenant policy is unsafe")
-                columns = await connection.execute(
-                    text(
-                        "SELECT a.attname FROM pg_attribute a WHERE a.attrelid="
-                        "'platform_metadata.contract_fence'::regclass AND a.attnum>0 "
-                        "AND NOT a.attisdropped AND has_column_privilege(current_user, "
-                        "a.attrelid,a.attname,'UPDATE') ORDER BY a.attname"
-                    )
-                )
-                if columns.scalars().all() != ["id"]:
-                    raise ConfigurationError("Metadata contract generation grants are unsafe")
+                for table, grants in self._column_grants.items():
+                    for privilege, expected in grants.items():
+                        columns = await connection.execute(
+                            text(
+                                "SELECT a.attname FROM pg_attribute a WHERE a.attrelid="
+                                "to_regclass(:table) AND a.attnum>0 AND NOT a.attisdropped "
+                                "AND has_column_privilege("
+                                "current_user,a.attrelid,a.attname,:privilege)"
+                            ),
+                            {"table": table, "privilege": privilege},
+                        )
+                        if set(columns.scalars()) != expected:
+                            raise ConfigurationError("Protected Metadata column grants are unsafe")
                 # Ordinary sessions cannot invoke a SECURITY DEFINER escape hatch
                 # or reach a protected relation through a transitive view.
                 indirect = await connection.execute(
@@ -287,12 +299,12 @@ class _MetadataPool(_GovernancePool):
 
     def for_tenant(self, tenant: TenantContext) -> SQLAlchemyUnitOfWork:
         return SQLAlchemyUnitOfWork(
-            self.sessions, tenant, expected_database=self.database_name, expected_user=METADATA_ROLE
+            self.sessions, tenant, expected_database=self.database_name, expected_user=self._role
         )
 
     def installation(self) -> SQLAlchemyUnitOfWork:
         return SQLAlchemyUnitOfWork(
-            self.sessions, None, expected_database=self.database_name, expected_user=METADATA_ROLE
+            self.sessions, None, expected_database=self.database_name, expected_user=self._role
         )
 
 

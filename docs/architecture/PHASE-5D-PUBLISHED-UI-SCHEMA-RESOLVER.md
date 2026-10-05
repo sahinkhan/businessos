@@ -124,7 +124,8 @@ draft JSON. Publication pins the current compatibility digest. Reactivation chec
 that retained revision's digest and compatibility before changing the pointer;
 history is never rewritten. Retirement removes eligibility and retains history.
 Every mutation writes AuditAppenderV2 evidence and an outbox event in the same
-protected Metadata PostgreSQL UOW; failed evidence rolls back data and pointer changes.
+protected PostgreSQL UOW; publication/reactivation/retirement use the ADR-024 private
+publication profile. Failed evidence rolls back data and pointer changes.
 Mutation results are `UIOverlayMutationResult`, containing identity/generation and
 publication status only. They never contain editable draft JSON, including rollback,
 publication and retirement. `ReadUIOverlay` alone returns `UIOverlayRecord` and
@@ -138,7 +139,7 @@ unbound active revisions from the failed, uncertified 0003 candidate: the operat
 must retire those overlays first; missing historical pins are never invented.
 It refuses downgrade when UI history remains. Certified Phase 5C upgrade is additive.
 
-`metadata_0005_ui_binding_seals` preserves committed 0003/0004 and adds immutable
+The historical `metadata_0005_ui_binding_seals` preserves committed 0003/0004 and adds immutable
 binding seals. Publication creates a revision, inserts its complete bounded binding
 set, validates identities, inserts the seal, then activates the pointer and adjusts
 counters in one transaction. A deferred constraint requires every new revision to
@@ -147,19 +148,23 @@ and seal INSERT serialize on the owning overlay row; after sealing, INSERT is
 rejected and existing UPDATE/DELETE protections remain. A seal cannot be updated,
 deleted or reopened, including after retirement. Rollback removes all new state.
 
-Upgrade from certified Phase 5C and retained 0004 drafts is additive and replayable.
-Upgrade refuses any retained unsealed revision history from the uncertified candidate
+The current `metadata_0006_ui_provenance` upgrade from certified Phase 5C and retained
+0004 drafts is additive and replayable. Upgrade refuses any retained revision history,
+including 0005-sealed history, from the uncertified candidate
 before changing schema: neither old counters nor current module identities prove
 the original binding set was complete. No historical bindings or seals are invented.
 Such an uncertified database requires a separately reviewed recovery plan; retirement
-alone does not establish completeness. Downgrade refuses any retained UI overlays.
+alone does not establish completeness. The 0006 downgrade refuses even on an empty
+installation: restoring the old activation grants requires reviewed operator recovery.
 
-All four UI tenant tables enable FORCE RLS. Only `businessos_metadata` has narrowly scoped
-runtime grants (overlay SELECT/INSERT/UPDATE, revision/binding/seal SELECT/INSERT); ordinary app,
-worker, operations and PUBLIC receive none. Migrator owns DDL. Composite same-tenant
+All six UI tenant tables enable FORCE RLS. `businessos_metadata` retains narrowly scoped
+draft/runtime access but cannot insert expected provenance. Only the private publication
+profile may issue expected headers/members and perform the complete trusted publication.
+Ordinary app, worker, operations and PUBLIC receive no UI grants. Migrator owns DDL.
+Composite same-tenant
 foreign keys bind revisions and active pointers. Triggers preserve identity/history,
-generations, bounded sequences and quotas. Downgrade refuses retained overlays before
-any destructive statement. Historical migrations are unchanged.
+generations, bounded sequences and quotas. Downgrade refuses before any destructive
+statement. Historical migrations are unchanged.
 
 ## Concurrency, provenance and cache decision
 
@@ -224,8 +229,15 @@ owns authority synchronization; Metadata does not duplicate Policy rules or read
 Policy/Identity private tables. Unrelated subjects/tenants must not use a global
 process mutex. No shared schema cache was introduced.
 
-Production composition that installs the `foundation.metadata.published-ui.v1`
-contract registers `published-ui-authority-fence` in the existing readiness checks.
+Production composition registers `published-ui-authority-fence` in the existing
+readiness checks. Each evaluation uses the current active contract registry for
+`foundation.metadata.published-ui.v1`, not startup manifests. Draining generations
+already reject new admissions and are absent from active contract lookup; this
+readiness prerequisite therefore ceases during drain and after disable/retirement.
+Existing admitted work still retains its independent completion and Policy fences.
+Reactivation publishes a new generation and restores the readiness prerequisite.
+Registry lookup and evaluator capability inspection do not await, so the check
+observes one event-loop snapshot without caching lifecycle state or taking a global lock.
 A sequential-only evaluator returns not-ready (HTTP 503); a runtime-checkable
 `FencedPolicyEvaluator` satisfies this capability check. Deployments without that
 contract and development/test composition retain their existing behavior. This is
@@ -285,3 +297,85 @@ cross-tenant reader availability and R3 production capability readiness are the
 scope of this second remediation. Both failures remain historical evidence.
 Phase 5D remains an IMPLEMENTATION CANDIDATE / NOT CERTIFIED. A fresh independent
 second-remediation re-audit of the exact new candidate is required.
+
+The second remediation `01f5454b94a2746fdb448e5e4a26b8e9002a6adf` failed
+independent re-audit: Critical 0 / High 0 / Medium 2 / Low 0. Run `37215110092`
+passed for that candidate but does not override the failed audit. N1 established
+that the 0005 seal proves immutability of supplied rows, not authoritative set
+completeness; R1 and M1 remain incomplete. N2 identified readiness retaining startup
+manifest state after disable. The dynamic readiness change above addresses N2;
+ADR-024 subsequently passed independent architecture review and received owner
+acceptance on exact proposal `3092a976cbae291a700f26765c0b95638e4809c2` in
+[comment 5991893651](https://github.com/sahinkhan/businessos/pull/67#issuecomment-5991893651).
+Its semantic architecture is unchanged. The current implementation adds the
+accepted N1 boundary described below; it requires fresh implementation audit.
+Phase 5D remains an IMPLEMENTATION CANDIDATE / NOT CERTIFIED.
+
+## ADR-024 private publication boundary
+
+`PublishUIOverlay`, `ReactivateUIOverlay` and `RetireUIOverlay` retain their public
+contracts. The kernel authenticates their exact approved registration/generation,
+selects `businessos_ui_publication` before opening the UOW, and invokes the fixed
+Metadata-owned writer. It does not invoke the ordinary registered handler with a
+more privileged session. No profile selector or proof-issuance API is added to SDK,
+DI, manifests or tenant configuration. Handler/provider contexts deny generic SQL;
+the private transaction remains in the kernel's scoped capability registry. The
+AuditAppenderV2 bridge offers only the approved Audit append operation.
+
+The executor retains the actual catalog declarations/dependencies through completion.
+The approved owner writer captures their complete union against locked database
+identities, with canonical module IDs, exact opaque artifact identities, positive
+BIGINT generations, UTF-8 byte ordering and a 128-member bound. It neither accepts
+an expected set from a command nor reconstructs expectations from actual binding rows.
+
+Forward revision `metadata_0006_ui_provenance` adds immutable expected headers and
+members and an immutable migration-provisioned installation lineage. Context binds
+tenant/view/overlay/revision/scope, draft/prior-active generations, document and
+compatibility digests, declarations, contract generations and issuance model/version.
+Expected rows can be inserted only through the private principal. A seal requires
+bidirectional relational equality with the actual bindings and exact context matching.
+All revision, proof, seal, pointer, counter, Audit and outbox effects share one
+PostgreSQL transaction, with final Policy authority held through commit. No signature,
+second publication transaction, role switch or post-commit repair is involved.
+
+Ordinary Metadata cannot write module artifact/generation/counter facts. Existing
+`MetadataActivationFence` remains the lifecycle authority. Counter updates execute
+only from the existing pointer-transition triggers under a narrowly granted NOLOGIN
+owner; runtime roles have no membership or direct EXECUTE permission. FORCE RLS
+constrains tenant-owned provenance and counter binding reads. Existing KEY SHARE
+reads and NO KEY UPDATE counter writes preserve cross-tenant reader availability.
+Activation retains the five-second lock bound. Restart at an unchanged admitted
+artifact and normal resolution use ordinary Metadata reads, without the issuer pool.
+
+Unverifiable 0005 revision history is refused before schema changes; it is never
+backfilled from old bindings or seals. This security boundary is forward-only:
+downgrade refuses rather than restoring forgeable activation/provenance privileges,
+including on an otherwise empty UI installation. Reviewed operator recovery is required.
+
+## Private-profile deployment and readiness
+
+Operators provision `businessos_ui_publication` as LOGIN/NOSUPERUSER/NOBYPASSRLS,
+non-owner, with no role memberships. `businessos_metadata_fence_owner` is NOLOGIN;
+only the trusted migrator has its ownership-maintenance membership. The database-role
+transition command provisions these identities before the forward migration and
+requires the separate `BOS_UI_PUBLICATION_PASSWORD` operator secret. Migrations
+contain no runtime password. Docker development bootstrap uses development-only
+credentials; production, Kubernetes and self-hosted operators inject their own secret
+through the existing trusted deployment environment/secret-store mechanism.
+
+`BOS_UI_PUBLICATION_DATABASE_URL` must name the dedicated role on the same endpoint
+and database. There is no Metadata/Governance/migrator fallback. The bounded pool is
+included in the installation connection budget, has no overflow, checks identity,
+effective grants, verifier objects and FORCE RLS, and supports the existing atomic
+credential-rotation/lease-draining mechanism. Connections are physically renewed on
+checkout to reset state. Connection/pool waits are bounded; queries have a 30-second
+limit, idle transactions 30 seconds and transactions 60 seconds. No vendor connection
+or external signing service is required in air-gapped installations.
+
+Production readiness follows the currently active Published UI contract. Active UI
+requires both fenced Policy and a valid private profile; disabled/draining UI does
+not retain either requirement from a startup manifest. Request-time enforcement still
+fails closed. Published reads consume stored authenticated proof without issuer access.
+A valid same-installation restore preserves lineage and all proof associations.
+Cross-installation copies need reviewed import/re-publication; setting the application
+installation UUID cannot create or replace database lineage authority.

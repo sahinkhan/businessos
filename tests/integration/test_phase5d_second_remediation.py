@@ -18,12 +18,13 @@ from businessos_metadata.module import MetadataModule, ReactivateUIOverlay, Reti
 from businessos_metadata.ui_contracts import UIOverlayMutationResult
 from sqlalchemy.exc import DBAPIError
 
+from businessos.activation import ContributionGeneration
 from businessos.bootstrap import create_application
 from businessos.config import Settings
-from businessos.metadata_execution import MetadataDatabaseExecutionAuthority
 from businessos.modules import discover_modules
 from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 from businessos.persistence.uow import SQLAlchemyUnitOfWork
+from businessos.publication_database import PublicationDatabaseAuthority
 from businessos.sdk import (
     BusinessOSError,
     HandlingContext,
@@ -55,8 +56,8 @@ async def test_stalled_publication_bounds_activation_wait_and_releases_on_cancel
     h = ui_harness
     assert h.app.runtime is not None
     row = await create(h)
-    authority = MetadataDatabaseExecutionAuthority(
-        governance_url=h.database.metadata_url,
+    authority = PublicationDatabaseAuthority(
+        governance_url=h.database.ui_publication_url,
         database_name=h.database.metadata_url.rsplit("/", 1)[1],
         pool_size=2,
         pool_timeout=10,
@@ -290,8 +291,11 @@ async def test_direct_role_cannot_commit_unsealed_revision_or_reopen_seal(
         connection.execute("SELECT set_config('app.tenant_id',%s,true)", (str(tenant),))
         connection.execute(
             "INSERT INTO platform_metadata.ui_overlay_revisions "
-            "(id,tenant_id,overlay_id,sequence,document,digest,compatibility_digest,published_by) "
-            "SELECT %s,tenant_id,id,1,draft_document,%s,draft_compatibility_digest,created_by "
+            "(id,tenant_id,overlay_id,sequence,document,digest,compatibility_digest,published_by,"
+            "declaration_provenance,schema_generation,ui_generation,"
+            "draft_generation,prior_active_generation) "
+            "SELECT %s,tenant_id,id,1,draft_document,%s,draft_compatibility_digest,created_by,"
+            "'[]'::jsonb,1,1,draft_generation,active_generation "
             "FROM platform_metadata.ui_overlays WHERE id=%s",
             (uuid4(), "a" * 64, row.overlay_id),
         )
@@ -411,6 +415,7 @@ async def test_unrelated_tenant_resolves_while_publisher_paused(
 )
 async def test_production_ui_readiness_requires_fenced_policy(
     postgres_database: PostgreSQLTestDatabase,
+    monkeypatch: pytest.MonkeyPatch,
     environment: str,
     enabled: bool,
     fenced: bool,
@@ -427,6 +432,7 @@ async def test_production_ui_readiness_requires_fenced_policy(
             environment=environment,
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
             database_readiness_enabled=False,
         )
     )
@@ -435,10 +441,11 @@ async def test_production_ui_readiness_requires_fenced_policy(
             Path("tests/fixtures/approved-module-inventory.ci.json").read_text, encoding="utf-8"
         )
     )
+    authorizer = Authorizer(UIPolicy() if fenced else _Policy())
     app = create_application(
         settings,
         modules=modules,
-        authorizer=Authorizer(UIPolicy() if fenced else _Policy()),
+        authorizer=authorizer,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(
             modules, inventory=inventory
         ),
@@ -453,9 +460,67 @@ async def test_production_ui_readiness_requires_fenced_policy(
             response = await client.get("/readyz")
         assert response.status_code == status
         checks = {item["name"]: item for item in response.json()["checks"]}
-        if environment == "production" and enabled:
-            assert checks["published-ui-authority-fence"]["ready"] is fenced
+        if environment == "production":
+            assert checks["published-ui-authority-fence"]["ready"] is (fenced or not enabled)
+            assert checks["published-ui-private-profile"]["ready"]
         else:
             assert "published-ui-authority-fence" not in checks
+        if environment == "production" and enabled:
+            runtime = app.runtime
+            contract = "foundation.metadata.published-ui.v1"
+            entered = asyncio.Event()
+            close = runtime.contributions.close_and_drain
+
+            async def draining(
+                generation: ContributionGeneration, *, timeout_seconds: float
+            ) -> None:
+                entered.set()
+                await close(generation, timeout_seconds=timeout_seconds)
+
+            monkeypatch.setattr(runtime.contributions, "close_and_drain", draining)
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=cast(Any, app)), base_url="http://test"
+            ) as client:
+                if fenced:
+                    executor = runtime.messages._publication
+                    assert executor is not None
+                    authority = executor.authority
+                    pool = authority._active
+                    assert pool is not None
+                    # Missing issuer affects mutations/readiness, not persisted reads
+                    # or lifecycle admission at an unchanged artifact identity.
+                    monkeypatch.setattr(authority, "_active", None)
+                    unavailable = await client.get("/readyz")
+                    assert unavailable.status_code == 503
+                    missing_checks = {item["name"]: item for item in unavailable.json()["checks"]}
+                    assert not missing_checks["published-ui-private-profile"]["ready"]
+                    await runtime.lifecycle.disable("foundation.metadata")
+                    assert (await client.get("/readyz")).status_code == 200
+                    await runtime.lifecycle.enable("foundation.metadata")
+                    assert (await client.get("/readyz")).status_code == 503
+                    monkeypatch.setattr(authority, "_active", pool)
+                    assert (await client.get("/readyz")).status_code == 200
+                entered.clear()
+                previous = runtime.contracts.resolve(contract).generation
+                async with runtime.contracts.admitted(contract):
+                    disabling = asyncio.create_task(
+                        runtime.lifecycle.disable("foundation.metadata")
+                    )
+                    await asyncio.wait_for(entered.wait(), 5)
+                    assert not runtime.contracts.contains(contract)
+                    assert not disabling.done()
+                    assert (await client.get("/readyz")).status_code == 200
+                await asyncio.wait_for(disabling, 5)
+                assert not runtime.contracts.contains(contract, include_inactive=True)
+                assert (await client.get("/readyz")).status_code == 200
+                await runtime.lifecycle.enable("foundation.metadata")
+                assert runtime.contracts.resolve(contract).generation != previous
+                assert (await client.get("/readyz")).status_code == status
+                if fenced:
+                    monkeypatch.setattr(authorizer, "_evaluator", _Policy())
+                    assert (await client.get("/readyz")).status_code == 503
+                await runtime.lifecycle.retire("foundation.metadata")
+                assert not runtime.contracts.contains(contract)
+                assert (await client.get("/readyz")).status_code == 200
     finally:
         await app.shutdown()

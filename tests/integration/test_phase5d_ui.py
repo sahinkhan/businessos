@@ -292,9 +292,22 @@ async def test_stale_generations_and_dependency_artifacts_refuse_publication_and
             "SELECT artifact_identity,generation FROM platform_metadata.module_fence "
             "WHERE module_id='foundation.party'"
         ).fetchone()
+        with pytest.raises(psycopg.errors.RaiseException, match="activation is incompatible"):
+            with connection.transaction():
+                connection.execute(
+                    "UPDATE platform_metadata.module_fence SET artifact_identity='upgraded', "
+                    "generation=generation+1 WHERE module_id='foundation.party'"
+                )
+        # Explicit DBA fault injection preserves the historical stale-read witness.
+        connection.execute(
+            "ALTER TABLE platform_metadata.module_fence DISABLE TRIGGER check_module_identity"
+        )
         connection.execute(
             "UPDATE platform_metadata.module_fence SET artifact_identity='upgraded', "
             "generation=generation+1 WHERE module_id='foundation.party'"
+        )
+        connection.execute(
+            "ALTER TABLE platform_metadata.module_fence ENABLE TRIGGER check_module_identity"
         )
     resolution = await h.resolve()
     assert resolution.resolved is None
@@ -322,9 +335,15 @@ async def test_stale_generations_and_dependency_artifacts_refuse_publication_and
     # Restore its original authority before applying any further publication.
     with psycopg.connect(_url(h.database.migration_url)) as connection:
         connection.execute(
+            "ALTER TABLE platform_metadata.module_fence DISABLE TRIGGER check_module_identity"
+        )
+        connection.execute(
             "UPDATE platform_metadata.module_fence SET artifact_identity=%s,generation=%s "
             "WHERE module_id='foundation.party'",
             prior,
+        )
+        connection.execute(
+            "ALTER TABLE platform_metadata.module_fence ENABLE TRIGGER check_module_identity"
         )
     edited = await h.command(
         EditUIOverlay(
@@ -647,10 +666,11 @@ async def test_module_drain_refuses_inflight_and_upgrade_waits_for_resolution(
         result = await resolving
         assert result.resolved is not None
         assert result.resolved.provenance.overlays[0].revision_id == row.active_revision_id
-        await upgrading
+        with pytest.raises(psycopg.errors.RaiseException, match="activation is incompatible"):
+            await upgrading
         policy.pause = False
         result = await h.resolve()
-        assert result.resolved is None and result.diagnostics[0].code == "stale_overlay"
+        assert result.resolved is not None
     finally:
         policy.release.set()
         gate.publish(generation)
@@ -702,31 +722,11 @@ async def test_revision_and_tenant_quotas_retain_history(ui_harness: Harness) ->
     h = ui_harness
     row = await publish(h, await create(h))
     assert h.context.tenant is not None
+    # Populate retained history through the real trusted issuer; copying binding
+    # rows or the previous seal cannot manufacture ADR-024 completeness.
+    for _ in range(63):
+        row = await publish(h, row)
     with psycopg.connect(_url(h.database.migration_url)) as connection:
-        for sequence in range(2, 65):
-            retained_revision = uuid4()
-            connection.execute(
-                (
-                    "INSERT INTO platform_metadata.ui_overlay_revisions "
-                    "(id,tenant_id,overlay_id,sequence,document,digest,compatibility_digest,p"
-                    "ublished_by) SELECT "
-                    "%s,tenant_id,overlay_id,%s,document,digest,compatibility_digest,publishe"
-                    "d_by FROM platform_metadata.ui_overlay_revisions WHERE id=%s"
-                ),
-                (retained_revision, sequence, row.active_revision_id),
-            )
-            connection.execute(
-                "INSERT INTO platform_metadata.ui_revision_module_bindings "
-                "(tenant_id,overlay_id,revision_id,module_id,artifact_identity,generation) "
-                "SELECT tenant_id,overlay_id,%s,module_id,artifact_identity,generation "
-                "FROM platform_metadata.ui_revision_module_bindings WHERE revision_id=%s",
-                (retained_revision, row.active_revision_id),
-            )
-            connection.execute(
-                "INSERT INTO platform_metadata.ui_revision_binding_seals "
-                "(tenant_id,overlay_id,revision_id) VALUES (%s,%s,%s)",
-                (h.context.tenant.tenant_id, row.overlay_id, retained_revision),
-            )
         for _ in range(1023):
             connection.execute(
                 (

@@ -1,26 +1,38 @@
 # ADR-024: Trusted Compatibility Completeness Provenance
 
-Status: PROPOSED
+Status: ACCEPTED (owner architecture acceptance; PR #67 main merge remains pending)
 
-Decision date: Not accepted; proposal prepared 2026-10-05.
+Decision date: 2026-10-05.
 
 Approving roles required: Architecture Maintainer; Platform/Kernel Maintainer;
 Metadata/Studio Owning Domain Maintainer; Security Maintainer; Policy Maintainer;
 Migration Safety Reviewer; SDK/Contract Maintainer; Audit Owning Domain Maintainer;
 Release Maintainer.
 
-Approval pull request or commit: PENDING. This uncommitted proposal has no approval.
+Accepted exact proposal commit: `3092a976cbae291a700f26765c0b95638e4809c2`.
 
-Supersedes: None. This proposes a bounded extension to ADR-022/ADR-023, not a
+Audited proposal SHA-256:
+`a1f928fcb009407ebaf57c99634d8716705acf420da971f77c7e56030da8b6fd`.
+
+Independent architecture audit: ADR-024 INDEPENDENT ARCHITECTURE AUDIT — PASS;
+Critical 0 / High 0 / Medium 0 / Low 0 / Documentation-only 0.
+
+Owner architecture acceptance: [PR #67, comment 5991893651](https://github.com/sahinkhan/businessos/pull/67#issuecomment-5991893651),
+personally posted by @sahinkhan for the exact proposal commit above.
+Review model: SOLO MAINTAINER OWNER ATTESTATION.
+Independent human review: NOT PERFORMED. Independent technical architecture audit: PERFORMED.
+The acceptance comment records Architecture, Security, Metadata/Studio, SDK/Contract,
+Migration Safety and Release responsibilities. This record does not add roles to that comment.
+
+Supersedes: None. This is a bounded extension to ADR-022/ADR-023, not a
 replacement of their accepted decisions or a general reopening of frozen phases.
 
 Superseded by: None.
 
-Implementation authority: NONE from this proposal. N1 implementation remains
-blocked pending ADR acceptance under [ADR governance](../governance/ADR-GOVERNANCE.md).
-Phase 5D remains IMPLEMENTATION CANDIDATE / NOT CERTIFIED. Phase 5E–5H remain
-unauthorized. No experiment, migration, credential provisioning or runtime change
-is authorized by this document's PROPOSED status.
+Implementation authority: N1 remediation under the accepted architecture below,
+explicitly authorized by the owner. The original proposal context and semantic decision
+are preserved below as audited. Architecture acceptance does not certify its implementation.
+Phase 5D remains IMPLEMENTATION CANDIDATE / NOT CERTIFIED. Phase 5E–5H remain unauthorized.
 
 ## Context
 
@@ -573,5 +585,5 @@ instead of introducing cryptographic receipts. Security/Migration/Release review
 approve the associated provisioning and restore/refusal policy. No unresolved algorithm
 choice is delegated to implementation because B selects no cryptographic receipt.
 
-ADR-024 is PROPOSED only. N1 implementation remains blocked pending ADR acceptance.
+ADR-024 architecture is owner-accepted for narrowly bounded N1 implementation.
 Phase 5D remains NOT CERTIFIED. PR #67 remains draft and unmerged.

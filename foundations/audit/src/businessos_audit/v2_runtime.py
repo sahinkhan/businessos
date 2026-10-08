@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from businessos_identity import AUTHENTICATED_PRINCIPAL, AuthenticatedPrincipalBinding
 
@@ -20,6 +21,10 @@ from .v2_contracts import AUDIT_APPENDER_V2, AuditEvidenceV2
 
 if TYPE_CHECKING:
     from .module import AuditModule
+
+type PublicationAuditBridge = Callable[
+    [HandlingContext, object, dict[str, Any]], Awaitable[object | None]
+]
 
 
 async def trusted_interactive_actor(ctx: HandlingContext) -> dict[str, object]:
@@ -73,22 +78,29 @@ class AuditAppenderProvider:
         ):
             raise PermissionError("Command owner lacks a direct Audit dependency")
         actor = await trusted_interactive_actor(ctx)
+        provenance = {
+            "version": "audit.provenance.v3",
+            "path": "handler-command",
+            "actual_actor": actor,
+            "origin_actor": None,
+            "support": None,
+            "handler": {
+                "owner": invocation.owner_module_id,
+                "generation": invocation.generation.number,
+            },
+            "correlation_source": "request-context",
+            "trace_source": "request-context",
+        }
+        bridge = self.owner._publication_bridge  # pyright: ignore[reportPrivateUsage]
+        publication = await bridge(ctx, evidence, provenance) if bridge is not None else None
+        if publication is not None:
+            if not isinstance(publication, AuditRecord):
+                raise PermissionError("Invalid private Audit result")
+            return publication
         return await self.owner._append_v3(  # pyright: ignore[reportPrivateUsage]
             ctx.request,
             ctx.unit_of_work,
             evidence,
             trace_id=ctx.request.trace_id,
-            provenance={
-                "version": "audit.provenance.v3",
-                "path": "handler-command",
-                "actual_actor": actor,
-                "origin_actor": None,
-                "support": None,
-                "handler": {
-                    "owner": invocation.owner_module_id,
-                    "generation": invocation.generation.number,
-                },
-                "correlation_source": "request-context",
-                "trace_source": "request-context",
-            },
+            provenance=provenance,
         )

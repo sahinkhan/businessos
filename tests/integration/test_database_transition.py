@@ -150,6 +150,7 @@ def test_retained_proof_0002_database_transitions_without_data_loss() -> None:
         worker="businessos-worker",
         governance="businessos-governance",
         metadata="businessos-metadata",
+        ui_publication="businessos-ui-publication",
     )
 
     with psycopg.connect(admin_base, autocommit=True) as connection:

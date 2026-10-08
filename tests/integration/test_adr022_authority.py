@@ -51,6 +51,7 @@ def _application(
             database_url=database.runtime_url,
             governance_database_url=database.governance_url,
             metadata_database_url=database.metadata_url,
+            ui_publication_database_url=database.ui_publication_url,
         ),
         modules=(
             module
@@ -78,6 +79,7 @@ async def test_adr022_startup_rejects_budget_above_postgresql_capacity(
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
             database_connection_budget=10_000,
         ),
         modules=(

@@ -40,6 +40,7 @@ def _app(database: PostgreSQLTestDatabase) -> Any:
             environment="test",
             database_url=database.runtime_url,
             metadata_database_url=database.metadata_url,
+            ui_publication_database_url=database.ui_publication_url,
         ),
         modules=modules,
         authorizer=Authorizer(_AllowAll()),

@@ -34,13 +34,14 @@ def _raw(url: str) -> str:
     return url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
-def _settings(url: str, governance_url: str, metadata_url: str) -> Settings:
+def _settings(url: str, governance_url: str, metadata_url: str, publication_url: str) -> Settings:
     return Settings(
         environment="test",
         database_url=url,
         database_pool_size=4,
         governance_database_url=governance_url,
         metadata_database_url=metadata_url,
+        ui_publication_database_url=publication_url,
     )
 
 
@@ -84,6 +85,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
             postgres_database.runtime_url,
             postgres_database.governance_url,
             postgres_database.metadata_url,
+            postgres_database.ui_publication_url,
         ),
         modules=discover_modules(),
     )
@@ -163,7 +165,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
             ).fetchall()
         assert heads == {
             "geography_0003",
-            "metadata_0002_custom_entities",
+            "metadata_0006_ui_provenance",
             "identity_0005",
             "organization_0003",
             "party_0003_custom_fields",
@@ -176,7 +178,7 @@ def test_phase4_migrations_runtime_access_rls_and_append_only_audit(
     finally:
         with pytest.raises(
             Exception,
-            match=r"(?:audit_0005|policy_0005|gov_0005|metadata_0001|proof_0004) downgrade refused",
+            match=r"(?:audit_0005|policy_0005|gov_0005|metadata_0006|proof_0004) downgrade refused",
         ):
             app.runtime.migrations.downgrade(postgres_database.migration_url)
 
@@ -192,6 +194,7 @@ async def test_governance_retention_legal_hold_and_consent_lifecycle(
             postgres_database.runtime_url,
             postgres_database.governance_url,
             postgres_database.metadata_url,
+            postgres_database.ui_publication_url,
         ),
         modules=(
             module

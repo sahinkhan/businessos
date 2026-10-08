@@ -42,7 +42,12 @@
     "foundation.metadata.custom_entity.create",
     "foundation.metadata.custom_entity.update",
     "foundation.metadata.custom_entity.archive",
-    "foundation.metadata.custom_entity.export"
+    "foundation.metadata.custom_entity.export",
+    "foundation.metadata.ui.read",
+    "foundation.metadata.ui.draft",
+    "foundation.metadata.ui.publish",
+    "foundation.metadata.ui.rollback",
+    "foundation.metadata.ui.retire"
   ],
   "public_contracts": [
     {
@@ -72,6 +77,10 @@
     {
       "contract_id": "foundation.metadata.custom-entity-definition.v1",
       "version": "1.0"
+    },
+    {
+      "contract_id": "foundation.metadata.published-ui.v1",
+      "version": "1.0"
     }
   ],
   "resource_ownership": [
@@ -83,6 +92,11 @@
     {
       "owner_module_id": "foundation.metadata",
       "resource_namespace": "foundation.metadata.custom_entity",
+      "contract_version": "1"
+    },
+    {
+      "owner_module_id": "foundation.metadata",
+      "resource_namespace": "foundation.metadata.ui_overlay",
       "contract_version": "1"
     }
   ],

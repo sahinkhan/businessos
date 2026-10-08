@@ -64,6 +64,10 @@ from businessos_metadata import (
     CreateCustomEntityDefinition, EditCustomEntityDraft, ReadCustomEntityDraft,
     ReadActiveCustomEntityRevision, RetireCustomEntityDefinition,
     CustomEntityDefinitionSnapshot, CustomEntityDefinitionRecord,
+    CreateUIOverlay, EditUIOverlay, PublishUIOverlay, ReactivateUIOverlay,
+    ReadUIOverlay, ResolvePublishedUI, RetireUIOverlay, ResolvedUISchema,
+    UIOverlayDocument, UIOverlayMutationResult, UIOverlayRecord, UIOverlayScope,
+    UIResolution, UIViewSchema,
 )
 from businessos_metadata.contracts import DefinitionKind
 from businessos_metadata.custom_entity_store import CustomEntityStore
@@ -87,6 +91,38 @@ assert CustomEntityQueryCapabilities().version == '1.0'
 assert not CustomEntityQueryCapabilities().custom_field_filter
 assert CustomEntityStore.__module__ == 'businessos_metadata.custom_entity_store'
 print('PHASE5C_INSTALLED_PUBLIC_SURFACES_PASS — runtime/contracts/migration packaged; no source shadowing')
+from businessos.sdk import METADATA_CATALOG, MetadataCatalog
+from businessos_metadata.ui_runtime import PublishedUIRuntime
+from businessos_metadata.ui_composition import compose
+from businessos_party.ui_declarations import published_ui_declarations, ui_id
+
+assert files('businessos_metadata').joinpath(
+    'migrations', 'versions', 'metadata_0003_ui_overlays.py'
+).is_file()
+assert files('businessos_metadata').joinpath(
+    'migrations', 'versions', 'metadata_0004_ui_bindings.py'
+).is_file()
+assert files('businessos_metadata').joinpath(
+    'migrations', 'versions', 'metadata_0005_ui_binding_seals.py'
+).is_file()
+assert files('businessos_metadata').joinpath(
+    'migrations', 'versions', 'metadata_0006_ui_provenance.py'
+).is_file()
+assert 'draft_document' not in UIOverlayMutationResult.model_fields
+assert 'draft_document' in UIOverlayRecord.model_fields
+from businessos.sdk import defer_handler_completion, retain_handler_resource
+from businessos.security import FencedPolicyEvaluator
+assert callable(defer_handler_completion) and callable(retain_handler_resource)
+assert ('foundation.metadata.published-ui.v1', '1.0') in contracts
+assert PublishedUIRuntime.version == MetadataCatalog.version == '1.0'
+assert ResolvePublishedUI(view_id=ui_id('detail.v1'), locale='ar').contract_version == '1.0'
+assert UIOverlayDocument(patches=()).contract_version == '1.0'
+assert len(published_ui_declarations()) == 5
+assert METADATA_CATALOG.name == 'businessos.metadata_catalog.v1'
+assert package.joinpath('ui_contracts.py').is_file()
+assert package.joinpath('ui_runtime.py').is_file()
+assert Path(str(files('businessos_party'))).resolve().joinpath('ui_declarations.py').is_file()
+print('PHASE5D_INSTALLED_PUBLIC_SURFACES_PASS — UI v1/catalog/declarations/migration; no source shadowing')
 PY
 "$environment_dir/bin/businessos" migrate plan
 "$environment_dir/bin/python" -c \

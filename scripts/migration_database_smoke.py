@@ -220,6 +220,7 @@ def _run_image(
         "BOS_WORKER_PASSWORD",
         "BOS_GOVERNANCE_PASSWORD",
         "BOS_METADATA_PASSWORD",
+        "BOS_UI_PUBLICATION_PASSWORD",
     )
     command = ["docker", "run", "--rm", "--network", network]
     for name in names:
@@ -275,6 +276,7 @@ def _verify_global_geography_read_only(database_url: str) -> None:
 
 
 _APPROVED_DOWNGRADE_REFUSALS = (
+    "metadata_0006 downgrade refused:",
     "proof_0004 downgrade refused:",
     "metadata_0001 downgrade refused:",
     "audit_0005 downgrade refused:",
@@ -292,18 +294,21 @@ def _security_state(database_url: str) -> tuple[object, ...]:
                 "SELECT n.nspname, c.relname, c.relrowsecurity, c.relforcerowsecurity, "
                 "c.relacl::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
                 "WHERE n.nspname IN ('platform_audit', 'platform_policy', 'platform_gov', "
-                "'eventing') AND c.relkind = 'r' ORDER BY 1, 2",
+                "'eventing', 'platform_metadata') AND c.relkind = 'r' ORDER BY 1, 2",
                 "SELECT n.nspname, c.relname, t.tgname, pg_get_triggerdef(t.oid) "
                 "FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
                 "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE NOT t.tgisinternal "
-                "AND n.nspname IN ('platform_audit', 'platform_policy', 'platform_gov') "
+                "AND n.nspname IN ('platform_audit', 'platform_policy', 'platform_gov', "
+                "'platform_metadata') "
                 "ORDER BY 1, 2, 3",
                 "SELECT schemaname, tablename, policyname, roles::text, qual, with_check "
                 "FROM pg_policies WHERE schemaname IN "
-                "('platform_audit', 'platform_policy', 'platform_gov') ORDER BY 1, 2, 3",
+                "('platform_audit', 'platform_policy', 'platform_gov', 'platform_metadata') "
+                "ORDER BY 1, 2, 3",
                 "SELECT rolname, rolinherit, rolsuper, rolbypassrls FROM pg_roles "
                 "WHERE rolname IN ('businessos_app', 'businessos_worker', "
-                "'businessos_governance') ORDER BY rolname",
+                "'businessos_governance','businessos_metadata','businessos_ui_publication',"
+                "'businessos_metadata_fence_owner') ORDER BY rolname",
                 "SELECT count(*) FROM platform_audit.audit_logs",
                 "SELECT count(*) FROM platform_policy.roles",
                 "SELECT count(*) FROM platform_policy.sod_rules",
@@ -362,6 +367,7 @@ def main() -> None:
             "BOS_WORKER_PASSWORD": _required("BOS_WORKER_PASSWORD"),
             "BOS_GOVERNANCE_PASSWORD": _required("BOS_GOVERNANCE_PASSWORD"),
             "BOS_METADATA_PASSWORD": _required("BOS_METADATA_PASSWORD"),
+            "BOS_UI_PUBLICATION_PASSWORD": _required("BOS_UI_PUBLICATION_PASSWORD"),
         }
     )
 

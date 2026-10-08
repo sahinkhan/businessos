@@ -787,6 +787,7 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
             database_url=postgres_database.runtime_url,
             governance_database_url=postgres_database.governance_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=modules,
         approved_module_artifacts=approved_artifacts_from_operator_inventory(modules),

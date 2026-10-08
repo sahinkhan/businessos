@@ -17,6 +17,7 @@ def test_role_transition_credentials_are_redacted(monkeypatch: pytest.MonkeyPatc
         worker=canary,
         governance=canary,
         metadata=canary,
+        ui_publication=canary,
     )
 
     def fail_connect(*args: object, **kwargs: object) -> object:

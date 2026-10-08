@@ -20,6 +20,7 @@ from businessos.dependencies import (
     EVENT_PUBLISHER,
     INSTALLATION_ID,
     MESSAGE_DISPATCHER,
+    METADATA_CATALOG,
     OBJECT_STORAGE,
     OBJECT_STORAGE_DELETE,
     OBJECT_STORAGE_FENCED,
@@ -37,7 +38,7 @@ from businessos.http.middleware import MiddlewareRegistry
 from businessos.jobs import JobHandlerRegistry
 from businessos.logging import configure_logging
 from businessos.messages import EventBus, MessageDispatcher
-from businessos.metadata import MetadataRegistry
+from businessos.metadata import MetadataCatalog, MetadataRegistry
 from businessos.metadata_execution import MetadataDatabaseExecutionAuthority
 from businessos.migrations import MigrationCoordinator
 from businessos.modules import (
@@ -51,7 +52,7 @@ from businessos.modules.artifact import ApprovedModuleArtifact
 from businessos.modules.installation_inventory import approved_artifacts_from_operator_inventory
 from businessos.modules.registry import ModuleActivationFence
 from businessos.permissions import PermissionRegistry
-from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory
+from businessos.persistence import Database, SQLAlchemyUnitOfWorkFactory, TransactionalPersistence
 from businessos.providers import (
     FencedObjectHistoryErasureProvider,
     FencedObjectStorageProvider,
@@ -59,6 +60,13 @@ from businessos.providers import (
     ProviderRegistry,
     S3ObjectStorageProvider,
     tenant_bound_provider,
+)
+from businessos.publication_database import PublicationDatabaseAuthority
+from businessos.publication_execution import (
+    PrivatePublicationExecutor,
+    PublicationAuditWriter,
+    PublicationOwnerWriter,
+    internal_append_publication_audit,
 )
 from businessos.resources import ResourceOwnershipRegistry
 from businessos.runtime import FrameworkRuntime
@@ -145,6 +153,13 @@ def create_application(
         pool_timeout=resolved_settings.metadata_database_pool_timeout_seconds,
         gate=contributions,
     )
+    publication_database = PublicationDatabaseAuthority(
+        governance_url=resolved_settings.ui_publication_database_url,
+        database_name=database_name,
+        pool_size=resolved_settings.ui_publication_database_pool_size,
+        pool_timeout=resolved_settings.ui_publication_database_pool_timeout_seconds,
+        gate=contributions,
+    )
     if context_resolver is not None and context_resolver_factory is not None:
         raise ValueError("Provide a context resolver or resolver factory, not both")
     if context_resolver_factory is not None:
@@ -186,6 +201,10 @@ def create_application(
     )
     contracts = ContractRegistry(contributions)
     metadata = MetadataRegistry(contributions)
+    metadata_catalog = MetadataCatalog(metadata)
+    container.register(
+        METADATA_CATALOG, lambda _: metadata_catalog, scope=DependencyScope.SINGLETON
+    )
     permissions = PermissionRegistry(contributions)
     providers = ProviderRegistry(contributions)
     provider_dependencies = {
@@ -280,7 +299,32 @@ def create_application(
         if not callable(factory_method):
             raise ValueError("Metadata module lacks required publication/activation fence")
         activation_fence = cast(
-            ModuleActivationFence, factory_method(metadata_database.internal_installation)
+            ModuleActivationFence,
+            factory_method(
+                publication_database.internal_installation, metadata_database.internal_installation
+            ),
+        )
+        writer = getattr(metadata_module, "_publication_writer", None)
+        audit_module = next(
+            (item for item in loaded_modules if item.manifest.module_id == "foundation.audit"), None
+        )
+        audit_artifact = approved_module_artifacts.get("foundation.audit")
+        if audit_module is None or audit_artifact is None or not audit_artifact.first_party:
+            raise ConfigurationError("Private publication requires approved Audit ownership")
+        audit_artifact.verify(audit_module, audit_module.manifest)
+        audit_writer = getattr(audit_module, "_publication_append", None)
+        audit_bridge = getattr(audit_module, "_configure_publication_appender", None)
+        if not callable(writer) or not callable(audit_writer) or not callable(audit_bridge):
+            raise ConfigurationError("Private publication owner adapters unavailable")
+        audit_bridge(internal_append_publication_audit)
+        message_dispatcher._configure_publication(  # pyright: ignore[reportPrivateUsage] -- trusted composition
+            PrivatePublicationExecutor(
+                publication_database,
+                metadata_catalog,
+                contributions,
+                cast(Callable[[TransactionalPersistence], PublicationOwnerWriter], writer),
+                cast(PublicationAuditWriter, audit_writer),
+            )
         )
         schema_reader_method = getattr(metadata_module, "_configure_custom_field_reader", None)
         if callable(schema_reader_method):
@@ -333,6 +377,28 @@ def create_application(
             for registered in module_registry.entries()
         ),
     )
+    if resolved_settings.environment == "production":
+
+        async def published_ui_authority_readiness() -> None:
+            # Active registrations already reflect drain, disable and replacement.
+            # Do not retain startup manifests as capability lifecycle authority.
+            if (
+                contracts.contains("foundation.metadata.published-ui.v1")
+                and not resolved_authorizer.supports_permission_fence
+            ):
+                raise ConfigurationError("Published UI requires fenced Policy authority")
+
+        diagnostics.add_readiness_check(
+            "published-ui-authority-fence", published_ui_authority_readiness
+        )
+
+        async def published_ui_profile_readiness() -> None:
+            if contracts.contains("foundation.metadata.published-ui.v1"):
+                await publication_database.validate()
+
+        diagnostics.add_readiness_check(
+            "published-ui-private-profile", published_ui_profile_readiness
+        )
     if resolved_settings.database_readiness_enabled:
         diagnostics.add_readiness_check("postgresql", database.readiness)
         if any(
@@ -376,6 +442,7 @@ def create_application(
     application.on_shutdown(database.close)
     application.on_shutdown(protected_database.close)
     application.on_shutdown(metadata_database.close)
+    application.on_shutdown(publication_database.close)
     if context_resolver is not None:
         close_resolver = getattr(context_resolver, "close", None)
         if callable(close_resolver):

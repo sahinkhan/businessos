@@ -16,6 +16,7 @@ from businessos.dependencies import (
     AUTHORIZER,
     INSTALLATION_ID,
     MESSAGE_DISPATCHER,
+    METADATA_CATALOG,
     OBJECT_STORAGE,
     OBJECT_STORAGE_DELETE,
     OBJECT_STORAGE_FENCED,
@@ -24,7 +25,7 @@ from businessos.dependencies import (
     UNIT_OF_WORK_FACTORY,
 )
 from businessos.di import DependencyKey, DependencyResolver, DependencyScope, RequestDependencyScope
-from businessos.errors import BusinessOSError, ConfigurationError
+from businessos.errors import BusinessOSError, ConfigurationError, NotFoundError
 from businessos.features import FeatureFlag
 from businessos.handler_invocation import (
     HandlerInvocationBinding,
@@ -44,13 +45,14 @@ from businessos.messages import (
     HandlingContext,
     Query,
 )
-from businessos.metadata import MetadataDeclaration
+from businessos.metadata import AdmittedMetadataDeclaration, MetadataCatalog, MetadataDeclaration
 from businessos.modules import (
     ModuleContractDeclaration,
     ModuleManifest,
     ModuleRegistration,
     ResourceOwnership,
 )
+from businessos.operation_boundary import defer_handler_completion, retain_handler_resource
 from businessos.permissions import PermissionDeclaration
 from businessos.persistence.contracts import TransactionalPersistence
 from businessos.persistence.uow import (
@@ -78,6 +80,7 @@ __all__ = [
     "AUTHORIZER",
     "INSTALLATION_ID",
     "MESSAGE_DISPATCHER",
+    "METADATA_CATALOG",
     "OBJECT_STORAGE",
     "OBJECT_STORAGE_DELETE",
     "OBJECT_STORAGE_FENCED",
@@ -85,6 +88,7 @@ __all__ = [
     "PUBLISHED_CUSTOM_FIELD_SCHEMA",
     "RESOURCE_OWNER_RESOLVER",
     "UNIT_OF_WORK_FACTORY",
+    "AdmittedMetadataDeclaration",
     "AdmittedResourceProvider",
     "BusinessOSError",
     "Command",
@@ -107,11 +111,13 @@ __all__ = [
     "HandlerTransaction",
     "HandlingContext",
     "Job",
+    "MetadataCatalog",
     "MetadataDeclaration",
     "Middleware",
     "ModuleContractDeclaration",
     "ModuleManifest",
     "ModuleRegistration",
+    "NotFoundError",
     "PermissionDeclaration",
     "Principal",
     "PrincipalType",
@@ -137,5 +143,7 @@ __all__ = [
     "UnitOfWorkFactory",
     "WorkloadAdmissionDenied",
     "assert_resource_owner_invocation",
+    "defer_handler_completion",
+    "retain_handler_resource",
     "validate_handler_invocation",
 ]

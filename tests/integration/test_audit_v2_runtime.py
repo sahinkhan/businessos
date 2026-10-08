@@ -162,6 +162,7 @@ async def test_audit_v2_manual_actor_chain_and_same_uow(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=(
             *(
@@ -353,6 +354,7 @@ async def test_audit_v2_manual_actor_chain_and_same_uow(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=(
             *(
@@ -385,6 +387,7 @@ async def test_policy_projection_uses_workload_actor_and_unique_committed_event(
             environment="test",
             database_url=postgres_database.runtime_url,
             metadata_database_url=postgres_database.metadata_url,
+            ui_publication_database_url=postgres_database.ui_publication_url,
         ),
         modules=(
             module

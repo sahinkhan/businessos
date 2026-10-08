@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from importlib.resources import files
-from typing import ClassVar, Self
+from typing import ClassVar, Literal, Self
 from uuid import UUID
 
 from businessos_audit.v2_contracts import AUDIT_APPENDER_V2, AuditEvidenceV2
@@ -12,6 +12,7 @@ from pydantic import ConfigDict, Field, StrictInt, model_validator
 
 from businessos.sdk import (
     PUBLISHED_CUSTOM_FIELD_SCHEMA,
+    BusinessOSError,
     Command,
     CustomFieldValue,
     DomainEvent,
@@ -20,6 +21,7 @@ from businessos.sdk import (
     ModuleRegistration,
     PermissionDeclaration,
     Query,
+    TransactionalPersistence,
 )
 
 from .activation_fence import InstallationTransaction, MetadataActivationFence
@@ -42,6 +44,71 @@ from .custom_schema import (
     internal_stop_schema_reader,
 )
 from .store import MetadataStore
+from .ui_contracts import (
+    Locale,
+    UIConflict,
+    UIOverlayDocument,
+    UIOverlayMutationResult,
+    UIOverlayScope,
+)
+from .ui_publication import PrivateUIWriter
+from .ui_runtime import PublishedUIRuntime
+
+
+class ResolvePublishedUI(Query):
+    """No caller identity, company, site, permission or arbitrary component authority."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    contract_version: Literal["1.0"] = "1.0"
+    view_id: UUID
+    locale: Locale
+
+
+class CreateUIOverlay(Command):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    contract_version: Literal["1.0"] = "1.0"
+    view_id: UUID
+    scope_kind: UIOverlayScope
+    document: UIOverlayDocument
+
+
+class ReadUIOverlay(Query):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    contract_version: Literal["1.0"] = "1.0"
+    overlay_id: UUID
+
+
+class _UIOverlayMutation(Command):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    contract_version: Literal["1.0"] = "1.0"
+    overlay_id: UUID
+    expected_draft_generation: StrictInt = Field(ge=1, lt=2**63 - 1)
+    expected_active_generation: StrictInt = Field(ge=0, lt=2**63 - 1)
+
+
+class EditUIOverlay(_UIOverlayMutation):
+    document: UIOverlayDocument
+
+
+class PublishUIOverlay(_UIOverlayMutation):
+    pass
+
+
+class ReactivateUIOverlay(_UIOverlayMutation):
+    revision_id: UUID
+
+
+class RetireUIOverlay(_UIOverlayMutation):
+    pass
+
+
+class UIOverlayChanged(DomainEvent):
+    event_type: ClassVar[str] = "metadata.ui-overlay.changed.v1"
+    overlay_id: UUID
+    view_id: UUID
+    revision_id: UUID | None
+    active_generation: int
+    action: str
 
 
 class _Input:
@@ -213,13 +280,21 @@ class MetadataModule:
             self._limits, custom_entity_limits or CustomEntityLimits()
         )
         self._schema_reader: PublishedSchemaReader | None = None
+        self._ui = PublishedUIRuntime()
 
     def _configure_custom_field_reader(self, factory: SchemaReadTransaction) -> None:
         """Private trusted bootstrap composition, not an SDK credential surface."""
         internal_configure_schema_reader(self, factory)
 
-    def _activation_fence(self, factory: InstallationTransaction) -> MetadataActivationFence:
-        return MetadataActivationFence(factory)
+    def _publication_writer(self, persistence: TransactionalPersistence) -> PrivateUIWriter:
+        return PrivateUIWriter(self, persistence)
+
+    def _activation_fence(
+        self,
+        factory: InstallationTransaction,
+        read_factory: InstallationTransaction | None = None,
+    ) -> MetadataActivationFence:
+        return MetadataActivationFence(factory, read_factory)
 
     async def register(self, registration: ModuleRegistration) -> None:
         self._schema_reader = internal_register_schema_reader(
@@ -240,6 +315,11 @@ class MetadataModule:
             ("foundation.metadata.custom_entity.update", "Replace governed custom entity values"),
             ("foundation.metadata.custom_entity.archive", "Archive governed custom entity"),
             ("foundation.metadata.custom_entity.export", "Export one governed custom entity"),
+            ("foundation.metadata.ui.read", "Resolve published presentation schema"),
+            ("foundation.metadata.ui.draft", "Author bounded presentation overlays"),
+            ("foundation.metadata.ui.publish", "Publish bounded presentation overlays"),
+            ("foundation.metadata.ui.rollback", "Reactivate compatible presentation overlay"),
+            ("foundation.metadata.ui.retire", "Retire presentation overlay"),
         ):
             registration.permission(PermissionDeclaration(key=key, description=description))
         for contract_id in (
@@ -252,6 +332,26 @@ class MetadataModule:
             registration.contract(contract_id, self)
         registration.contract(
             "foundation.metadata.custom-entity-query.v1", CustomEntityQueryCapabilities()
+        )
+        registration.contract("foundation.metadata.published-ui.v1", self._ui)
+        registration.query(
+            ResolvePublishedUI, self._resolve_ui, permission="foundation.metadata.ui.read"
+        )
+        registration.query(ReadUIOverlay, self._read_ui, permission="foundation.metadata.ui.draft")
+        registration.command(
+            CreateUIOverlay, self._create_ui, permission="foundation.metadata.ui.draft"
+        )
+        registration.command(
+            EditUIOverlay, self._edit_ui, permission="foundation.metadata.ui.draft"
+        )
+        registration.command(
+            PublishUIOverlay, self._publish_ui, permission="foundation.metadata.ui.publish"
+        )
+        registration.command(
+            ReactivateUIOverlay, self._reactivate_ui, permission="foundation.metadata.ui.rollback"
+        )
+        registration.command(
+            RetireUIOverlay, self._retire_ui, permission="foundation.metadata.ui.retire"
         )
         registration.command(
             CreateDefinition, self._create, permission="foundation.metadata.draft.create"
@@ -334,6 +434,92 @@ class MetadataModule:
 
     async def stop(self) -> None:
         internal_stop_schema_reader(self)
+
+    async def _resolve_ui(self, query: ResolvePublishedUI, ctx: HandlingContext) -> object:
+        return await self._ui.resolve(query.view_id, query.locale, ctx)
+
+    async def _read_ui(self, query: ReadUIOverlay, ctx: HandlingContext) -> object:
+        try:
+            return await self._ui.read(query.overlay_id, ctx)
+        except UIConflict as error:
+            raise BusinessOSError(
+                "ui_" + error.code.value, "UI overlay rejected", status_code=409
+            ) from None
+
+    async def _create_ui(self, cmd: CreateUIOverlay, ctx: HandlingContext) -> object:
+        try:
+            record = await self._ui.create(cmd.view_id, cmd.scope_kind, cmd.document, ctx)
+        except UIConflict as error:
+            raise BusinessOSError(
+                "ui_" + error.code.value, "UI overlay rejected", status_code=409
+            ) from None
+        await self._ui_evidence(record, "create", ctx)
+        return record
+
+    async def _edit_ui(self, cmd: EditUIOverlay, ctx: HandlingContext) -> object:
+        return await self._mutate_ui(cmd, "edit", ctx)
+
+    async def _publish_ui(self, cmd: PublishUIOverlay, ctx: HandlingContext) -> object:
+        return await self._mutate_ui(cmd, "publish", ctx)
+
+    async def _reactivate_ui(self, cmd: ReactivateUIOverlay, ctx: HandlingContext) -> object:
+        return await self._mutate_ui(cmd, "reactivate", ctx)
+
+    async def _retire_ui(self, cmd: RetireUIOverlay, ctx: HandlingContext) -> object:
+        return await self._mutate_ui(cmd, "retire", ctx)
+
+    async def _mutate_ui(
+        self, cmd: _UIOverlayMutation, action: str, ctx: HandlingContext
+    ) -> object:
+        try:
+            record = await self._ui.mutate(
+                cmd.overlay_id,
+                cmd.expected_draft_generation,
+                cmd.expected_active_generation,
+                ctx,
+                document=cmd.document if isinstance(cmd, EditUIOverlay) else None,
+                revision_id=cmd.revision_id if isinstance(cmd, ReactivateUIOverlay) else None,
+                retire=isinstance(cmd, RetireUIOverlay),
+            )
+        except UIConflict as error:
+            raise BusinessOSError(
+                "ui_" + error.code.value, "UI overlay rejected", status_code=409
+            ) from None
+        await self._ui_evidence(record, action, ctx)
+        return record
+
+    async def _ui_evidence(
+        self, record: UIOverlayMutationResult, action: str, ctx: HandlingContext
+    ) -> None:
+        assert ctx.request.tenant is not None
+        appender = await ctx.dependencies.resolve(AUDIT_APPENDER_V2)
+        await appender.append(
+            AuditEvidenceV2(
+                action="metadata.ui-overlay." + action,
+                resource_type=record.resource_namespace,
+                resource_id=str(record.overlay_id),
+                status="success",
+                details={
+                    "view_id": str(record.view_id),
+                    "active_generation": record.active_generation,
+                    "revision_id": str(record.active_revision_id)
+                    if record.active_revision_id
+                    else None,
+                },
+            ),
+            ctx,
+        )
+        ctx.emit(
+            UIOverlayChanged(
+                tenant_id=ctx.request.tenant.tenant_id,
+                correlation_id=ctx.request.correlation_id,
+                overlay_id=record.overlay_id,
+                view_id=record.view_id,
+                revision_id=record.active_revision_id,
+                active_generation=record.active_generation,
+                action=action,
+            )
+        )
 
     async def _create_custom_definition(
         self, cmd: CreateCustomEntityDefinition, ctx: HandlingContext

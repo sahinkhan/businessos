@@ -15,12 +15,16 @@ def test_capture_complete_sources_and_dependencies_not_every_locked_module() -> 
         replace(
             source,
             dependency_generations=(ContributionGeneration("foundation.audit", 3),),
+            artifact_identity="Opaque/É",
+            artifact_generation=4,
+            dependency_artifacts=(("foundation.audit", "audit-identity", 7),),
         )
         for source in sources()
     )
     partner = replace(
         extension(),
         dependency_generations=(ContributionGeneration("foundation.party", 1),),
+        dependency_artifacts=(("foundation.party", "Opaque/É", 4),),
     )
     locked = (
         CompatibilityMember("unrelated.module", "ignored", 1),
@@ -72,6 +76,27 @@ def test_capture_rejects_over_budget_union() -> None:
     )
     with pytest.raises(ValueError, match="budget"):
         capture_members((base,), ())
+
+
+@pytest.mark.parametrize("artifact,generation", [("new-approved-artifact", 1), ("exact", 2)])
+def test_capture_rejects_other_artifact_or_reactivated_durable_generation(
+    artifact: str, generation: int
+) -> None:
+    # Process admission 1 is a separate namespace from durable generation 1.
+    with pytest.raises(ValueError, match="Retained approved artifact differs"):
+        capture_members(sources(), (CompatibilityMember("foundation.party", artifact, generation),))
+
+
+def test_capture_accepts_distinct_process_and_durable_generation_namespaces() -> None:
+    retained = tuple(replace(source, artifact_generation=9) for source in sources())
+    durable = (CompatibilityMember("foundation.party", "exact", 9),)
+    assert capture_members(retained, durable) == durable
+
+
+def test_capture_rejects_absent_approved_artifact_authority() -> None:
+    source = replace(sources()[0], artifact_identity="", artifact_generation=None)
+    with pytest.raises(ValueError, match="approved artifact provenance"):
+        capture_members((source,), (CompatibilityMember("foundation.party", "exact", 1),))
 
 
 def test_private_profile_configuration_is_separate_redacted_and_budgeted() -> None:

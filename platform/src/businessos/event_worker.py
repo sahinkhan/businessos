@@ -73,7 +73,6 @@ class EventWorkerSettings(BaseSettings):
     operations_database_url: str = Field(repr=False, exclude=True)
     governance_database_url: str | None = Field(default=None, repr=False, exclude=True)
     metadata_database_url: str | None = Field(default=None, repr=False, exclude=True)
-    ui_publication_database_url: str | None = Field(default=None, repr=False, exclude=True)
     nats_url: str = "nats://localhost:4222"
     installation_id: UUID
     principal_id: UUID
@@ -707,7 +706,10 @@ def create_event_worker(
             database_url=settings.runtime_database_url,
             governance_database_url=settings.governance_database_url,
             metadata_database_url=settings.metadata_database_url,
-            ui_publication_database_url=settings.ui_publication_database_url,
+            # Ordinary delivery never admits Published UI issuance authority.
+            # Explicit None also prevents a web process's BOS_ environment or
+            # shared dotenv file from supplying this private credential.
+            ui_publication_database_url=None,
             installation_id=settings.installation_id,
             shutdown_timeout_seconds=settings.shutdown_timeout_seconds,
         ),
@@ -727,7 +729,9 @@ def create_event_worker(
         infrastructure_providers=providers,
         resource_coordinator_ids=frozenset({"foundation.data_governance"}),
     )
-    operations_database = Database(Settings(database_url=settings.operations_database_url))
+    operations_database = Database(
+        Settings(database_url=settings.operations_database_url, ui_publication_database_url=None)
+    )
     return EventWorker(
         application=application,
         operations_database=operations_database,

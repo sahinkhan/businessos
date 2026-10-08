@@ -31,7 +31,7 @@ class MetadataActivationFence:
         self._read_factory = read_factory
 
     @asynccontextmanager
-    async def activation(self, module_id: str, artifact_identity: str) -> AsyncGenerator[None]:
+    async def activation(self, module_id: str, artifact_identity: str) -> AsyncGenerator[int]:
         if not module_id or not artifact_identity:
             raise ConfigurationError("Module activation identity is required")
         # A restart at an already admitted artifact needs no issuance credential.
@@ -42,13 +42,13 @@ class MetadataActivationFence:
                 await existing.persistence.execute(text("SET LOCAL lock_timeout = '5s'"))
                 current = (
                     await existing.persistence.execute(
-                        select(MODULE_FENCE.c.artifact_identity)
+                        select(MODULE_FENCE.c.artifact_identity, MODULE_FENCE.c.generation)
                         .where(MODULE_FENCE.c.module_id == module_id)
                         .with_for_update(read=True, key_share=True)
                     )
-                ).scalar_one_or_none()
-                if current == artifact_identity:
-                    yield
+                ).one_or_none()
+                if current is not None and current.artifact_identity == artifact_identity:
+                    yield current.generation
                     await existing.commit()
                     return
         async with self._factory() as uow:
@@ -87,5 +87,8 @@ class MetadataActivationFence:
                         generation=row["generation"] + 1,
                     )
                 )
-            yield
+                durable_generation = row["generation"] + 1
+            else:
+                durable_generation = row["generation"]
+            yield durable_generation
             await uow.commit()

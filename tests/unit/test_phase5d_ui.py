@@ -49,6 +49,8 @@ def sources() -> tuple[AdmittedMetadataDeclaration, ...]:
             "0.4.0",
             (),
             canonical_json(d.value),
+            artifact_identity="exact",
+            artifact_generation=1,
         )
         for d in published_ui_declarations()
     )
@@ -81,6 +83,8 @@ def extension(*, node_id: object | None = None, **changes: object) -> AdmittedMe
         owner="example.partner",
         generation=ContributionGeneration("example.partner", 1),
         module_version="0.1.0",
+        artifact_identity="exact-identity",
+        artifact_generation=2,
         dependencies=(("foundation.party", ">=0.4,<1"),),
         document_json=canonical_json(document),
     )
@@ -302,6 +306,44 @@ async def test_sdk_catalog_rejects_changed_snapshot_and_is_read_only() -> None:
         kind_prefix="ui.", discriminator="view_id", value=str(ui_id("detail.v1"))
     ) as captured:
         assert captured == ()
+
+
+@pytest.mark.asyncio
+async def test_catalog_retains_artifact_evidence_for_exact_source_and_dependency_generations() -> (
+    None
+):
+    gate = ContributionGate()
+    registry = MetadataRegistry(gate)
+    dependency = gate.reserve("foundation.party")
+    owner = gate.reserve("example.partner")
+    registry._bind_artifact(dependency, "approved-party-X", 7)
+    registry._bind_artifact(owner, "approved-partner-Y", 19)
+    gate.publish(dependency)
+    gate.publish(owner)
+    registry.add(
+        "example.partner",
+        MetadataDeclaration(
+            key="example.partner.ui.extension",
+            kind="ui.extension.v1",
+            value={
+                "view_id": "selected",
+                "artifact_identity": "caller-manufactured",
+                "artifact_generation": 999,
+            },
+        ),
+        generation=owner,
+        module_version="0.1.0",
+        dependencies=(("foundation.party", ">=0.4,<1"),),
+    )
+    async with MetadataCatalog(registry).admitted(
+        kind_prefix="ui.", discriminator="view_id", value="selected"
+    ) as snapshots:
+        source = snapshots[0]
+        assert source.generation.number == 1
+        assert (source.artifact_identity, source.artifact_generation) == ("approved-partner-Y", 19)
+        assert source.dependency_artifacts == (("foundation.party", "approved-party-X", 7),)
+        with pytest.raises(ValueError, match="cannot be rebound"):
+            registry._bind_artifact(owner, "forged", 20)
 
 
 @pytest.mark.asyncio

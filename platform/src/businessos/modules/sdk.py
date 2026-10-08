@@ -109,6 +109,15 @@ class ModuleRegistration:
             self._resources.stage(self._manifest, self.generation)
         self._gate.publish(self.generation)
 
+    def _bind_artifact_provenance(self, identity: str, durable_generation: int | None) -> None:
+        """Protected lifecycle hook; declaration registration supplies no identity."""
+        self._ensure_open()
+        if self._gate.state(self.generation) is not ContributionState.STAGED:
+            raise RuntimeError("Artifact provenance must bind before activation")
+        self._metadata._bind_artifact(  # pyright: ignore[reportPrivateUsage] -- protected lifecycle
+            self.generation, identity, durable_generation
+        )
+
     async def deactivate(self, *, timeout_seconds: float) -> None:
         if self._finished:
             return

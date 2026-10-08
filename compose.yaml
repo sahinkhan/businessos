@@ -53,7 +53,6 @@ services:
       BOS_EVENT_WORKER_OPERATIONS_DATABASE_URL: postgresql+psycopg://businessos_ops:businessos-operations@postgres:5432/businessos
       BOS_EVENT_WORKER_GOVERNANCE_DATABASE_URL: postgresql+psycopg://businessos_governance:${BOS_GOVERNANCE_PASSWORD:-businessos-governance}@postgres:5432/businessos
       BOS_EVENT_WORKER_METADATA_DATABASE_URL: postgresql+psycopg://businessos_metadata:${BOS_METADATA_PASSWORD:-businessos-metadata}@postgres:5432/businessos
-      BOS_EVENT_WORKER_UI_PUBLICATION_DATABASE_URL: postgresql+psycopg://businessos_ui_publication:${BOS_UI_PUBLICATION_PASSWORD:-businessos-ui-publication}@postgres:5432/businessos
       BOS_EVENT_WORKER_NATS_URL: nats://nats:4222
       BOS_EVENT_WORKER_INSTALLATION_ID: 00000000-0000-0000-0000-000000000001
       BOS_APPROVED_MODULE_INVENTORY: ${BOS_APPROVED_MODULE_INVENTORY:-}

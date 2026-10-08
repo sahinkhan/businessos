@@ -321,16 +321,17 @@ async def test_stale_generations_and_dependency_artifacts_refuse_publication_and
                 revision_id=cast(UUID, published.active_revision_id),
             )
         )
-    edited = await h.command(
-        EditUIOverlay(
-            overlay_id=published.overlay_id,
-            expected_draft_generation=published.draft_generation,
-            expected_active_generation=published.active_generation,
-            document=document(20),
-        )
-    )
     with pytest.raises(BusinessOSError, match="UI overlay rejected"):
-        await publish(h, edited)
+        await h.command(
+            EditUIOverlay(
+                overlay_id=published.overlay_id,
+                expected_draft_generation=published.draft_generation,
+                expected_active_generation=published.active_generation,
+                document=document(20),
+            )
+        )
+    with pytest.raises(BusinessOSError, match="UI overlay rejected"):
+        await publish(h, published)
     # A migrator bypass was deliberate corruption, not a supported activation.
     # Restore its original authority before applying any further publication.
     with psycopg.connect(_url(h.database.migration_url)) as connection:
@@ -348,8 +349,8 @@ async def test_stale_generations_and_dependency_artifacts_refuse_publication_and
     edited = await h.command(
         EditUIOverlay(
             overlay_id=published.overlay_id,
-            expected_draft_generation=edited.draft_generation,
-            expected_active_generation=edited.active_generation,
+            expected_draft_generation=published.draft_generation,
+            expected_active_generation=published.active_generation,
             document=document(20),
         )
     )

@@ -25,6 +25,17 @@ draining/replaced generations or mutation of captured declarations. Existing
 `ModuleRegistration.metadata` remains compatible. Installation/module admission
 continues to authenticate the producing artifact under ADR-018.
 
+The protected lifecycle binds that existing approved artifact identity and the
+durable generation returned by `MetadataActivationFence` to the exact admitted
+catalog generation before registration. Retained snapshots include this provenance
+for both producing modules and direct dependencies. Before composition is used for
+drafts, publication, reactivation or resolution, each retained artifact and durable
+generation must equal its locked `module_fence` identity. A stale replica fails
+closed without relabeling old declarations as the replacement artifact. Process
+admission numbers remain a separate namespace; identical approved artifacts may
+restart with different process numbers while retaining the same durable identity.
+An artifact that returns after replacement still has a new durable generation.
+
 An active admitted artifact publishes `ui.base.v1`, `ui.capabilities.v1`,
 `ui.extension.v1` and `ui.localization.v1` declarations. Module declarations are
 installed immutable publication inputs, not tenant drafts. Party supplies a bounded
@@ -311,6 +322,14 @@ Its semantic architecture is unchanged. The current implementation adds the
 accepted N1 boundary described below; it requires fresh implementation audit.
 Phase 5D remains an IMPLEMENTATION CANDIDATE / NOT CERTIFIED.
 
+The final implementation audit of `d95ecacf2582e35b8ae942de5cf6bc9be33167f1`
+failed with Critical 0 / High 0 / Medium 3 / Low 1 / Documentation-only 0.
+Its successful CI run `37323579608` remains historical validation evidence only.
+F1 concerns the complete private admission deadline; F2 concerns retained approved
+artifact provenance across replicas; F3 concerns cancellation-safe lease accounting;
+F4 concerns private credential distribution to the ordinary event worker. This
+remediation preserves ADR-024 and requires a fresh independent exact-commit audit.
+
 ## ADR-024 private publication boundary
 
 `PublishUIOverlay`, `ReactivateUIOverlay` and `RetireUIOverlay` retain their public
@@ -371,6 +390,23 @@ credential-rotation/lease-draining mechanism. Connections are physically renewed
 checkout to reset state. Connection/pool waits are bounded; queries have a 30-second
 limit, idle transactions 30 seconds and transactions 60 seconds. No vendor connection
 or external signing service is required in air-gapped installations.
+
+Private admission uses one absolute deadline, configured by the publication pool
+timeout, covering mutex selection, profile validation, revalidation and actual UOW
+checkout. Blocking validation runs outside the authority state mutex. A temporary
+lease reservation keeps the selected pool alive across rotation; a changed pool or
+contribution fails revalidation without an automatic retry. Lifecycle installation
+uses the same bounded path. An owned, shielded finalizer releases each lease token
+exactly once despite repeated cancellation. Retired-pool disposal is claimed under
+the mutex and completed outside it; no SQL validation or disposal holds that mutex.
+
+The ordinary `events` worker receives no publication credential. Its configuration
+has no publication URL field, and both worker-created application settings explicitly
+exclude an inherited API publication URL from environment or `.env` configuration.
+Normal delivery uses its existing runtime/operations and foundation authority
+profiles. A worker requiring publication in the future needs separate architecture
+and deployment review. The resolved Compose credential-exclusion check is
+`python scripts/check_event_worker_deployment.py`.
 
 Production readiness follows the currently active Published UI contract. Active UI
 requires both fenced Policy and a valid private profile; disabled/draining UI does

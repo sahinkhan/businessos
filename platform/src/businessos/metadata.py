@@ -28,6 +28,23 @@ class MetadataRegistry(OwnedRegistry[MetadataDeclaration]):
     def __init__(self, gate: ContributionGate | None = None) -> None:
         super().__init__("metadata", gate)
         self._profiles: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {}
+        self._artifacts: dict[ContributionGeneration, tuple[str, int | None]] = {}
+
+    def _bind_artifact(
+        self, generation: ContributionGeneration, identity: str, durable_generation: int | None
+    ) -> None:
+        """Bind protected lifecycle evidence to this exact catalog generation.
+
+        The identity comes from ModuleRegistry admission, and the durable number
+        from the shared activation fence. Neither is supplied by declarations.
+        """
+        if not identity or generation in self._artifacts:
+            raise ValueError("Metadata artifact provenance cannot be rebound")
+        if durable_generation is not None and (
+            type(durable_generation) is not int or not 1 <= durable_generation <= 2**63 - 1
+        ):
+            raise ValueError("Invalid durable artifact generation")
+        self._artifacts[generation] = (identity, durable_generation)
 
     def add(
         self,
@@ -46,6 +63,7 @@ class MetadataRegistry(OwnedRegistry[MetadataDeclaration]):
         self._profiles = {
             key: value for key, value in self._profiles.items() if key in self._values
         }
+        self._artifacts.pop(generation, None)
 
     @asynccontextmanager
     async def admitted_declarations(
@@ -108,6 +126,11 @@ class MetadataRegistry(OwnedRegistry[MetadataDeclaration]):
                         dependencies,
                         document,
                         tuple(dependency_generations[k] for k, _ in dependencies),
+                        *self._artifacts.get(entry.generation, ("", None)),
+                        tuple(
+                            (k, *self._artifacts.get(dependency_generations[k], ("", None)))
+                            for k, _ in dependencies
+                        ),
                     )
                 )
             yield tuple(snapshots)
@@ -132,13 +155,24 @@ class MetadataRegistry(OwnedRegistry[MetadataDeclaration]):
                 )
                 != snapshot.document_json
                 or self._profiles[entry.name] != (snapshot.module_version, snapshot.dependencies)
+                or self._artifacts.get(snapshot.generation, ("", None))
+                != (snapshot.artifact_identity, snapshot.artifact_generation)
+                or tuple(
+                    (g.owner, *self._artifacts.get(g, ("", None)))
+                    for g in snapshot.dependency_generations
+                )
+                != snapshot.dependency_artifacts
             ):
                 raise ValueError("Metadata declaration changed during admission")
 
 
 @dataclass(frozen=True, slots=True)
 class AdmittedMetadataDeclaration:
-    """Immutable declaration snapshot, with framework-issued source provenance."""
+    """Immutable declaration snapshot, with framework-issued source provenance.
+
+    Artifact provenance belongs to this exact admitted source/dependency lease.
+    Durable artifact generations and process admission numbers are independent.
+    """
 
     key: str
     kind: str
@@ -149,6 +183,9 @@ class AdmittedMetadataDeclaration:
     dependencies: tuple[tuple[str, str], ...]
     document_json: str
     dependency_generations: tuple[ContributionGeneration, ...] = ()
+    artifact_identity: str = ""
+    artifact_generation: int | None = None
+    dependency_artifacts: tuple[tuple[str, str, int | None], ...] = ()
 
 
 _catalogs: WeakKeyDictionary[MetadataCatalog, MetadataRegistry] = WeakKeyDictionary()

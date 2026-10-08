@@ -61,7 +61,7 @@ class ModuleActivationFence(Protocol):
 
     def activation(
         self, module_id: str, artifact_identity: str
-    ) -> AbstractAsyncContextManager[None]: ...
+    ) -> AbstractAsyncContextManager[int | None]: ...
 
 
 def _ordered_manifests(
@@ -388,6 +388,9 @@ class LifecycleManager:
                 self._validate_active_dependencies(registered.manifest)
                 self._validate_capabilities(registered.manifest)
                 if self._activation_fence is None:
+                    registration._bind_artifact_provenance(  # pyright: ignore[reportPrivateUsage] -- framework lifecycle
+                        self._registry.activation_identity(module_id), None
+                    )
                     await registered.module.register(registration)
                     start_attempted = True
                     await registered.module.start()
@@ -396,7 +399,10 @@ class LifecycleManager:
                 else:
                     async with self._activation_fence.activation(
                         module_id, self._registry.activation_identity(module_id)
-                    ):
+                    ) as durable_generation:
+                        registration._bind_artifact_provenance(  # pyright: ignore[reportPrivateUsage] -- framework lifecycle
+                            self._registry.activation_identity(module_id), durable_generation
+                        )
                         await registered.module.register(registration)
                         start_attempted = True
                         await registered.module.start()

@@ -814,7 +814,6 @@ async def test_adr017_committed_cleanup_retries_and_marks_completed_after_s3_era
         operations_database_url=postgres_database.operations_url,
         governance_database_url=postgres_database.governance_url,
         metadata_database_url=postgres_database.metadata_url,
-        ui_publication_database_url=postgres_database.ui_publication_url,
         nats_url=nats_url,
         installation_id=tenant.installation_id,
         principal_id=tenant.principal_id,

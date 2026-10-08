@@ -285,6 +285,22 @@ async def _snapshot(
             )
             if len(module_rows) != len(locked_ids):
                 raise UIConflict(Code.INCOMPATIBLE)
+            try:
+                # Source declarations retain the exact approved artifact/durable
+                # generation observed at activation, not the local gate number.
+                # Authenticate that provenance before using locked rows to name
+                # composition, including ordinary reads and draft operations.
+                capture_members(
+                    sources,
+                    tuple(
+                        CompatibilityMember(
+                            row["module_id"], row["artifact_identity"], row["generation"]
+                        )
+                        for row in module_rows
+                    ),
+                )
+            except ValueError:
+                raise UIConflict(Code.STALE_OVERLAY) from None
             modules = tuple(
                 UIModuleProvenance(
                     module_id=row["module_id"],

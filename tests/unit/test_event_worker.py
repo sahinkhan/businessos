@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 from uuid import uuid4
@@ -142,6 +143,40 @@ def test_event_worker_configuration_redacts_role_credentials() -> None:
     assert "ops-secret" not in repr(settings)
     assert "runtime_database_url" not in settings.model_dump()
     assert "operations_database_url" not in settings.model_dump()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("credential_source", ("environment", "dotenv"))
+async def test_event_worker_excludes_private_publication_credentials(
+    credential_source: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    private_names = (
+        "BOS_UI_PUBLICATION_DATABASE_URL",
+        "BOS_EVENT_WORKER_UI_PUBLICATION_DATABASE_URL",
+    )
+    # This intentionally invalid private URL would reject either Settings
+    # construction if the runtime or operations path inherited it.
+    if credential_source == "environment":
+        for name in private_names:
+            monkeypatch.setenv(name, "worker-must-not-read-private-publication-credential")
+    else:
+        for name in private_names:
+            monkeypatch.delenv(name, raising=False)
+        (tmp_path / ".env").write_text(
+            "\n".join(
+                f"{name}=worker-must-not-read-private-publication-credential"
+                for name in private_names
+            ),
+            encoding="utf-8",
+        )
+    settings = _settings()
+    assert "ui_publication_database_url" not in type(settings).model_fields
+    worker = create_event_worker(settings, modules=(), broker=cast(Any, _Broker()))
+    try:
+        assert worker.application.settings.ui_publication_database_url is None
+    finally:
+        await worker.stop()
 
 
 def test_event_worker_requires_separate_runtime_and_operations_roles() -> None:

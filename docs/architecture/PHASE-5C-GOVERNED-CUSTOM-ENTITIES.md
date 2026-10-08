@@ -4,12 +4,10 @@ Status: **Phase 5C CERTIFIED / CLOSED / FROZEN** on protected `main` at
 `e9baad7b7b8b7ef681099808d7ebed2db2f8337c`.
 Phase 4.5 remains FINAL PASS / CERTIFIED / FROZEN; Phase 5A and Phase 5B remain
 CERTIFIED / CLOSED / FROZEN. Phase 5 overall remains INCOMPLETE.
-Phase 5D is AUTHORIZED TO BEGIN only within the
-[bounded roadmap authorization](../roadmap/PHASE-5-METADATA-STUDIO-DYNAMIC-UI.md#phase-5d-authorization-boundary).
-Phase 5D coding remains blocked until this reconciliation PR passes fresh
-exact-head CI, independent audit, personal owner exact-SHA attestation, guarded
-merge and successful protected-main post-merge CI.
-Phase 5D is not implemented or certified; Phase 5E–5H remain UNAUTHORIZED / UNCERTIFIED.
+Phase 5D is CERTIFIED / CLOSED / FROZEN on protected `main` at
+`9236d430464191da59bef3c9df75c83f22a9ade5`, as recorded in its
+[certification provenance](PHASE-5D-PUBLISHED-UI-SCHEMA-RESOLVER.md#phase-5d-certification-provenance).
+Phase 5E–5H remain UNAUTHORIZED / UNCERTIFIED and have not started.
 
 Implementation starting point: `c4e48ca365338f8142d06525f64aec39ac39e554`.
 The certified bounded backend extension uses accepted ADR-023, ADR-018, ADR-017

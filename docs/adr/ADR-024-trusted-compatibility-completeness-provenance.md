@@ -1,6 +1,6 @@
 # ADR-024: Trusted Compatibility Completeness Provenance
 
-Status: ACCEPTED (owner architecture acceptance; PR #67 main merge remains pending)
+Status: ACCEPTED / AUTHORITATIVE ON MAIN
 
 Decision date: 2026-10-05.
 
@@ -32,7 +32,27 @@ Superseded by: None.
 Implementation authority: N1 remediation under the accepted architecture below,
 explicitly authorized by the owner. The original proposal context and semantic decision
 are preserved below as audited. Architecture acceptance does not certify its implementation.
-Phase 5D remains IMPLEMENTATION CANDIDATE / NOT CERTIFIED. Phase 5E–5H remain unauthorized.
+Phase 5D implementation is CERTIFIED / CLOSED / FROZEN at guarded merge
+`9236d430464191da59bef3c9df75c83f22a9ade5`, preserving audited candidate
+`43cdb3717eaa44d26528ae63624c2397e540428a` and tree
+`f2d9588e0f698d3fe8eb6a2b81bba31c7461d804`. Protected-main CI
+[37752894384](https://github.com/sahinkhan/businessos/actions/runs/37752894384)
+completed SUCCESS; all three required jobs passed. The final independent
+implementation re-audit passed with Critical 0 / High 0 / Medium 0 / Low 0 /
+Documentation-only 0. Personal implementation acceptance is recorded in
+[comment 6055956182](https://github.com/sahinkhan/businessos/pull/67#issuecomment-6055956182)
+and [supplement 6056193477](https://github.com/sahinkhan/businessos/pull/67#issuecomment-6056193477).
+The [Phase 5D certification provenance](../architecture/PHASE-5D-PUBLISHED-UI-SCHEMA-RESOLVER.md#phase-5d-certification-provenance)
+is the canonical implementation record. This documentation-only reconciliation
+follows its own protected governance workflow and has a distinct commit/tree.
+Phase 5E–5H remain unauthorized, uncertified and unstarted.
+
+The accepted semantic decision is unchanged by this reconciliation. The body
+beginning at Context is preserved byte-for-byte relative to guarded implementation
+merge `9236d430464191da59bef3c9df75c83f22a9ade5`, including its historical
+failed-candidate context and prospective implementation
+acceptance gate. References there to a draft PR or uncertified Phase 5D describe
+the proposal-stage state, not the completed implementation recorded above.
 
 ## Context
 

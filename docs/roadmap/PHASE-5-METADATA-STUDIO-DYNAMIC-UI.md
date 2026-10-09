@@ -1,12 +1,12 @@
 # Phase 5 — Metadata, Studio and Dynamic UI
 
-Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) ACCEPTED / Phase 5A CERTIFIED / CLOSED / FROZEN / Phase 5B CERTIFIED / CLOSED / FROZEN / Phase 5C CERTIFIED / CLOSED / FROZEN / Phase 5D AUTHORIZED TO BEGIN subject to the reconciliation gate below / Phase 5 overall INCOMPLETE. Phase 5E–5H remain UNAUTHORIZED / UNCERTIFIED.
+Status: [ADR-023](../adr/ADR-023-metadata-persistence-customization-and-dynamic-ui-resolution.md) ACCEPTED / Phase 5A CERTIFIED / CLOSED / FROZEN / Phase 5B CERTIFIED / CLOSED / FROZEN / Phase 5C CERTIFIED / CLOSED / FROZEN / [Phase 5D CERTIFIED / CLOSED / FROZEN](../architecture/PHASE-5D-PUBLISHED-UI-SCHEMA-RESOLVER.md#phase-5d-certification-provenance) / Phase 5 overall INCOMPLETE. Phase 5E–5H remain UNAUTHORIZED / UNCERTIFIED / NOT STARTED.
 
 ## Entry condition and destination
 
-Phase 4.5 UI Foundation remains FINAL PASS / CERTIFIED / FROZEN; its accessibility maintenance is closed. ADR-023 was accepted through [PR #56](https://github.com/sahinkhan/businessos/pull/56), with accepted-main provenance reconciled through [PR #58](https://github.com/sahinkhan/businessos/pull/58). Phase 5A was implemented through [PR #61](https://github.com/sahinkhan/businessos/pull/61): final candidate `03234293aa21d6fa56254937b4b5ee74c7d2eb0a`, guarded merge `3f96d668eb24f0d505b45b13428fff1c05f1d7af`, and post-merge CI [run 36854266178](https://github.com/sahinkhan/businessos/actions/runs/36854266178) SUCCESS. Independent remediation re-audit closed at Critical 0 / High 0 / Medium 0 / Low 0. Owner acceptance is recorded in PR #61 comment `5930138099`, with supplemental Solo Maintainer governance evidence in comment `5931450033`. Phase 5A is therefore CERTIFIED / CLOSED / FROZEN. Phase 5B is now CERTIFIED / CLOSED / FROZEN at `b93c227a95adc683e0880d5ddc4bc710594683d0`. Phase 5C is now CERTIFIED / CLOSED / FROZEN at `e9baad7b7b8b7ef681099808d7ebed2db2f8337c`. Phase 5D is AUTHORIZED TO BEGIN within the boundary below; Phase 5D coding remains blocked until this reconciliation certification completes. Phase 5 overall remains INCOMPLETE.
+Phase 4.5 UI Foundation remains FINAL PASS / CERTIFIED / FROZEN; its accessibility maintenance is closed. ADR-023 was accepted through [PR #56](https://github.com/sahinkhan/businessos/pull/56), with accepted-main provenance reconciled through [PR #58](https://github.com/sahinkhan/businessos/pull/58). Phase 5A was implemented through [PR #61](https://github.com/sahinkhan/businessos/pull/61): final candidate `03234293aa21d6fa56254937b4b5ee74c7d2eb0a`, guarded merge `3f96d668eb24f0d505b45b13428fff1c05f1d7af`, and post-merge CI [run 36854266178](https://github.com/sahinkhan/businessos/actions/runs/36854266178) SUCCESS. Independent remediation re-audit closed at Critical 0 / High 0 / Medium 0 / Low 0. Owner acceptance is recorded in PR #61 comment `5930138099`, with supplemental Solo Maintainer governance evidence in comment `5931450033`. Phase 5A is therefore CERTIFIED / CLOSED / FROZEN. Phase 5B is now CERTIFIED / CLOSED / FROZEN at `b93c227a95adc683e0880d5ddc4bc710594683d0`. Phase 5C is now CERTIFIED / CLOSED / FROZEN at `e9baad7b7b8b7ef681099808d7ebed2db2f8337c`. Phase 5D is now CERTIFIED / CLOSED / FROZEN at implementation checkpoint `9236d430464191da59bef3c9df75c83f22a9ade5`, with [certification provenance](../architecture/PHASE-5D-PUBLISHED-UI-SCHEMA-RESOLVER.md#phase-5d-certification-provenance) below. Phase 5 overall remains INCOMPLETE.
 
-Entry sequence completed through Phase 5C: ADR-023 acceptance and accepted-main provenance → bounded Phase 5A certification → bounded Phase 5B implementation and certification → bounded Phase 5C implementation → original exact-head CI and failed audit → runtime remediation and fresh exact-head CI → independent remediation re-audit PASS with L2 remaining → documentation correction and fresh exact-head CI → focused documentation re-audit PASS → personal owner acceptance → guarded merge → successful post-merge certification. Phase 5A, Phase 5B and Phase 5C remain CERTIFIED / CLOSED / FROZEN. Phase 5D authorization is bounded and conditional on this reconciliation certification; Phase 5E–5H are unauthorized and uncertified.
+Entry sequence completed through Phase 5C: ADR-023 acceptance and accepted-main provenance → bounded Phase 5A certification → bounded Phase 5B implementation and certification → bounded Phase 5C implementation → original exact-head CI and failed audit → runtime remediation and fresh exact-head CI → independent remediation re-audit PASS with L2 remaining → documentation correction and fresh exact-head CI → focused documentation re-audit PASS → personal owner acceptance → guarded merge → successful post-merge certification. Phase 5A, Phase 5B and Phase 5C remain CERTIFIED / CLOSED / FROZEN. Phase 5D subsequently completed its separately audited implementation, remediation, owner acceptance, guarded merge and post-merge certification recorded below. Phase 5E–5H remain unauthorized, uncertified and not started.
 
 The destination is source-free customer customization of ordinary records, governed custom entities, versioned list/form/detail/kanban/calendar/dashboard definitions, menus/actions, validation, extension slots and deterministic UI resolution over the certified Phase 4.5 shell and design system. Customers can upgrade vendor/module definitions without losing customizations or taking over protected ownership. PostgreSQL remains authoritative; browser presentation never becomes authorization.
 
@@ -97,30 +97,39 @@ Independent technical audit: PERFORMED.
 The personal acceptance above is the existing approval record; this
 reconciliation does not create another owner approval.
 
+## Phase 5D certification provenance
+
+Phase 5D is **CERTIFIED / CLOSED / FROZEN** at protected-main implementation
+checkpoint `9236d430464191da59bef3c9df75c83f22a9ade5`, following
+[PR #67](https://github.com/sahinkhan/businessos/pull/67). The accepted candidate is
+`43cdb3717eaa44d26528ae63624c2397e540428a`, tree
+`f2d9588e0f698d3fe8eb6a2b81bba31c7461d804`. Protected-main post-merge CI
+[run 37752894384](https://github.com/sahinkhan/businessos/actions/runs/37752894384)
+completed SUCCESS, with `web-quality`, `python-quality` and `windows-typing` PASS.
+The authoritative [Phase 5D certification provenance](../architecture/PHASE-5D-PUBLISHED-UI-SCHEMA-RESOLVER.md#phase-5d-certification-provenance)
+records the full candidate/audit/remediation/owner-acceptance/merge chronology.
+This roadmap links that record without replacing its evidence or re-certifying
+the implementation.
+
 ## Phase 5D authorization boundary
 
-Phase 5D is **AUTHORIZED TO BEGIN** only for **Published UI Schema and Resolver**.
-This authorizes a future separately audited implementation; Phase 5D is
-**NOT IMPLEMENTED / NOT CERTIFIED**. Phase 5 overall remains **INCOMPLETE**.
-Phase 5E–5H remain **UNAUTHORIZED / UNCERTIFIED**.
+This is the **satisfied historical implementation entry boundary** for
+**Published UI Schema and Resolver**. The earlier documentation/provenance
+reconciliation completed its exact-head CI, independent audit, personal owner
+exact-SHA attestation, guarded merge and protected-main post-merge CI before
+Phase 5D implementation. The implementation subsequently completed the separate
+certification recorded above; Phase 5D is **CERTIFIED / CLOSED / FROZEN**.
+The bounded scope and non-goals below remain preserved. Phase 5 overall remains
+**INCOMPLETE**; Phase 5E–5H remain **UNAUTHORIZED / UNCERTIFIED / NOT STARTED**.
 
-**Phase 5D coding remains blocked until this documentation/provenance
-reconciliation PR itself completes every gate in order:**
-
-1. Fresh exact-head CI with all required jobs successful.
-2. Fresh independent technical documentation/provenance audit PASS.
-3. Personal owner exact-SHA attestation after audit PASS.
-4. Guarded merge preserving the audited candidate.
-5. Successful protected-main post-merge CI.
-
-No Phase 5D runtime is introduced by this reconciliation. Phase 4.5 remains
-FINAL PASS / CERTIFIED / FROZEN; Phase 5A, Phase 5B and Phase 5C remain
+This documentation reconciliation introduces no runtime. Phase 4.5 remains
+FINAL PASS / CERTIFIED / FROZEN; Phase 5A, Phase 5B, Phase 5C and Phase 5D remain
 CERTIFIED / CLOSED / FROZEN. Their authority, runtime and public contracts are
 not reopened.
 
 ### Purpose and dependencies
 
-Phase 5D may implement backend Metadata contracts and runtime that produce a
+Phase 5D implements bounded backend Metadata contracts and runtime that produce a
 deterministic, typed, published-only UI schema or an explicit conflict.
 Dependencies are certified Phase 5A definition/publication, Phase 5B ordinary
 resource customization, Phase 5C governed custom entities and Phase 4.5 UI
@@ -211,9 +220,10 @@ Phase 5D does **not** implement:
 - Global EAV, runtime customer DDL or new business authorization.
 - Physical purge/destruction.
 
-### Future Phase 5D implementation exit gate
+### Phase 5D implementation exit gate
 
-These are **future required proofs**, not tests already passed:
+These implementation obligations are covered by the linked Phase 5D
+certification provenance and remain regression requirements:
 
 - Published-only input and no draft leakage.
 - Deterministic precedence, stable-ID conflicts and property allowlists.
@@ -224,9 +234,17 @@ These are **future required proofs**, not tests already passed:
 - Unsupported component/schema-version diagnostics and Phase 4.5 contract compatibility.
 - No arbitrary code/UI injection and no backend authority granted by presentation.
 
-Future implementation requires its own exact-head quality gates, independent
+The separate implementation exact-head quality gates, independent
 security/compatibility audit, owner acceptance, guarded merge and post-merge
-certification. Authorization here is not proof of implementation or certification.
+certification are completed in the authoritative record linked above.
+
+## Phase 5E authorization prerequisite
+
+Phase 5E–5H remain **UNAUTHORIZED / UNCERTIFIED / NOT STARTED**. This documentation
+reconciliation must complete fresh exact-head CI, independent documentation audit,
+personal owner exact-SHA attestation, guarded merge and successful protected-main
+post-merge CI before eligibility for a separate, explicit Phase 5E instruction.
+Completing those gates does not itself authorize Phase 5E implementation.
 
 ## Goals, non-goals and ownership
 
@@ -277,7 +295,7 @@ Each batch is a separately reviewable candidate. A batch cannot claim completion
 | **5A — Contracts and definition foundation** | After ADR-023 acceptance. Versioned definitions, type/validation grammar, drafts, immutable revisions, publish/preflight and audit. No custom values or UI runtime. | New Metadata-owned forward migration for tenant-aware definitions/revisions/active pointers, RLS/grants; definition/revision/publish/diagnostic contracts. Versioned publication contracts include expected draft generation, active revision, module/base and schema/UI generations, compatibility/dependency generations, stale-publish/stale-rollback diagnostics and module-activation fence. Versioned reference contracts include bounded bulk resolution, target lifecycle and retired/unavailable representation, with no cross-owner deletion side effect. Diagnostics distinguish stale draft, active revision conflict, module/base generation change, incompatible dependency, unavailable target, retired target and unsupported cross-owner deletion behavior. Exact wire schemas remain 5A work. | Type/schema and malicious-payload rejection; two-publisher lost-update, publish-versus-module-activation and rollback-versus-upgrade race proofs; atomic publish/rollback, quota, RLS/cross-tenant, reference lifecycle/bulk isolation, audit/outbox and migration replay. Audit exact 5A contract/schema/authority boundary; exit only with published-only read, compatible serialization and clean preflight. |
 | **5B — Ordinary record custom fields** | 5A and accepted ADR-018 owner contract. Add one explicitly selected first-party owner adapter, its lifecycle/query capabilities and field read/write; further owners enroll separately. | Owner-controlled forward migration for values/indexes if needed; `CustomizableResource`, custom-field value and query-capability contracts. Metadata may not migrate owner tables. | Same-UOW owner create/update/read/delete/export, Policy/classification, conflict/concurrency, tenant isolation, unsupported query rejection and rollback. Independent audit exact owner SQL/grants/admission; exit with no direct Metadata write to owner tables. |
 | **5C — Governed custom entities** | 5A; owner model and quotas from 5B inform semantics, but does not adopt 5B tables. | Metadata-owned forward migration for instance relational envelope and JSONB; custom-entity, lifecycle/reference contracts. | RLS/tenant and scope isolation, schema revision pinning, type/reference validation, retention/export, concurrency and bounded queries. Audit exact generic-store escape and grants; exit with no unrestricted schemaless records. |
-| **5D — Published UI schema and resolver** | Certified 5A/5B/5C and Phase 4.5; stable route/navigation/slot/permission/component contracts; ADR-023, ADR-018 and trusted authority/scope; conditional authorization gate above. | Metadata-owned forward migration for views/overlays only if required; versioned UI schema, extension-slot and resolver contracts. | Deterministic precedence/conflict/property allowlist, upgrade preflight, cache identity/invalidation, Policy/scope fail-closed and localization. Independent audit exact resolver security/compatibility boundary; exit with published-only typed output. |
+| **5D — Published UI schema and resolver** | CERTIFIED / CLOSED / FROZEN; certified 5A/5B/5C and Phase 4.5; stable route/navigation/slot/permission/component contracts; ADR-023, ADR-018 and trusted authority/scope; historical entry boundary satisfied above. | Metadata-owned forward migration for views/overlays only if required; versioned UI schema, extension-slot and resolver contracts. | Deterministic precedence/conflict/property allowlist, upgrade preflight, cache identity/invalidation, Policy/scope fail-closed and localization. Independent audit exact resolver security/compatibility boundary; published-only typed output certified in the [Phase 5D provenance](../architecture/PHASE-5D-PUBLISHED-UI-SCHEMA-RESOLVER.md#phase-5d-certification-provenance). |
 | **5E — Form/detail/list rendering** | 5D and Phase 4.5 certified primitives; 5B/5C owner data contracts. | No runtime DDL; additive UI schema contract versions only, plus reviewed Metadata migration if definitions need persisted properties. | Component/a11y/keyboard/RTL/responsive/i18n, field Policy, query cancellation, pagination/filter budget, error states and browser cache isolation. Audit exact UI/data/authority boundary; exit without parallel design system. |
 | **5F — Kanban/calendar/dashboard/menu/action definitions** | 5D/E and registered route/action/command contracts. | Metadata-owned forward migration only for new persisted definition kinds; additive typed view/action contracts. | Query cost/pagination, route/action admission, backend authorization, no arbitrary URL/code, localization and accessibility. Independent audit each new action/query surface; exit with no new business authority or Phase 8 analytics claim. |
 | **5G — Studio authoring UI** | 5A–F publish and compatibility APIs. | No separate business schema; versioned Studio authoring/preflight APIs and UI contract. | Draft isolation, explicit publish/rollback permissions, conflict diagnostics, tenant/scope transitions, CSRF/session, accessibility and upgrade preview. Audit exact author/publish/evidence boundary; exit with no draft leakage into production runtime. |
@@ -296,11 +314,11 @@ For each batch, inspect the actual migration graph before naming revisions; no h
 - Audit, export, retention, hold and deletion behavior has owner-certified evidence.
 - Forward migrations, compatibility, installed artifact and deployment validation pass where applicable; independent exact-commit audit has no blocking findings.
 
-The historical Phase 5A, Phase 5B and Phase 5C implementation entry and
-certification gates are completed as recorded above. This reconciliation records
-certified Phase 5C and bounded Phase 5D authorization only; it introduces no
-Phase 5D runtime. Phase 5D coding remains blocked on the reconciliation CI,
-independent audit, personal owner exact-SHA attestation, guarded merge and
-protected-main post-merge CI. Phase 5E–5H remain UNAUTHORIZED / UNCERTIFIED.
-Later batches retain separate prerequisites and implementation certification
-gates. Phase 5 overall remains INCOMPLETE.
+The Phase 5A, Phase 5B, Phase 5C and Phase 5D implementation entry and certification
+gates are completed as recorded above. This reconciliation records the certified
+Phase 5D implementation checkpoint and introduces no runtime. Phase 5E–5H remain
+UNAUTHORIZED / UNCERTIFIED / NOT STARTED. Eligibility for a separate explicit
+Phase 5E instruction remains gated by this reconciliation's exact-head CI,
+independent documentation audit, personal owner exact-SHA attestation, guarded
+merge and protected-main post-merge CI. Later batches retain separate prerequisites
+and implementation certification gates. Phase 5 overall remains INCOMPLETE.

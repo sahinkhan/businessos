@@ -4,12 +4,11 @@ Status: **Phase 5B CERTIFIED / CLOSED / FROZEN**. Phase 5A remains
 CERTIFIED / CLOSED / FROZEN; Phase 4.5 remains FINAL PASS / CERTIFIED / FROZEN.
 Phase 5C is CERTIFIED / CLOSED / FROZEN as recorded in its
 [certification provenance](PHASE-5C-GOVERNED-CUSTOM-ENTITIES.md#phase-5c-certification-provenance).
-Phase 5D is AUTHORIZED TO BEGIN only within the
-[bounded reconciliation gate](../roadmap/PHASE-5-METADATA-STUDIO-DYNAMIC-UI.md#phase-5d-authorization-boundary).
-Phase 5D coding remains blocked until reconciliation exact-head CI, independent
-audit, personal owner exact-SHA attestation, guarded merge and protected-main
-post-merge CI. Phase 5D is not implemented or certified.
-Phase 5 overall is INCOMPLETE; Phase 5E–5H remain unauthorized and uncertified.
+Phase 5D is CERTIFIED / CLOSED / FROZEN on protected `main` at
+`9236d430464191da59bef3c9df75c83f22a9ade5`, as recorded in its
+[certification provenance](PHASE-5D-PUBLISHED-UI-SCHEMA-RESOLVER.md#phase-5d-certification-provenance).
+Phase 5 overall is INCOMPLETE; Phase 5E–5H remain UNAUTHORIZED / UNCERTIFIED
+and have not started.
 
 ## Phase 5B certification provenance
 
@@ -163,5 +162,6 @@ fresh exact-head CI, independent remediation re-audit, personal exact-SHA owner
 acceptance, guarded merge and successful post-merge CI. The certified runtime
 architecture above remains frozen. Certified Phase 5C does not expand these
 Party capabilities or use Party ordinary-value tables for custom entities.
-Phase 5D authorization remains bounded by the roadmap reconciliation gate;
-it does not reopen this certified Party adapter.
+Phase 5D is CERTIFIED / CLOSED / FROZEN at `9236d430464191da59bef3c9df75c83f22a9ade5`;
+its [certification provenance](PHASE-5D-PUBLISHED-UI-SCHEMA-RESOLVER.md#phase-5d-certification-provenance)
+does not reopen this certified Party adapter.

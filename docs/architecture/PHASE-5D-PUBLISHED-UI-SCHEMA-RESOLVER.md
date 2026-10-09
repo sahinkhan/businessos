@@ -1,10 +1,80 @@
 # Phase 5D — Published UI Schema and Resolver
 
-Status: **IMPLEMENTATION CANDIDATE — NOT CERTIFIED**.
+Status: **Phase 5D CERTIFIED / CLOSED / FROZEN** at protected-main implementation
+anchor `9236d430464191da59bef3c9df75c83f22a9ade5`.
 
 Authorized base: `61341e71c777aea390bee99bfd207bd6e5a6bb87`.
 Phase 4.5/5A/5B/5C remain certified and frozen. Phase 5 is incomplete;
 Phase 5E–5H remain unauthorized and uncertified.
+
+## Phase 5D certification provenance
+
+The frozen capability is **Published UI Schema and Resolver**. Certification binds
+the exact implementation below; a later documentation-only reconciliation commit
+has a different SHA/tree and does not replace this implementation anchor.
+
+| Evidence | Exact identity / result |
+| --- | --- |
+| Guarded implementation PR | [#67](https://github.com/sahinkhan/businessos/pull/67) — MERGED |
+| Pre-merge protected main / parent 1 | `61341e71c777aea390bee99bfd207bd6e5a6bb87` |
+| Audited candidate / parent 2 | `43cdb3717eaa44d26528ae63624c2397e540428a` |
+| Audited candidate tree | `f2d9588e0f698d3fe8eb6a2b81bba31c7461d804` |
+| Exact-candidate CI | [37739267576](https://github.com/sahinkhan/businessos/actions/runs/37739267576) — COMPLETED / SUCCESS |
+| Final independent implementation audit | PHASE 5D FINAL REMEDIATION INDEPENDENT RE-AUDIT — PASS; Critical 0 / High 0 / Medium 0 / Low 0 / Documentation-only 0 |
+| Final personal exact-candidate owner attestation | [6055956182](https://github.com/sahinkhan/businessos/pull/67#issuecomment-6055956182), posted by @sahinkhan |
+| Supplemental Platform/Kernel accountability | [6056193477](https://github.com/sahinkhan/businessos/pull/67#issuecomment-6056193477), posted by @sahinkhan |
+| Guarded implementation merge / certification anchor | `9236d430464191da59bef3c9df75c83f22a9ade5` |
+| Merge tree | `f2d9588e0f698d3fe8eb6a2b81bba31c7461d804` — exactly equals audited candidate tree |
+| Fresh protected-main certification CI | [37752894384](https://github.com/sahinkhan/businessos/actions/runs/37752894384) — COMPLETED / SUCCESS on `9236d430464191da59bef3c9df75c83f22a9ade5` |
+| Required post-merge jobs | `python-quality` PASS; `windows-typing` PASS; `web-quality` PASS |
+| Accepted architecture | [ADR-024](../adr/ADR-024-trusted-compatibility-completeness-provenance.md) — ACCEPTED / AUTHORITATIVE ON MAIN; [owner architecture acceptance 5991893651](https://github.com/sahinkhan/businessos/pull/67#issuecomment-5991893651) |
+
+Review model: SOLO MAINTAINER OWNER ATTESTATION. Independent human review:
+NOT PERFORMED. Independent technical audit: PERFORMED. The owner explicitly
+exercised Architecture Maintainer, Platform/Kernel Maintainer, Security Maintainer,
+Metadata/Studio Maintainer, SDK/Contract Maintainer, Policy Maintainer,
+Migration Safety Reviewer and Release Maintainer accountability. The implementation
+attestations approve the implementation candidate; they do not approve a later
+documentation candidate or manufacture another personal owner acceptance.
+
+All historical/final findings are RESOLVED: H1, H2, H3, M1, M2, M3, R1, R2, R3,
+N1, N2, F1, F2, F3 and F4. Earlier failed audits and their successful candidate CI
+remain historical evidence below; neither green CI nor a later status overwrites them.
+
+Fresh local final-runtime verification covered 1,268 unique Python tests:
+872 unit, all 375 PostgreSQL/provider integration tests in 119 bounded groups with
+zero omissions, and 21 conformance tests. Ruff, canonical mypy/Pyright, Phase 0,
+the unchanged frontend gates (36 tests and 3 accessibility tests), installed wheels,
+development/production/migration-smoke images, fresh migration, certified-base
+upgrade, replay, candidate-history/downgrade refusal and migration fingerprints
+passed before candidate freeze. Fresh protected-main CI above is the certification
+evidence for the merge, separate from pre-merge candidate CI.
+
+### Frozen capability and compatibility
+
+The frozen boundary includes typed published UI schema contracts and deterministic
+published-only resolution; owner-approved customization and extension-slot
+containment; compatibility bindings and trusted source/dependency artifact provenance;
+module lifecycle/activation fencing; backend Policy authorization and completion
+fencing; ADR-024's private publication profile; one-UOW, one-session and one-PostgreSQL-
+transaction atomicity for revision, expected/actual bindings, seal, pointer, counters,
+Audit and outbox; cross-replica artifact identity protection; bounded admission,
+cancellation-safe cleanup and least-privilege worker credential distribution;
+cross-tenant reader availability and lifecycle-aware readiness.
+
+Compatibility is preserved with Phase 4.5 UI Foundation, Phase 5A Metadata Definition
+Foundation, Phase 5B Party Custom Fields, Phase 5C Governed Custom Entities, existing
+Policy and SDK/public contracts, and module lifecycle/activation semantics.
+Migration history through `metadata_0006_ui_provenance` is preserved; this
+reconciliation changes no migration or runtime behavior. Existing operator Policy
+provider certification and reviewed recovery/restore obligations remain in force.
+
+This record follows the separate protected documentation reconciliation used by
+Phases 5A, 5B and 5C. Its exact-head CI, independent documentation audit, personal
+owner exact-SHA attestation, guarded merge and post-merge CI are separate gates.
+Phase 5E becomes eligible for explicit authorization only after this reconciliation
+completes. Phase 5E–5H remain UNAUTHORIZED / UNCERTIFIED and unstarted; no renderer,
+Studio, action executor or later-phase functionality is certified here.
 
 ## Ownership and public surfaces
 
@@ -290,7 +360,14 @@ before freezing a candidate, followed by exact-head hosted CI and independent au
 Phase 5D implementation only. Phase 5E–5H were not implemented. No dynamic renderer,
 Studio UI, generic action/menu authoring, Kanban/calendar/dashboard runtime, workflow,
 search/reporting engine, executable metadata, customer DDL or business authorization
-was introduced. This document does not certify Phase 5D or authorize Phase 5E.
+was introduced. This record reconciles only the bounded Phase 5D certification;
+it does not authorize Phase 5E.
+
+## Historical audit chronology
+
+The following candidate-stage status and next-gate statements are preserved as
+historical evidence. They describe the named failed proposals/remediations and are
+superseded for the accepted implementation by the certification provenance above.
 
 Next required gate: independent Phase 5D security/architecture/compatibility audit
 of the exact candidate SHA, then personal owner acceptance, guarded merge and

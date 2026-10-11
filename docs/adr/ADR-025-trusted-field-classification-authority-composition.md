@@ -1,8 +1,9 @@
 # ADR-025: Trusted Field Classification Authority Composition
 
-Status: PROPOSED
+Status: ACCEPTED / AUTHORITATIVE ON MAIN
 
-Decision date: PENDING; no architecture acceptance has occurred.
+Decision date: 2026-10-11 (Asia/Dhaka); personal architecture acceptance was
+posted on 2026-10-10 at 19:54:23 UTC.
 
 Proposal preparation date: 2026-10-10.
 
@@ -12,25 +13,73 @@ Metadata/Studio Owning Domain Maintainer; Party Owning Domain Maintainer;
 SDK/Contract Maintainer; Migration Safety Reviewer; Audit Owning Domain Maintainer;
 Release Maintainer.
 
-Approval pull request or commit: PENDING.
+Accepted exact semantic proposal commit: `1070c675656ba89d8dae01d998b47b27e03201bd`.
 
-Owner architecture attestation: PENDING. No owner approval is represented by this
-proposal or by its authoring commit.
+Audited proposal tree: `7a8633082fbde05a8e6868b2c38175125acfa6c7`.
 
-Supersedes: None. This proposes an opt-in extension to ADR-014, ADR-015,
+Audited complete proposal SHA-256:
+`3d72f99478739c68a16eb22c6e47c110487c17cd2cb5a1695f829e64a6c515aa`.
+This identifies the original proposal bytes, not the reconciled file's hash.
+
+Preserved semantic body SHA-256:
+`4612b3be13b48119c923fe7271353609a10640af2245ded12c32445dd32c5c89`.
+The 48,247 bytes beginning at `## Context and problem` through EOF are unchanged.
+
+Approval pull request or commit: [PR #69](https://github.com/sahinkhan/businessos/pull/69),
+guarded proposal merge `397bef8a5c9442abfd85a62313314ea7e11293d5`.
+Its ordered direct parents are `78779cf515fee6ca15cde383bc375b220607863a` and
+`1070c675656ba89d8dae01d998b47b27e03201bd`; its tree exactly equals the audited
+proposal tree above.
+
+Proposal exact-head CI: [37978409071](https://github.com/sahinkhan/businessos/actions/runs/37978409071)
+completed SUCCESS on the exact proposal commit; `python-quality`,
+`windows-typing` and `web-quality` passed.
+
+Independent architecture audit: ADR-025 INDEPENDENT ARCHITECTURE AUDIT — PASS;
+Critical 0 / High 0 / Medium 0 / Low 0 / Documentation-only 0, recorded in the
+personal owner architecture acceptance below.
+
+Owner architecture acceptance: [PR #69, comment 6101564912](https://github.com/sahinkhan/businessos/pull/69#issuecomment-6101564912),
+personally posted by @sahinkhan for the exact proposal commit, tree and bytes.
+The owner explicitly exercises all eleven approving roles listed above.
+Review model: SOLO MAINTAINER OWNER ATTESTATION.
+Independent human review: NOT PERFORMED. Independent technical architecture audit: PERFORMED.
+
+Fresh protected-main proposal post-merge CI:
+[38082216660](https://github.com/sahinkhan/businessos/actions/runs/38082216660)
+completed SUCCESS on `397bef8a5c9442abfd85a62313314ea7e11293d5`;
+`python-quality`, `windows-typing` and `web-quality` passed.
+
+Accepted-main status checkpoint: the protected commit/merge carrying this
+documentation-only reconciliation to `main`. This reconciliation has a distinct
+commit/tree and follows its own exact-head CI, independent documentation audit,
+personal owner exact-SHA attestation, guarded merge and protected-main post-merge
+CI, recorded in its associated pull request. Until those gates complete, the
+proposal merge alone does not complete accepted-main reconciliation.
+
+Supersedes: None. This is an opt-in extension to ADR-014, ADR-015,
 ADR-018, ADR-022, ADR-023 and ADR-024; their existing contracts and decisions
 remain unchanged.
 
 Superseded by: None.
 
-Implementation authority: NONE. Acceptance of this ADR would establish a
-decision, not authorize implementation, certify a runtime, or authorize Phase
-5E-B. Separate implementation authorization and the gates below are required.
+Implementation authority: NONE. Architecture acceptance does not authorize
+implementation or certify a runtime. ADR-025 runtime implementation remains
+UNAUTHORIZED. Phase 5E-B remains UNAUTHORIZED. Separate explicit implementation
+authorization and the gates below are required; React Form/Detail/List rendering
+is not authorized by this acceptance.
 
 Protected preparation baseline: `78779cf515fee6ca15cde383bc375b220607863a`;
 tree `8aa2c2cf39ce3bd350c85a3a473d48f933ee1bf5`.
 Phase 5D remains CERTIFIED / CLOSED / FROZEN. Phase 5A–5D and the Phase 4.5
-frontend foundation are not reopened by this proposal.
+frontend foundation are not reopened by this decision.
+
+The semantic decision body below is preserved byte-for-byte from the accepted
+proposal. Its proposal-stage statements, including "Every approval is PENDING"
+and prospective architecture acceptance gates, describe historical proposal
+state. The verified architecture acceptance metadata above supersedes that
+historical approval state only; it does not satisfy implementation gates or
+authorize runtime work.
 
 ## Context and problem
 
